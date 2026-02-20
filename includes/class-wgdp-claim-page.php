@@ -268,7 +268,6 @@ class WGDP_Claim_Page {
 		$result = $drive->create_permission(
 			$entitlement['cloud_asset_id'],
 			$entitlement['recipient_email'],
-			'reader',
 			null,
 			$entitlement['account_id']
 		);

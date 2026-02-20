@@ -17,9 +17,41 @@ class WGDP_Google_Drive {
 	private function __construct() {}
 
 	/**
+	 * Allowed endpoint patterns.
+	 *
+	 * This plugin only reads file metadata and manages permissions.
+	 * All other Drive operations (file create, update, copy, delete, etc.)
+	 * are blocked to prevent accidental or malicious file modification.
+	 */
+	private const ALLOWED_ENDPOINTS = array(
+		'#^/files\?#'                                       => array( 'GET' ),
+		'#^/files/[^/]+\?#'                                 => array( 'GET' ),
+		'#^/files/[^/]+/permissions\?#'                     => array( 'GET', 'POST' ),
+		'#^/files/[^/]+/permissions/[^/]+\?#'               => array( 'GET', 'DELETE' ),
+		'#^/files/[^/]+/permissions/[^/]+$#'                => array( 'GET', 'DELETE' ),
+	);
+
+	/**
 	 * Make an authenticated request to the Drive API.
 	 */
 	private function request( $endpoint, $args = array(), $account_id = '' ) {
+		$method = $args['method'] ?? 'GET';
+
+		// Guard: only allow whitelisted endpoint + method combinations.
+		$allowed = false;
+		foreach ( self::ALLOWED_ENDPOINTS as $pattern => $methods ) {
+			if ( preg_match( $pattern, $endpoint ) && in_array( $method, $methods, true ) ) {
+				$allowed = true;
+				break;
+			}
+		}
+		if ( ! $allowed ) {
+			return new WP_Error(
+				'wgdp_blocked_request',
+				sprintf( 'Blocked Drive API request: %s %s — this plugin only manages permissions.', $method, $endpoint )
+			);
+		}
+
 		$token = WGDP_Google_Auth::instance()->get_access_token( $account_id );
 		if ( is_wp_error( $token ) ) {
 			return $token;
@@ -34,7 +66,6 @@ class WGDP_Google_Drive {
 
 		$url = self::API_BASE . $endpoint;
 
-		$method = $args['method'] ?? 'GET';
 		unset( $args['method'] );
 
 		if ( 'GET' === $method ) {
@@ -123,7 +154,7 @@ class WGDP_Google_Drive {
 	/**
 	 * Create a permission (share) on a file/folder.
 	 */
-	public function create_permission( $file_id, $email, $role = 'reader', $send_notification = null, $account_id = '' ) {
+	public function create_permission( $file_id, $email, $send_notification = null, $account_id = '' ) {
 		if ( null === $send_notification ) {
 			$send_notification = get_option( 'wgdp_send_notification', 'no' ) === 'yes';
 		}
@@ -138,7 +169,7 @@ class WGDP_Google_Drive {
 			'headers' => array( 'Content-Type' => 'application/json' ),
 			'body'    => wp_json_encode( array(
 				'type'         => 'user',
-				'role'         => $role,
+				'role'         => 'reader',
 				'emailAddress' => $email,
 			) ),
 		), $account_id );

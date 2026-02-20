@@ -76,7 +76,6 @@ class WGDP_Cron {
 			$result = $drive->create_permission(
 				$row['cloud_asset_id'],
 				$row['recipient_email'],
-				'reader',
 				null,
 				$row['account_id']
 			);
