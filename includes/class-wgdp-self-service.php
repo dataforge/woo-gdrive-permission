@@ -5,6 +5,8 @@ class WGDP_Self_Service {
 
 	private static $instance = null;
 
+	const LINK_EXPIRY_DAYS = 30;
+
 	public static function instance() {
 		if ( null === self::$instance ) {
 			self::$instance = new self();
@@ -15,9 +17,34 @@ class WGDP_Self_Service {
 	private function __construct() {
 		add_action( 'woocommerce_email_after_order_table', array( $this, 'render_email_link' ), 20, 4 );
 		add_action( 'init', array( $this, 'maybe_create_page' ) );
+		add_action( 'template_redirect', array( $this, 'send_security_headers' ) );
 		add_filter( 'the_content', array( $this, 'filter_page_content' ) );
 		add_action( 'wp_ajax_wgdp_self_service_email', array( $this, 'ajax_self_service_email' ) );
 		add_action( 'wp_ajax_nopriv_wgdp_self_service_email', array( $this, 'ajax_self_service_email' ) );
+	}
+
+	/**
+	 * Send Referrer-Policy header on the self-service page to prevent order key leakage.
+	 */
+	public function send_security_headers() {
+		$page_id = (int) get_option( 'wgdp_provide_email_page_id', 0 );
+		if ( $page_id && is_page( $page_id ) ) {
+			header( 'Referrer-Policy: no-referrer' );
+		}
+	}
+
+	/**
+	 * Check whether the self-service link for an order has expired.
+	 *
+	 * @param WC_Order $order The order to check.
+	 * @return bool True if expired.
+	 */
+	private function is_link_expired( $order ) {
+		$order_date = $order->get_date_created();
+		if ( ! $order_date ) {
+			return false;
+		}
+		return ( time() - $order_date->getTimestamp() ) > self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS;
 	}
 
 	/**
@@ -208,6 +235,10 @@ class WGDP_Self_Service {
 			return $this->wrap_content( $this->error_content( 'This order is no longer eligible for digital access.' ) );
 		}
 
+		if ( $this->is_link_expired( $order ) ) {
+			return $this->wrap_content( $this->error_content( 'This link has expired. Please contact the store for assistance.' ) );
+		}
+
 		$unassigned = $this->get_unassigned_items( $order );
 		if ( empty( $unassigned ) ) {
 			return $this->wrap_content( $this->success_content( $order ) );
@@ -239,6 +270,10 @@ class WGDP_Self_Service {
 
 		if ( ! in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
 			wp_send_json_error( 'This order is no longer eligible for digital access.' );
+		}
+
+		if ( $this->is_link_expired( $order ) ) {
+			wp_send_json_error( 'This link has expired. Please contact the store for assistance.' );
 		}
 
 		if ( ! is_array( $items ) || empty( $items ) ) {

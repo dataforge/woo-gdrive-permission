@@ -106,7 +106,14 @@ class WGDP_Claim_Page {
 	 */
 	public function handle_post() {
 		$page_id = (int) get_option( 'wgdp_claim_page_id', 0 );
-		if ( ! $page_id || ! is_page( $page_id ) || 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
+		if ( ! $page_id || ! is_page( $page_id ) ) {
+			return;
+		}
+
+		// Prevent claim token leakage via Referer headers.
+		header( 'Referrer-Policy: no-referrer' );
+
+		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
 			return;
 		}
 
