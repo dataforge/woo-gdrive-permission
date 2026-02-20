@@ -223,6 +223,11 @@ class WGDP_Product_Meta {
 			return;
 		}
 
+		// Verify WooCommerce product meta nonce (defense-in-depth; WC checks this upstream).
+		if ( ! isset( $_POST['woocommerce_meta_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['woocommerce_meta_nonce'] ) ), 'woocommerce_save_data' ) ) {
+			return;
+		}
+
 		$fields = array( '_wgdp_drive_resource_id', '_wgdp_drive_resource_type', '_wgdp_drive_resource_name', '_wgdp_account_id' );
 		foreach ( $fields as $field ) {
 			if ( isset( $_POST[ $field ] ) ) {
@@ -290,6 +295,11 @@ class WGDP_Product_Meta {
 	 */
 	public function save_variation_meta( $variation_id, $loop ) {
 		if ( ! current_user_can( 'edit_post', $variation_id ) ) {
+			return;
+		}
+
+		// Verify WooCommerce variation nonce (defense-in-depth; WC checks this upstream).
+		if ( ! isset( $_POST['woocommerce_meta_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['woocommerce_meta_nonce'] ) ), 'woocommerce_save_data' ) ) {
 			return;
 		}
 

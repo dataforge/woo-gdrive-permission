@@ -611,7 +611,14 @@ class WGDP_Self_Service {
 				msg.style.background = "#edfaef";
 				msg.style.border = "1px solid #a7d7a9";
 				msg.style.color = "#00a32a";
-				msg.innerHTML = "<strong>" + resp.data.message + "</strong>" + (resp.data.detail ? "<br>" + resp.data.detail : "");
+				msg.textContent = "";
+				var strong = document.createElement("strong");
+				strong.textContent = resp.data.message;
+				msg.appendChild(strong);
+				if (resp.data.detail) {
+					msg.appendChild(document.createElement("br"));
+					msg.appendChild(document.createTextNode(resp.data.detail));
+				}
 				form.style.display = "none";
 			} else {
 				msg.style.background = "#fcecec";

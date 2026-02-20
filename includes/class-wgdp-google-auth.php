@@ -586,7 +586,10 @@ class WGDP_Google_Auth {
 	 * Derive encryption key from WordPress AUTH_KEY.
 	 */
 	private function get_encryption_key() {
-		$salt = defined( 'AUTH_KEY' ) ? AUTH_KEY : 'wgdp-fallback-key';
+		if ( ! defined( 'AUTH_KEY' ) || '' === AUTH_KEY ) {
+			error_log( 'WGDP: AUTH_KEY is not defined or empty; credential encryption is insecure.' );
+		}
+		$salt = defined( 'AUTH_KEY' ) && '' !== AUTH_KEY ? AUTH_KEY : wp_salt( 'auth' );
 		return hash( 'sha256', $salt, true );
 	}
 }
