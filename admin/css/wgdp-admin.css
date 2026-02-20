@@ -1,0 +1,488 @@
+/* Drive browser modal */
+#wgdp-browse-dialog {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden !important;
+}
+
+.wgdp-browse-hint {
+    margin: 0;
+    padding: 8px 12px;
+    background: #f0f6fc;
+    border-bottom: 1px solid #c3c4c7;
+    font-size: 12px;
+    color: #2c3338;
+    line-height: 1.5;
+}
+
+.wgdp-breadcrumbs {
+    padding: 8px 12px;
+    background: #f0f0f1;
+    border-bottom: 1px solid #c3c4c7;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow-x: auto;
+    flex-shrink: 0;
+}
+
+.wgdp-bc-link {
+    text-decoration: none;
+    color: #2271b1;
+}
+
+.wgdp-bc-link:hover {
+    text-decoration: underline;
+}
+
+.wgdp-bc-sep {
+    color: #999;
+    margin: 0 2px;
+}
+
+.wgdp-file-list {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    padding: 0;
+}
+
+.wgdp-files {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.wgdp-file-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.wgdp-file-item:hover {
+    background: #f6f7f7;
+}
+
+.wgdp-file-item.wgdp-selected {
+    background: #2271b1;
+    color: #fff;
+}
+
+.wgdp-file-icon {
+    flex-shrink: 0;
+    font-size: 16px;
+}
+
+.wgdp-file-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wgdp-folder {
+    font-weight: 500;
+}
+
+.wgdp-empty,
+.wgdp-error {
+    padding: 20px;
+    text-align: center;
+    color: #666;
+}
+
+.wgdp-error {
+    color: #d63638;
+}
+
+/* Product meta preview */
+.wgdp-resource-preview .wgdp-resource-info {
+    display: inline-block;
+    padding: 6px 10px;
+    background: #f0f6fc;
+    border: 1px solid #c3c4c7;
+    border-radius: 3px;
+    margin-right: 8px;
+}
+
+.wgdp-resource-change,
+.wgdp-resource-clear,
+.wgdp-resource-cancel {
+    text-decoration: none;
+    font-size: 12px;
+}
+
+/* Variation fields container */
+.wgdp-variation-fields {
+    padding: 10px 0;
+    border-top: 1px solid #eee;
+}
+
+/* Entitlements summary cards */
+.wgdp-summary-cards {
+    display: flex;
+    gap: 16px;
+    margin: 20px 0;
+}
+
+.wgdp-summary-card {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 16px 24px;
+    text-align: center;
+    min-width: 120px;
+    border-top: 3px solid #c3c4c7;
+}
+
+.wgdp-summary-card--granted {
+    border-top-color: #00a32a;
+}
+
+.wgdp-summary-card--failed {
+    border-top-color: #d63638;
+}
+
+.wgdp-summary-card--pending {
+    border-top-color: #dba617;
+}
+
+.wgdp-summary-card--revoked {
+    border-top-color: #996800;
+}
+
+.wgdp-summary-card--verified {
+    border-top-color: #2271b1;
+}
+
+.wgdp-summary-count {
+    display: block;
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.wgdp-summary-card--granted .wgdp-summary-count {
+    color: #00a32a;
+}
+
+.wgdp-summary-card--failed .wgdp-summary-count {
+    color: #d63638;
+}
+
+.wgdp-summary-card--pending .wgdp-summary-count {
+    color: #dba617;
+}
+
+.wgdp-summary-card--revoked .wgdp-summary-count {
+    color: #996800;
+}
+
+.wgdp-summary-card--verified .wgdp-summary-count {
+    color: #2271b1;
+}
+
+.wgdp-summary-label {
+    display: block;
+    font-size: 13px;
+    color: #50575e;
+    margin-top: 4px;
+}
+
+/* Status badges (used in list table and order meta box) */
+.wgdp-status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.5;
+}
+
+/* Verification status badges */
+.wgdp-vstatus--pending {
+    background: #fef8e7;
+    color: #996800;
+}
+
+.wgdp-vstatus--verified {
+    background: #e7f5fe;
+    color: #2271b1;
+}
+
+.wgdp-vstatus--expired {
+    background: #f0f0f1;
+    color: #787c82;
+}
+
+/* Grant status badges */
+.wgdp-gstatus--pending {
+    background: #fef8e7;
+    color: #996800;
+}
+
+.wgdp-gstatus--granted {
+    background: #edfaef;
+    color: #00a32a;
+}
+
+.wgdp-gstatus--error {
+    background: #fcecec;
+    color: #d63638;
+}
+
+.wgdp-gstatus--revoked {
+    background: #fef4e6;
+    color: #996800;
+}
+
+/* Order meta box recipients table */
+.wgdp-recipients-table {
+    font-size: 13px;
+}
+
+.wgdp-recipients-table th,
+.wgdp-recipients-table td {
+    padding: 6px 8px;
+}
+
+.wgdp-recipients-table .button-small {
+    margin-right: 4px;
+}
+
+/* Orders list Drive column */
+.column-wgdp_drive {
+    width: 50px;
+    text-align: center;
+}
+
+.wgdp-column-icon {
+    font-size: 16px;
+}
+
+.wgdp-column-icon--ok {
+    color: #00a32a;
+}
+
+.wgdp-column-icon--warning {
+    color: #d63638;
+}
+
+.wgdp-column-icon--pending {
+    color: #dba617;
+}
+
+.wgdp-column-icon--none {
+    color: #c3c4c7;
+}
+
+.wgdp-column-icon--revoked {
+    color: #996800;
+}
+
+/* Dashboard widget */
+.wgdp-widget-counts {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.wgdp-widget-count {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 3px;
+    font-size: 13px;
+}
+
+.wgdp-widget-count--granted {
+    background: #edfaef;
+    color: #00a32a;
+}
+
+.wgdp-widget-count--failed {
+    background: #fcecec;
+    color: #d63638;
+}
+
+.wgdp-widget-count--pending {
+    background: #fef8e7;
+    color: #996800;
+}
+
+.wgdp-widget-count--revoked {
+    background: #fef4e6;
+    color: #996800;
+}
+
+.wgdp-widget-failures h4 {
+    margin: 12px 0 6px;
+    font-size: 13px;
+}
+
+.wgdp-widget-failures ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.wgdp-widget-failures li {
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f0f1;
+    font-size: 13px;
+}
+
+.wgdp-widget-failures li:last-child {
+    border-bottom: none;
+}
+
+.wgdp-widget-failures small {
+    color: #787c82;
+}
+
+.wgdp-widget-footer {
+    margin-top: 12px;
+    text-align: right;
+}
+
+/* Pending release badge */
+.wgdp-gstatus--pending_release {
+    background: #e7f5fe;
+    color: #2271b1;
+}
+
+/* Pending release summary card */
+.wgdp-summary-card--pending-release {
+    border-top-color: #2271b1;
+}
+
+.wgdp-summary-card--pending-release .wgdp-summary-count {
+    color: #2271b1;
+}
+
+/* Pending release dashboard widget count */
+.wgdp-widget-count--pending-release {
+    background: #e7f5fe;
+    color: #2271b1;
+}
+
+/* Release gate status indicators */
+.wgdp-release-gate-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.wgdp-release-gate-status--released {
+    background: #edfaef;
+    color: #00a32a;
+}
+
+.wgdp-release-gate-status--pending {
+    background: #fef8e7;
+    color: #996800;
+}
+
+/* Conditional visibility for min sales fields */
+.wgdp-show-if-min-sales {
+    /* toggled via JS */
+}
+
+/* =====================================================
+ * Access Manager: Clickable summary cards
+ * ===================================================== */
+
+a.wgdp-summary-card {
+    text-decoration: none;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+    cursor: pointer;
+    display: block;
+}
+
+a.wgdp-summary-card:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    transform: translateY(-1px);
+}
+
+a.wgdp-summary-card:focus {
+    outline: 2px solid #2271b1;
+    outline-offset: 2px;
+}
+
+.wgdp-summary-card--active {
+    box-shadow: 0 0 0 2px #2271b1;
+}
+
+/* Missing email card */
+.wgdp-summary-card--missing-email {
+    border-top-color: #d63638;
+}
+
+.wgdp-summary-card--missing-email .wgdp-summary-count {
+    color: #d63638;
+}
+
+/* =====================================================
+ * Access Manager: Inline email edit
+ * ===================================================== */
+
+.wgdp-am-email-edit {
+    white-space: nowrap;
+}
+
+.wgdp-am-email-input {
+    vertical-align: middle;
+}
+
+.wgdp-am-email-edit .button-small {
+    vertical-align: middle;
+    margin-left: 4px;
+}
+
+/* =====================================================
+ * Access Manager: Verify result badge
+ * ===================================================== */
+
+.wgdp-am-verify-result {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.5;
+}
+
+.wgdp-verify-confirmed {
+    background: #edfaef;
+    color: #00a32a;
+}
+
+.wgdp-verify-missing {
+    background: #fcecec;
+    color: #d63638;
+}
+
+.wgdp-verify-error,
+.wgdp-verify-no_permission {
+    background: #fef8e7;
+    color: #996800;
+}
+
+/* =====================================================
+ * Access Manager: Assign form (missing email mode)
+ * ===================================================== */
+
+.wgdp-am-assign-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wgdp-am-assign-email-input {
+    vertical-align: middle;
+}
