@@ -16,6 +16,7 @@ class WGDP_Admin {
 		add_action( 'admin_menu', array( $this, 'add_menu_page' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_notices', array( $this, 'maybe_show_setup_notice' ) );
+		add_action( 'admin_notices', array( $this, 'maybe_show_token_error_notice' ) );
 		add_action( 'wp_ajax_wgdp_dismiss_setup_notice', array( $this, 'dismiss_setup_notice' ) );
 
 		// Access Manager AJAX handlers.
@@ -207,6 +208,7 @@ class WGDP_Admin {
 					<li>Select <strong>Web application</strong> as the application type.</li>
 					<li>Under <strong>Authorized redirect URIs</strong>, add: <code><?php echo esc_html( $auth->get_redirect_uri() ); ?></code></li>
 					<li>Click <strong>Create</strong>. Copy the <strong>Client ID</strong> and <strong>Client Secret</strong>.</li>
+					<li><strong>Important:</strong> Go to <strong>APIs &amp; Services &rarr; OAuth consent screen</strong> and click <strong>"Publish App"</strong> to move from Testing to Production. Testing-mode refresh tokens expire after 7 days, breaking automatic token renewal.</li>
 				</ol>
 			</details>
 
@@ -586,6 +588,38 @@ class WGDP_Admin {
 		$table->search_box( 'Search', 'wgdp-am-search' );
 		$table->display();
 		echo '</form>';
+	}
+
+	/**
+	 * Show an admin notice when a Google account's refresh token has expired or been revoked.
+	 */
+	public function maybe_show_token_error_notice() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			return;
+		}
+
+		$auth     = WGDP_Google_Auth::instance();
+		$accounts = $auth->get_accounts();
+		$errors   = array();
+
+		foreach ( array_keys( $accounts ) as $account_id ) {
+			$error = get_transient( 'wgdp_token_error_' . $account_id );
+			if ( $error ) {
+				$errors[] = $error;
+			}
+		}
+
+		if ( empty( $errors ) ) {
+			return;
+		}
+
+		$settings_url = admin_url( 'admin.php?page=wgdp&tab=settings' );
+		echo '<div class="notice notice-error">';
+		echo '<p><strong>Woo GDrive Permission:</strong> A Google account authorization has expired or been revoked. ';
+		echo 'Drive access grants will fail until you <a href="' . esc_url( $settings_url ) . '">disconnect and reconnect the account</a>.</p>';
+		echo '<p class="description">If this keeps happening, make sure your Google Cloud OAuth app is <strong>published</strong> (not in "Testing" mode) &mdash; ';
+		echo 'testing-mode refresh tokens expire after 7 days.</p>';
+		echo '</div>';
 	}
 
 	/**

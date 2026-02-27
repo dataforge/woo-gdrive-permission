@@ -331,10 +331,8 @@ class WGDP_Product_Meta {
 			return;
 		}
 
-		// Verify WooCommerce variation nonce (defense-in-depth; WC checks this upstream).
-		if ( ! isset( $_POST['woocommerce_meta_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['woocommerce_meta_nonce'] ) ), 'woocommerce_save_data' ) ) {
-			return;
-		}
+		// WooCommerce verifies nonces upstream before firing this hook
+		// (woocommerce_meta_nonce for full saves, security nonce for AJAX saves).
 
 		if ( ! isset( $_POST['wgdp_var'][ $loop ] ) ) {
 			return;

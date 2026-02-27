@@ -52,7 +52,8 @@ class WGDP_Google_Drive {
 			);
 		}
 
-		$token = WGDP_Google_Auth::instance()->get_access_token( $account_id );
+		$auth  = WGDP_Google_Auth::instance();
+		$token = $auth->get_access_token( $account_id );
 		if ( is_wp_error( $token ) ) {
 			return $token;
 		}
@@ -68,15 +69,33 @@ class WGDP_Google_Drive {
 
 		unset( $args['method'] );
 
-		if ( 'GET' === $method ) {
-			$response = wp_remote_get( $url, $args );
-		} elseif ( 'POST' === $method ) {
-			$response = wp_remote_post( $url, $args );
-		} else {
-			$response = wp_remote_request( $url, array_merge( $args, array( 'method' => $method ) ) );
+		$response = $this->dispatch( $method, $url, $args );
+
+		// On 401, clear cached token and retry once with a fresh token.
+		if ( ! is_wp_error( $response ) && 401 === wp_remote_retrieve_response_code( $response ) ) {
+			delete_transient( 'wgdp_access_token_' . $account_id );
+			$token = $auth->get_access_token( $account_id );
+			if ( is_wp_error( $token ) ) {
+				return $token;
+			}
+			$args['headers']['Authorization'] = 'Bearer ' . $token;
+			$response = $this->dispatch( $method, $url, $args );
 		}
 
 		return $response;
+	}
+
+	/**
+	 * Dispatch an HTTP request by method.
+	 */
+	private function dispatch( $method, $url, $args ) {
+		if ( 'GET' === $method ) {
+			return wp_remote_get( $url, $args );
+		}
+		if ( 'POST' === $method ) {
+			return wp_remote_post( $url, $args );
+		}
+		return wp_remote_request( $url, array_merge( $args, array( 'method' => $method ) ) );
 	}
 
 	/**

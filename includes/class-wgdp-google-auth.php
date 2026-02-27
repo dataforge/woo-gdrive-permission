@@ -103,6 +103,14 @@ class WGDP_Google_Auth {
 
 		if ( $code !== 200 || empty( $body['access_token'] ) ) {
 			$error_msg = $body['error_description'] ?? ( $body['error'] ?? 'Unknown error refreshing token.' );
+
+			// Flag the account for an admin notice when the refresh token is permanently dead.
+			$error_lower = strtolower( $error_msg );
+			if ( false !== strpos( $error_lower, 'expired' ) || false !== strpos( $error_lower, 'revoked' ) ) {
+				$email = $accounts[ $account_id ]['email'] ?? $account_id;
+				set_transient( 'wgdp_token_error_' . $account_id, $email . ': ' . $error_msg, DAY_IN_SECONDS );
+			}
+
 			return new WP_Error( 'wgdp_token_error', $error_msg );
 		}
 
@@ -226,6 +234,7 @@ class WGDP_Google_Auth {
 			return null;
 		} );
 		delete_transient( 'wgdp_access_token_' . $account_id );
+		delete_transient( 'wgdp_token_error_' . $account_id );
 	}
 
 	/**
