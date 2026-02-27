@@ -290,7 +290,7 @@ class WGDP_Google_Auth {
 				'type'             => $account['type'] ?? 'google_drive',
 				'label'            => $account['label'] ?? '',
 				'email'            => $account['email'] ?? '',
-				'root_folder_id'   => $account['root_folder_id'] ?? ( $account['drive_id'] ?? '' ),
+				'root_folder_id'   => $account['root_folder_id'] ?? '',
 				'root_folder_name' => $account['root_folder_name'] ?? '',
 			);
 		}
@@ -310,7 +310,7 @@ class WGDP_Google_Auth {
 			'type'             => $account['type'] ?? 'google_drive',
 			'label'            => $account['label'] ?? '',
 			'email'            => $account['email'] ?? '',
-			'root_folder_id'   => $account['root_folder_id'] ?? ( $account['drive_id'] ?? '' ),
+			'root_folder_id'   => $account['root_folder_id'] ?? '',
 			'root_folder_name' => $account['root_folder_name'] ?? '',
 		);
 	}
@@ -339,8 +339,6 @@ class WGDP_Google_Auth {
 			}
 			$accounts[ $account_id ]['root_folder_id']   = $folder_id;
 			$accounts[ $account_id ]['root_folder_name'] = $folder_name;
-			// Clear legacy drive_id if present.
-			unset( $accounts[ $account_id ]['drive_id'] );
 			return $accounts;
 		} );
 		return ! is_wp_error( $result ) && null !== $result;

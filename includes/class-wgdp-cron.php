@@ -38,6 +38,8 @@ class WGDP_Cron {
 			$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row );
 			if ( is_wp_error( $result ) ) {
 				$ent->mark_error( $row['id'], $result->get_error_message() );
+			} else {
+				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 			}
 		}
 
@@ -70,6 +72,7 @@ class WGDP_Cron {
 				$drive_link    = WGDP_Google_Drive::build_web_link( $row['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
 				$product_name  = $this->get_product_name( $row );
 				WGDP_Notification_Email::send_access_granted( $row['recipient_email'], $drive_link, $product_name, $resource_type );
+				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 				continue;
 			}
 
@@ -102,6 +105,8 @@ class WGDP_Cron {
 					$row['id']
 				) );
 			}
+
+			WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 		}
 
 		delete_transient( 'wgdp_permission_counts' );

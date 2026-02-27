@@ -54,6 +54,7 @@ class WGDP_Product_Meta {
 		$resource_name = get_post_meta( $product_id, '_wgdp_drive_resource_name', true );
 		$account_id    = get_post_meta( $product_id, '_wgdp_account_id', true );
 
+		$ent_trigger    = get_post_meta( $product_id, '_wgdp_entitlement_trigger', true ) ?: 'default';
 		$release_mode  = get_post_meta( $product_id, '_wgdp_release_mode', true ) ?: 'immediate';
 		$threshold_qty = (int) get_post_meta( $product_id, '_wgdp_threshold_qty', true );
 		$paid_qty      = (int) get_post_meta( $product_id, '_wgdp_paid_qty_total', true );
@@ -77,6 +78,22 @@ class WGDP_Product_Meta {
 				<p class="form-field">
 					<label>&nbsp;</label>
 					<span class="description"><?php esc_html_e( 'Controls when buyers receive Google Drive access. This applies across all variations.', 'woo-gdrive-permission' ); ?></span>
+				</p>
+
+				<p class="form-field">
+					<label for="_wgdp_entitlement_trigger"><?php esc_html_e( 'Entitlement Trigger', 'woo-gdrive-permission' ); ?></label>
+					<?php
+					$global_trigger       = get_option( 'wgdp_entitlement_trigger', 'on_payment' );
+					$global_trigger_label = 'on_completion' === $global_trigger
+						? __( 'On Completion', 'woo-gdrive-permission' )
+						: __( 'On Payment', 'woo-gdrive-permission' );
+					?>
+					<select id="_wgdp_entitlement_trigger" name="_wgdp_entitlement_trigger" class="short">
+						<?php /* translators: %s: current global trigger setting name */ ?>
+						<option value="default" <?php selected( $ent_trigger, 'default' ); ?>><?php printf( esc_html__( 'System Default, Currently: %s', 'woo-gdrive-permission' ), esc_html( $global_trigger_label ) ); ?></option>
+						<option value="on_payment" <?php selected( $ent_trigger, 'on_payment' ); ?>><?php esc_html_e( 'On Payment', 'woo-gdrive-permission' ); ?></option>
+						<option value="on_completion" <?php selected( $ent_trigger, 'on_completion' ); ?>><?php esc_html_e( 'On Completion', 'woo-gdrive-permission' ); ?></option>
+					</select>
 				</p>
 
 				<p class="form-field">
@@ -239,6 +256,14 @@ class WGDP_Product_Meta {
 			}
 		}
 
+		// Entitlement trigger.
+		if ( isset( $_POST['_wgdp_entitlement_trigger'] ) ) {
+			$trigger = sanitize_text_field( wp_unslash( $_POST['_wgdp_entitlement_trigger'] ) );
+			if ( in_array( $trigger, array( 'default', 'on_payment', 'on_completion' ), true ) ) {
+				update_post_meta( $post_id, '_wgdp_entitlement_trigger', $trigger );
+			}
+		}
+
 		// Release gate fields.
 		if ( isset( $_POST['_wgdp_release_mode'] ) ) {
 			$mode = sanitize_text_field( wp_unslash( $_POST['_wgdp_release_mode'] ) );
@@ -260,13 +285,8 @@ class WGDP_Product_Meta {
 		$resource_type   = get_post_meta( $variation_id, '_wgdp_drive_resource_type', true );
 		$resource_name   = get_post_meta( $variation_id, '_wgdp_drive_resource_name', true );
 		$account_id      = get_post_meta( $variation_id, '_wgdp_account_id', true );
-		$includes_digital = get_post_meta( $variation_id, '_wgdp_includes_digital', true );
-
-		// Backward compat: if includes_digital was never set, infer from legacy format_type.
-		if ( '' === $includes_digital ) {
-			$format_type = get_post_meta( $variation_id, '_wgdp_format_type', true );
-			$includes_digital = ( empty( $format_type ) || 'digital_only' === $format_type ) ? 'yes' : 'no';
-		}
+		$includes_digital  = get_post_meta( $variation_id, '_wgdp_includes_digital', true ) ?: 'yes';
+		$requires_shipping = get_post_meta( $variation_id, '_wgdp_requires_shipping', true );
 
 		$name_prefix = 'wgdp_var[' . $loop . ']';
 
@@ -282,7 +302,20 @@ class WGDP_Product_Meta {
 		echo esc_html__( 'Includes Digital Access', 'woo-gdrive-permission' );
 		echo '</label>';
 		echo '<br><span class="description">'
-			. esc_html__( 'Enable this if purchasing this variation should grant the buyer Google Drive access. Leave unchecked for physical-only variations that do not include digital content.', 'woo-gdrive-permission' )
+			. esc_html__( 'Grants the buyer Google Drive access when they purchase this variation. Timing is controlled by the trigger and release settings in the product\'s GDrive tab.', 'woo-gdrive-permission' )
+			. '</span>';
+		echo '</p>';
+
+		// Requires shipping checkbox.
+		echo '<p class="form-row form-row-full">';
+		echo '<label>';
+		echo '<input type="hidden" name="' . esc_attr( $name_prefix . '[_wgdp_requires_shipping]' ) . '" value="no" />';
+		echo '<input type="checkbox" name="' . esc_attr( $name_prefix . '[_wgdp_requires_shipping]' ) . '" value="yes"'
+			. checked( '' === $requires_shipping || 'yes' === $requires_shipping, true, false ) . ' /> ';
+		echo esc_html__( 'Requires Shipping', 'woo-gdrive-permission' );
+		echo '</label>';
+		echo '<br><span class="description">'
+			. esc_html__( 'This variation includes a physical item (e.g. DVD, Blu-ray). Uncheck for digital-only variations — orders with only digital items will auto-complete once access is granted.', 'woo-gdrive-permission' )
 			. '</span>';
 		echo '</p>';
 
@@ -330,6 +363,12 @@ class WGDP_Product_Meta {
 			$val = sanitize_text_field( $data['_wgdp_includes_digital'] );
 			update_post_meta( $variation_id, '_wgdp_includes_digital', 'yes' === $val ? 'yes' : 'no' );
 		}
+
+		// Requires shipping.
+		if ( isset( $data['_wgdp_requires_shipping'] ) ) {
+			$val = sanitize_text_field( $data['_wgdp_requires_shipping'] );
+			update_post_meta( $variation_id, '_wgdp_requires_shipping', 'yes' === $val ? 'yes' : 'no' );
+		}
 	}
 
 	/**
@@ -357,16 +396,9 @@ class WGDP_Product_Meta {
 			return true;
 		}
 
-		// Check includes_digital flag.
+		// Check includes_digital flag (defaults to yes if never set).
 		$includes_digital = get_post_meta( $variation_id, '_wgdp_includes_digital', true );
-
-		// Backward compat: if never explicitly set, infer from legacy format_type.
-		if ( '' === $includes_digital ) {
-			$format_type = get_post_meta( $variation_id, '_wgdp_format_type', true );
-			return empty( $format_type ) || 'digital_only' === $format_type;
-		}
-
-		return 'yes' === $includes_digital;
+		return '' === $includes_digital || 'yes' === $includes_digital;
 	}
 
 	/**
@@ -382,6 +414,34 @@ class WGDP_Product_Meta {
 			$account_id = get_post_meta( $product_id, '_wgdp_account_id', true );
 		}
 		return $account_id;
+	}
+
+	/**
+	 * Get the effective entitlement trigger for a product.
+	 * Returns 'on_payment' or 'on_completion'.
+	 */
+	public static function get_entitlement_trigger( $product_id ) {
+		$product_setting = get_post_meta( $product_id, '_wgdp_entitlement_trigger', true );
+		if ( ! empty( $product_setting ) && 'default' !== $product_setting ) {
+			return $product_setting;
+		}
+		return get_option( 'wgdp_entitlement_trigger', 'on_payment' );
+	}
+
+	/**
+	 * Check if an order item requires physical shipping.
+	 *
+	 * Simple products with a Drive resource are treated as digital-only.
+	 * Variations default to requiring shipping unless explicitly set to 'no'.
+	 */
+	public static function item_requires_shipping( $product_id, $variation_id = 0 ) {
+		if ( ! $variation_id ) {
+			// Simple product with a Drive resource is digital-only.
+			return false;
+		}
+		$val = get_post_meta( $variation_id, '_wgdp_requires_shipping', true );
+		// Default to yes (requires shipping) if never set.
+		return '' === $val || 'yes' === $val;
 	}
 
 	/**

@@ -184,6 +184,9 @@ class WGDP_Claim_Page {
 				$refreshed = $ent->get( $result['entitlement']['id'] );
 				$drive_link = $this->get_drive_link( $refreshed );
 				$this->post_result = $this->wrap_content( $this->success_content( $drive_link, $refreshed ) );
+
+				// Check if the order can be auto-completed now.
+				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $result['entitlement']['order_id'] );
 			}
 		} else {
 			$this->post_result = $this->wrap_content( $this->form_content( $token, $result['error'], $result['entitlement'] ) );

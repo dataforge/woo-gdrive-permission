@@ -516,6 +516,17 @@ class WGDP_Admin {
 				'default' => 'no',
 			),
 			array(
+				'title'    => __( 'Entitlement Trigger', 'woo-gdrive-permission' ),
+				'desc'     => __( 'When entitlements are created for new orders. Per-product overrides can be set in the product GDrive tab.', 'woo-gdrive-permission' ),
+				'id'       => 'wgdp_entitlement_trigger',
+				'type'     => 'select',
+				'default'  => 'on_payment',
+				'options'  => array(
+					'on_payment'    => __( 'On Payment (Processing)', 'woo-gdrive-permission' ),
+					'on_completion' => __( 'On Completion', 'woo-gdrive-permission' ),
+				),
+			),
+			array(
 				'title'       => __( 'Claim Page Slug', 'woo-gdrive-permission' ),
 				'desc'        => __( 'The URL slug for the recipient verification page. Change requires saving and flushing permalinks.', 'woo-gdrive-permission' ),
 				'id'          => 'wgdp_claim_page_slug',

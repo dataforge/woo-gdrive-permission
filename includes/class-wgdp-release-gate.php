@@ -117,6 +117,7 @@ class WGDP_Release_Gate {
 		$ent        = WGDP_Entitlements::instance();
 		$iterations = 0;
 		$max_iterations = 50; // Safety limit: 50 batches × 100 = 5,000 entitlements max per call.
+		$order_ids_to_check = array();
 
 		// Process in batches of 100 until none remain.
 		do {
@@ -126,6 +127,8 @@ class WGDP_Release_Gate {
 				$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row );
 				if ( is_wp_error( $result ) ) {
 					$ent->mark_error( $row['id'], $result->get_error_message() );
+				} else {
+					$order_ids_to_check[ $row['order_id'] ] = true;
 				}
 			}
 
@@ -134,6 +137,12 @@ class WGDP_Release_Gate {
 				break;
 			}
 		} while ( count( $rows ) >= 100 );
+
+		// Check auto-complete for all affected orders.
+		$handler = WGDP_Order_Handler::instance();
+		foreach ( array_keys( $order_ids_to_check ) as $oid ) {
+			$handler->maybe_auto_complete_order( $oid );
+		}
 
 		delete_transient( 'wgdp_permission_counts' );
 	}
@@ -146,26 +155,14 @@ class WGDP_Release_Gate {
 
 		$total = 0;
 
-		// Query all orders that have _wgdp_qty_counted flag.
+		// Query all orders that have been counted.
 		$order_ids = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			"SELECT DISTINCT om.order_id
 			 FROM {$wpdb->prefix}wc_orders_meta om
 			 INNER JOIN {$wpdb->prefix}wc_orders o ON o.id = om.order_id
-			 WHERE om.meta_key = '_wgdp_qty_counted'
+			 WHERE om.meta_key = '_wgdp_qty_counted_items'
 			   AND o.status IN ('wc-processing', 'wc-completed')"
 		);
-
-		if ( empty( $order_ids ) ) {
-			// Try legacy postmeta approach.
-			$order_ids = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-				"SELECT DISTINCT p.ID
-				 FROM {$wpdb->posts} p
-				 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-				 WHERE pm.meta_key = '_wgdp_qty_counted'
-				   AND p.post_type = 'shop_order'
-				   AND p.post_status IN ('wc-processing', 'wc-completed')"
-			);
-		}
 
 		foreach ( $order_ids as $order_id ) {
 			$order = wc_get_order( $order_id );

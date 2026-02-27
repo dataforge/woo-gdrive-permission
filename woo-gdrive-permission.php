@@ -73,12 +73,6 @@ add_action( 'plugins_loaded', function () {
 	// DB upgrade check.
 	WGDP_DB::maybe_upgrade();
 
-	// One-time flush of stale rewrite rules from pre-3.3.0 (rewrite rules replaced by real pages).
-	if ( version_compare( get_option( 'wgdp_version', '0' ), '3.3.0', '<' ) ) {
-		flush_rewrite_rules();
-		update_option( 'wgdp_version', WGDP_VERSION );
-	}
-
 	// Instantiate singletons.
 	WGDP_Google_Auth::instance();
 	WGDP_Google_Drive::instance();

@@ -39,17 +39,18 @@ class WGDP_Order_Handler {
 		// Admin assets on order screens.
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_order_assets' ) );
 
-		// Orders list column — HPOS.
+		// Orders list column (HPOS).
 		add_filter( 'manage_woocommerce_page_wc-orders_columns', array( $this, 'add_orders_column' ) );
 		add_action( 'manage_woocommerce_page_wc-orders_custom_column', array( $this, 'render_orders_column' ), 10, 2 );
-
-		// Orders list column — legacy.
-		add_filter( 'manage_edit-shop_order_columns', array( $this, 'add_orders_column' ) );
-		add_action( 'manage_shop_order_posts_custom_column', array( $this, 'render_orders_column_legacy' ), 10, 2 );
 	}
 
 	/**
 	 * Create entitlements and send OTP emails for an order.
+	 *
+	 * Trigger-aware: detects whether this is a processing or completed event
+	 * and only creates entitlements for items whose trigger matches.
+	 * On completed, also processes on_payment items as fallback for orders
+	 * that skip processing.
 	 */
 	public function create_entitlements( $order_id ) {
 		$order = wc_get_order( $order_id );
@@ -57,21 +58,31 @@ class WGDP_Order_Handler {
 			return;
 		}
 
+		// Detect trigger event from current action.
+		$current = current_action();
+		if ( 'woocommerce_order_status_completed' === $current ) {
+			$current_event = 'on_completion';
+		} else {
+			$current_event = 'on_payment';
+		}
+
 		$ent  = WGDP_Entitlements::instance();
 		$otp  = WGDP_OTP::instance();
 		$auth = WGDP_Google_Auth::instance();
 
-		// Bail if entitlements already exist for this order.
-		$existing = $ent->get_by_order( $order_id );
-		if ( ! empty( $existing ) ) {
-			return;
-		}
-
 		$has_drive_items = false;
+		$created_any     = false;
 
 		foreach ( $order->get_items() as $item ) {
 			$product_id   = $item->get_product_id();
 			$variation_id = $item->get_variation_id();
+			$order_item_id = $item->get_id();
+
+			// Skip if entitlements already exist for this item.
+			$existing_for_item = $ent->get_by_order_item( $order_item_id );
+			if ( ! empty( $existing_for_item ) ) {
+				continue;
+			}
 
 			// Get recipients from item meta.
 			$recipients_json = $item->get_meta( '_wgdp_recipients' );
@@ -86,6 +97,18 @@ class WGDP_Order_Handler {
 			// Check if this item qualifies for digital entitlement.
 			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
 				continue;
+			}
+
+			// Per-item trigger check.
+			$item_trigger = WGDP_Product_Meta::get_entitlement_trigger( $product_id );
+			if ( 'on_payment' === $current_event && 'on_completion' === $item_trigger ) {
+				// This item wants completion, but we're on processing — skip.
+				continue;
+			}
+			if ( 'on_completion' === $current_event && 'on_payment' === $item_trigger ) {
+				// Fallback: on_payment items that weren't created during processing
+				// (e.g. order skipped processing) — allow creation on completed.
+				// Already handled by the existing-for-item check above.
 			}
 
 			// Fetch resource ID for the entitlement row.
@@ -117,7 +140,7 @@ class WGDP_Order_Handler {
 
 				$entitlement_id = $ent->create( array(
 					'order_id'       => $order_id,
-					'order_item_id'  => $item->get_id(),
+					'order_item_id'  => $order_item_id,
 					'product_id'     => $product_id,
 					'variation_id'   => $variation_id ?: 0,
 					'cloud_asset_id' => $resource_id,
@@ -136,16 +159,19 @@ class WGDP_Order_Handler {
 						$item->get_name(),
 						$entitlement_id
 					) );
+					$created_any = true;
 				}
 			}
 		}
 
-		if ( $has_drive_items ) {
+		if ( $has_drive_items && ! $order->get_meta( '_wgdp_has_drive_items' ) ) {
 			$order->update_meta_data( '_wgdp_has_drive_items', '1' );
 			$order->save();
 		}
 
-		delete_transient( 'wgdp_permission_counts' );
+		if ( $created_any ) {
+			delete_transient( 'wgdp_permission_counts' );
+		}
 	}
 
 	/**
@@ -199,12 +225,24 @@ class WGDP_Order_Handler {
 			$order->add_order_note( 'WGDP: All entitlements revoked.' );
 		}
 
-		// Decrement sales counter if order was previously counted.
-		if ( $order->get_meta( '_wgdp_qty_counted' ) ) {
+		// Decrement sales counter for previously counted items.
+		$counted_json = $order->get_meta( '_wgdp_qty_counted_items' );
+		$counted_ids  = ! empty( $counted_json ) ? json_decode( $counted_json, true ) : array();
+		if ( ! is_array( $counted_ids ) ) {
+			$counted_ids = array();
+		}
+
+		if ( ! empty( $counted_ids ) ) {
 			$deltas = array();
 			foreach ( $order->get_items() as $item ) {
-				$product_id   = $item->get_product_id();
-				$variation_id = $item->get_variation_id();
+				$product_id    = $item->get_product_id();
+				$variation_id  = $item->get_variation_id();
+				$order_item_id = $item->get_id();
+
+				if ( ! in_array( $order_item_id, $counted_ids, true ) ) {
+					continue;
+				}
+
 				if ( WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
 					if ( ! isset( $deltas[ $product_id ] ) ) {
 						$deltas[ $product_id ] = 0;
@@ -215,7 +253,7 @@ class WGDP_Order_Handler {
 			foreach ( $deltas as $pid => $qty ) {
 				WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
 			}
-			$order->delete_meta_data( '_wgdp_qty_counted' );
+			$order->delete_meta_data( '_wgdp_qty_counted_items' );
 			$order->save();
 		}
 
@@ -269,7 +307,10 @@ class WGDP_Order_Handler {
 			// Decrement sales counter for qualifying refunded items.
 			$product_id   = $order_item->get_product_id();
 			$variation_id = $order_item->get_variation_id();
-			if ( $order->get_meta( '_wgdp_qty_counted' ) && WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+			$cj  = $order->get_meta( '_wgdp_qty_counted_items' );
+			$cis = ! empty( $cj ) ? json_decode( $cj, true ) : array();
+			$item_was_counted = is_array( $cis ) && in_array( (int) $order_item_id, $cis, true );
+			if ( $item_was_counted && WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
 				if ( ! isset( $counter_deltas[ $product_id ] ) ) {
 					$counter_deltas[ $product_id ] = 0;
 				}
@@ -336,7 +377,9 @@ class WGDP_Order_Handler {
 
 	/**
 	 * Update the sales counter for qualifying items in an order.
-	 * Guarded by _wgdp_qty_counted to prevent double-counting (processing→completed).
+	 *
+	 * Uses per-item tracking via _wgdp_qty_counted_items (JSON array of item IDs)
+	 * to prevent double-counting while supporting per-item trigger timing.
 	 */
 	public function update_sales_counter( $order_id ) {
 		$order = wc_get_order( $order_id );
@@ -344,18 +387,41 @@ class WGDP_Order_Handler {
 			return;
 		}
 
-		// Guard: already counted.
-		if ( $order->get_meta( '_wgdp_qty_counted' ) ) {
-			return;
+		// Detect trigger event from current action.
+		$current = current_action();
+		if ( 'woocommerce_order_status_completed' === $current ) {
+			$current_event = 'on_completion';
+		} else {
+			$current_event = 'on_payment';
 		}
 
-		$deltas = array();
+		// Load already-counted item IDs.
+		$counted_json = $order->get_meta( '_wgdp_qty_counted_items' );
+		$counted_ids  = ! empty( $counted_json ) ? json_decode( $counted_json, true ) : array();
+		if ( ! is_array( $counted_ids ) ) {
+			$counted_ids = array();
+		}
+
+		$deltas      = array();
+		$new_counted = array();
 
 		foreach ( $order->get_items() as $item ) {
-			$product_id   = $item->get_product_id();
-			$variation_id = $item->get_variation_id();
+			$product_id    = $item->get_product_id();
+			$variation_id  = $item->get_variation_id();
+			$order_item_id = $item->get_id();
+
+			// Skip if already counted.
+			if ( in_array( $order_item_id, $counted_ids, true ) ) {
+				continue;
+			}
 
 			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+				continue;
+			}
+
+			// Per-item trigger check (same logic as create_entitlements).
+			$item_trigger = WGDP_Product_Meta::get_entitlement_trigger( $product_id );
+			if ( 'on_payment' === $current_event && 'on_completion' === $item_trigger ) {
 				continue;
 			}
 
@@ -363,6 +429,7 @@ class WGDP_Order_Handler {
 				$deltas[ $product_id ] = 0;
 			}
 			$deltas[ $product_id ] += $item->get_quantity();
+			$new_counted[]          = $order_item_id;
 		}
 
 		if ( empty( $deltas ) ) {
@@ -373,8 +440,65 @@ class WGDP_Order_Handler {
 			WGDP_Release_Gate::increment_paid_qty( $pid, $qty );
 		}
 
-		$order->update_meta_data( '_wgdp_qty_counted', '1' );
+		$counted_ids = array_merge( $counted_ids, $new_counted );
+		$order->update_meta_data( '_wgdp_qty_counted_items', wp_json_encode( $counted_ids ) );
 		$order->save();
+	}
+
+	/**
+	 * Auto-complete a digital-only order if all entitlements are granted.
+	 *
+	 * Checks that every item in the order is digital-only (no shipping needed)
+	 * and all entitlements have been granted before marking the order as completed.
+	 */
+	public function maybe_auto_complete_order( $order_id ) {
+		$order = wc_get_order( $order_id );
+		if ( ! $order ) {
+			return;
+		}
+
+		// Only auto-complete orders that are currently processing.
+		if ( 'processing' !== $order->get_status() ) {
+			return;
+		}
+
+		$ent = WGDP_Entitlements::instance();
+
+		foreach ( $order->get_items() as $item ) {
+			$product_id   = $item->get_product_id();
+			$variation_id = $item->get_variation_id();
+
+			$qualifies = WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 );
+
+			if ( $qualifies ) {
+				// Item has digital access — check if it also needs shipping.
+				if ( WGDP_Product_Meta::item_requires_shipping( $product_id, $variation_id ?: 0 ) ) {
+					// Physical + digital item (e.g. DVD with digital) — order needs shipping.
+					return;
+				}
+
+				// Digital-only — verify all entitlements for this item are granted.
+				$item_entitlements = $ent->get_by_order_item( $item->get_id() );
+				if ( empty( $item_entitlements ) ) {
+					// No entitlements yet (might not be created) — not ready.
+					return;
+				}
+				foreach ( $item_entitlements as $e ) {
+					if ( 'revoked' === $e['grant_status'] ) {
+						continue; // Revoked entitlements don't block completion.
+					}
+					if ( 'granted' !== $e['grant_status'] ) {
+						return; // Not yet granted.
+					}
+				}
+			} else {
+				// Non-digital item — order needs shipping.
+				return;
+			}
+		}
+
+		// All items are digital-only and all entitlements granted.
+		$order->update_status( 'completed', 'WGDP: Auto-completed — all digital entitlements granted.' );
 	}
 
 	/**
@@ -415,15 +539,6 @@ class WGDP_Order_Handler {
 			'default'
 		);
 
-		// Legacy screen.
-		add_meta_box(
-			'wgdp-recipients',
-			'GDrive Digital Recipients',
-			array( $this, 'render_meta_box_legacy' ),
-			'shop_order',
-			'normal',
-			'default'
-		);
 	}
 
 	/**
@@ -431,17 +546,6 @@ class WGDP_Order_Handler {
 	 */
 	public function render_meta_box( $post_or_order ) {
 		$order = $post_or_order instanceof WC_Order ? $post_or_order : wc_get_order( $post_or_order->ID );
-		if ( ! $order ) {
-			return;
-		}
-		$this->render_meta_box_content( $order );
-	}
-
-	/**
-	 * Render the meta box (legacy).
-	 */
-	public function render_meta_box_legacy( $post ) {
-		$order = wc_get_order( $post->ID );
 		if ( ! $order ) {
 			return;
 		}
@@ -778,21 +882,6 @@ class WGDP_Order_Handler {
 		if ( is_numeric( $order ) ) {
 			$order = wc_get_order( $order );
 		}
-		if ( ! $order ) {
-			echo '&mdash;';
-			return;
-		}
-		$this->output_drive_column_icon( $order );
-	}
-
-	/**
-	 * Render Drive column (legacy).
-	 */
-	public function render_orders_column_legacy( $column_name, $post_id ) {
-		if ( 'wgdp_drive' !== $column_name ) {
-			return;
-		}
-		$order = wc_get_order( $post_id );
 		if ( ! $order ) {
 			echo '&mdash;';
 			return;
