@@ -7,7 +7,7 @@ class WGDP_Google_Auth {
 
 	const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 	const AUTH_ENDPOINT  = 'https://accounts.google.com/o/oauth2/v2/auth';
-	const SCOPE          = 'https://www.googleapis.com/auth/drive email';
+	const SCOPE          = 'https://www.googleapis.com/auth/drive.file email';
 	const CIPHER         = 'aes-256-cbc';
 
 	public static function instance() {
@@ -21,7 +21,7 @@ class WGDP_Google_Auth {
 		add_action( 'wp_ajax_wgdp_test_connection', array( $this, 'ajax_test_connection' ) );
 		add_action( 'wp_ajax_wgdp_disconnect', array( $this, 'ajax_disconnect' ) );
 		add_action( 'wp_ajax_wgdp_update_account_label', array( $this, 'ajax_update_account_label' ) );
-		add_action( 'wp_ajax_wgdp_update_account_root_folder', array( $this, 'ajax_update_account_root_folder' ) );
+		add_action( 'wp_ajax_wgdp_get_picker_token', array( $this, 'ajax_get_picker_token' ) );
 	}
 
 	/**
@@ -37,7 +37,10 @@ class WGDP_Google_Auth {
 	 */
 	public function is_account_connected( $account_id ) {
 		$accounts = $this->get_all_accounts();
-		return isset( $accounts[ $account_id ] ) && ! empty( $accounts[ $account_id ]['refresh_token'] );
+		if ( ! isset( $accounts[ $account_id ] ) ) {
+			return false;
+		}
+		return ! empty( $accounts[ $account_id ]['refresh_token'] );
 	}
 
 	/**
@@ -51,11 +54,15 @@ class WGDP_Google_Auth {
 		}
 
 		$accounts = $this->get_all_accounts();
-		if ( ! isset( $accounts[ $account_id ] ) || empty( $accounts[ $account_id ]['refresh_token'] ) ) {
+		if ( ! isset( $accounts[ $account_id ] ) ) {
 			return new WP_Error( 'wgdp_not_connected', 'Google account not connected.' );
 		}
 
 		$account = $accounts[ $account_id ];
+
+		if ( empty( $account['refresh_token'] ) ) {
+			return new WP_Error( 'wgdp_not_connected', 'Google account not connected.' );
+		}
 
 		// If we have an access token that hasn't expired, use it.
 		if ( ! empty( $account['access_token'] ) && ! empty( $account['expires_at'] ) && $account['expires_at'] > time() + 60 ) {
@@ -162,11 +169,23 @@ class WGDP_Google_Auth {
 	 */
 	public function handle_callback( $code ) {
 		$client_id     = get_option( 'wgdp_oauth_client_id', '' );
-		$client_secret = $this->decrypt( get_option( 'wgdp_oauth_client_secret', '' ) );
+		$encrypted_raw = get_option( 'wgdp_oauth_client_secret', '' );
+		$client_secret = $this->decrypt( $encrypted_raw );
 
 		if ( empty( $client_id ) || empty( $client_secret ) ) {
-			return new WP_Error( 'wgdp_no_credentials', 'OAuth client credentials not configured.' );
+			$detail = '';
+			if ( empty( $client_id ) ) {
+				$detail .= ' Client ID is empty.';
+			}
+			if ( empty( $encrypted_raw ) ) {
+				$detail .= ' Client Secret was never saved.';
+			} elseif ( empty( $client_secret ) ) {
+				$detail .= ' Client Secret decryption failed — please re-enter and save your secret.';
+			}
+			return new WP_Error( 'wgdp_no_credentials', 'OAuth client credentials not configured.' . $detail );
 		}
+
+		$redirect_uri = $this->get_redirect_uri();
 
 		// HTTP exchange outside the lock.
 		$response = wp_remote_post( self::TOKEN_ENDPOINT, array(
@@ -174,7 +193,7 @@ class WGDP_Google_Auth {
 				'code'          => $code,
 				'client_id'     => $client_id,
 				'client_secret' => $client_secret,
-				'redirect_uri'  => $this->get_redirect_uri(),
+				'redirect_uri'  => $redirect_uri,
 				'grant_type'    => 'authorization_code',
 			),
 			'timeout' => 15,
@@ -189,6 +208,13 @@ class WGDP_Google_Auth {
 
 		if ( $code_resp !== 200 || empty( $body['access_token'] ) ) {
 			$error_msg = $body['error_description'] ?? ( $body['error'] ?? 'Unknown error exchanging code.' );
+			error_log( sprintf(
+				'WGDP OAuth token exchange failed: HTTP %d — %s (redirect_uri: %s, client_id: %s…)',
+				$code_resp,
+				$error_msg,
+				$redirect_uri,
+				substr( $client_id, 0, 12 )
+			) );
 			return new WP_Error( 'wgdp_token_error', $error_msg );
 		}
 
@@ -255,10 +281,8 @@ class WGDP_Google_Auth {
 		}
 
 		$response = wp_remote_get( 'https://www.googleapis.com/drive/v3/files?' . http_build_query( array(
-			'pageSize'                  => 1,
-			'fields'                    => 'files(id,name)',
-			'supportsAllDrives'         => 'true',
-			'includeItemsFromAllDrives' => 'true',
+			'pageSize' => 1,
+			'fields'   => 'files(id,name)',
 		) ), array(
 			'headers' => array( 'Authorization' => 'Bearer ' . $token ),
 			'timeout' => 15,
@@ -296,11 +320,9 @@ class WGDP_Google_Auth {
 		$safe     = array();
 		foreach ( $accounts as $id => $account ) {
 			$safe[ $id ] = array(
-				'type'             => $account['type'] ?? 'google_drive',
-				'label'            => $account['label'] ?? '',
-				'email'            => $account['email'] ?? '',
-				'root_folder_id'   => $account['root_folder_id'] ?? '',
-				'root_folder_name' => $account['root_folder_name'] ?? '',
+				'type'  => $account['type'] ?? 'google_drive',
+				'label' => $account['label'] ?? '',
+				'email' => $account['email'] ?? '',
 			);
 		}
 		return $safe;
@@ -316,11 +338,9 @@ class WGDP_Google_Auth {
 		}
 		$account = $accounts[ $account_id ];
 		return array(
-			'type'             => $account['type'] ?? 'google_drive',
-			'label'            => $account['label'] ?? '',
-			'email'            => $account['email'] ?? '',
-			'root_folder_id'   => $account['root_folder_id'] ?? '',
-			'root_folder_name' => $account['root_folder_name'] ?? '',
+			'type'  => $account['type'] ?? 'google_drive',
+			'label' => $account['label'] ?? '',
+			'email' => $account['email'] ?? '',
 		);
 	}
 
@@ -339,18 +359,31 @@ class WGDP_Google_Auth {
 	}
 
 	/**
-	 * Update the root folder for an account.
+	 * AJAX: Return the access token for a given account (for Google Picker).
 	 */
-	public function update_account_root_folder( $account_id, $folder_id, $folder_name ) {
-		$result = $this->with_accounts_lock( function ( $accounts ) use ( $account_id, $folder_id, $folder_name ) {
-			if ( ! isset( $accounts[ $account_id ] ) ) {
-				return null;
-			}
-			$accounts[ $account_id ]['root_folder_id']   = $folder_id;
-			$accounts[ $account_id ]['root_folder_name'] = $folder_name;
-			return $accounts;
-		} );
-		return ! is_wp_error( $result ) && null !== $result;
+	public function ajax_get_picker_token() {
+		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
+
+		if ( ! current_user_can( 'edit_products' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$account_id = isset( $_POST['account_id'] ) ? sanitize_text_field( wp_unslash( $_POST['account_id'] ) ) : '';
+		if ( empty( $account_id ) ) {
+			wp_send_json_error( 'No account specified.' );
+		}
+
+		$accounts = $this->get_accounts();
+		if ( ! isset( $accounts[ $account_id ] ) ) {
+			wp_send_json_error( 'Account not found.' );
+		}
+
+		$token = $this->get_access_token( $account_id );
+		if ( is_wp_error( $token ) ) {
+			wp_send_json_error( $token->get_error_message() );
+		}
+
+		wp_send_json_success( array( 'token' => $token ) );
 	}
 
 	/**
@@ -417,31 +450,6 @@ class WGDP_Google_Auth {
 
 		if ( $this->update_account_label( $account_id, $label ) ) {
 			wp_send_json_success( 'Label updated.' );
-		} else {
-			wp_send_json_error( 'Account not found.' );
-		}
-	}
-
-	/**
-	 * AJAX: Update account root folder.
-	 */
-	public function ajax_update_account_root_folder() {
-		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
-
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
-			wp_send_json_error( 'Permission denied.' );
-		}
-
-		$account_id  = isset( $_POST['account_id'] ) ? sanitize_text_field( wp_unslash( $_POST['account_id'] ) ) : '';
-		$folder_id   = isset( $_POST['folder_id'] ) ? sanitize_text_field( wp_unslash( $_POST['folder_id'] ) ) : '';
-		$folder_name = isset( $_POST['folder_name'] ) ? sanitize_text_field( wp_unslash( $_POST['folder_name'] ) ) : '';
-
-		if ( empty( $account_id ) ) {
-			wp_send_json_error( 'No account specified.' );
-		}
-
-		if ( $this->update_account_root_folder( $account_id, $folder_id, $folder_name ) ) {
-			wp_send_json_success( 'Root folder updated.' );
 		} else {
 			wp_send_json_error( 'Account not found.' );
 		}

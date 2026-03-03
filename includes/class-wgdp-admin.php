@@ -131,7 +131,7 @@ class WGDP_Admin {
 						if ( ! $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
 							$result = $drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
 							if ( ! is_wp_error( $result ) ) {
-								$product_name = $this->get_product_name_from_row( $row );
+								$product_name = WGDP_Entitlements::get_product_name( $row );
 								WGDP_Notification_Email::send_access_revoked( $row['recipient_email'], $product_name );
 							}
 						}
@@ -199,37 +199,120 @@ class WGDP_Admin {
 
 			<details<?php echo $has_accounts ? '' : ' open'; ?>>
 				<summary style="cursor:pointer;font-weight:600;margin-bottom:10px;">
-					Step 1: Create OAuth Credentials
+					Step 1: Create a Google Cloud Project
 				</summary>
 				<ol style="margin-left:20px;">
-					<li>Go to <a href="https://console.cloud.google.com/apis/dashboard" target="_blank">Google Cloud Console</a> and create a project (or use an existing one).</li>
-					<li>In the left sidebar go to <strong>APIs &amp; Services &rarr; Library</strong>, search for <strong>"Google Drive API"</strong>, and click <strong>Enable</strong>.</li>
-					<li>Go to <strong>APIs &amp; Services &rarr; Credentials</strong>, click <strong>Create Credentials &rarr; OAuth client ID</strong>.</li>
-					<li>Select <strong>Web application</strong> as the application type.</li>
-					<li>Under <strong>Authorized redirect URIs</strong>, add: <code><?php echo esc_html( $auth->get_redirect_uri() ); ?></code></li>
-					<li>Click <strong>Create</strong>. Copy the <strong>Client ID</strong> and <strong>Client Secret</strong>.</li>
-					<li><strong>Important:</strong> Go to <strong>APIs &amp; Services &rarr; OAuth consent screen</strong> and click <strong>"Publish App"</strong> to move from Testing to Production. Testing-mode refresh tokens expire after 7 days, breaking automatic token renewal.</li>
+					<li>Go to <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a>.</li>
+					<li>Click the project dropdown at the top-left &rarr; <strong>New Project</strong>.</li>
+					<li>Name it (e.g. <em>Woo GDrive Permission</em>) and click <strong>Create</strong>.</li>
+					<li>Once created, select the project. You'll land on the Welcome page which displays both the <strong>Project ID</strong> and the <strong>Project Number</strong> (a pure numeric value) &mdash; note down the <strong>Project Number</strong>, you'll need it in Step 6.</li>
 				</ol>
 			</details>
 
 			<details<?php echo $has_accounts ? '' : ' open'; ?>>
 				<summary style="cursor:pointer;font-weight:600;margin-bottom:10px;">
-					Step 2: Enter Credentials &amp; Connect
+					Step 2: Enable Required APIs
 				</summary>
 				<ol style="margin-left:20px;">
-					<li>Enter the <strong>Client ID</strong> and <strong>Client Secret</strong> in the Google API Credentials section below and click <strong>Save changes</strong>.</li>
-					<li>Click <strong>"Add Google Account"</strong> to authorize with Google.</li>
-					<li>After authorizing, you'll be redirected back here. You can add multiple accounts.</li>
+					<li>From the Welcome page, click <strong>APIs &amp; Services</strong> in the Quick Access section (or use the left sidebar navigation).</li>
+					<li>In the left sidebar, click <strong>Library</strong>.</li>
+					<li>Search for <strong>"Google Drive API"</strong> &rarr; click it &rarr; click <strong>Enable</strong>.</li>
+					<li>Go back to Library, search for <strong>"Google Picker API"</strong> &rarr; click it &rarr; click <strong>Enable</strong>.</li>
+				</ol>
+			</details>
+
+			<details<?php echo $has_accounts ? '' : ' open'; ?>>
+				<summary style="cursor:pointer;font-weight:600;margin-bottom:10px;">
+					Step 3: Configure OAuth Consent Screen
+				</summary>
+				<ol style="margin-left:20px;">
+					<li>In the left sidebar under APIs &amp; Services, click <strong>OAuth consent screen</strong>. The new UI redirects you to Google Auth Platform.</li>
+					<li>It will show "Google Auth Platform not configured yet" &mdash; click the blue <strong>"Get started"</strong> button.</li>
+					<li>Fill in the required fields:
+						<ul style="margin-top:6px;">
+							<li><strong>App name:</strong> anything (e.g. <em>Woo GDrive Permission</em>)</li>
+							<li><strong>User support email:</strong> your email</li>
+						</ul>
+					</li>
+					<li>Click <strong>Next</strong>, then on the Audience step select <strong>External</strong>, then complete the remaining steps and click <strong>Create</strong>.</li>
+					<li>You'll be taken to the OAuth Overview page. Now click <strong>"Data Access"</strong> in the left sidebar to add scopes.</li>
+					<li>Click <strong>"Add or remove scopes"</strong>. In the panel that opens:
+						<ul style="margin-top:6px;">
+							<li>Check the box next to <code>.../auth/userinfo.email</code></li>
+							<li>In the "Manually add scopes" text box, enter: <code>https://www.googleapis.com/auth/drive.file</code></li>
+							<li>Click <strong>"Add to table"</strong></li>
+							<li>Click <strong>"Update"</strong></li>
+						</ul>
+					</li>
+					<li>Click <strong>"Save"</strong> on the Data Access page.</li>
+					<li>Now click <strong>"Audience"</strong> in the left sidebar. You'll see the Publishing status is set to Testing. Click <strong>"Publish App"</strong> &rarr; confirm by clicking <strong>"Confirm"</strong> when prompted.<br>
+						<strong style="color:#d63638;">This is critical</strong> &mdash; Testing-mode refresh tokens expire after 7 days, which will break automatic token renewal. Since you're only using non-sensitive scopes (<code>drive.file</code> and <code>email</code>), no app verification is required.</li>
+				</ol>
+			</details>
+
+			<details<?php echo $has_accounts ? '' : ' open'; ?>>
+				<summary style="cursor:pointer;font-weight:600;margin-bottom:10px;">
+					Step 4: Create OAuth Client ID
+				</summary>
+				<ol style="margin-left:20px;">
+					<li>In the left sidebar, click <strong>"Clients"</strong> (under Google Auth Platform).</li>
+					<li>Click <strong>"Create client"</strong>.</li>
+					<li>Application type: <strong>Web application</strong>.</li>
+					<li>Name: anything (e.g. <em>Woo GDrive Permission</em>).</li>
+					<li>Leave <strong>Authorized JavaScript origins</strong> blank.</li>
+					<li>Under <strong>Authorized redirect URIs</strong>, click <strong>"+ Add URI"</strong> and enter exactly:<br>
+						<code style="display:inline-block;margin:6px 0;padding:4px 8px;background:#f0f6fc;border:1px solid #c3c4c7;border-radius:3px;user-select:all;"><?php echo esc_html( $auth->get_redirect_uri() ); ?></code>
+					</li>
+					<li>Click <strong>Create</strong>.</li>
+					<li>A dialog will show your <strong>Client ID</strong> and <strong>Client Secret</strong> &mdash; copy both and store them securely.<br>
+						<em style="color:#d63638;">The Client Secret cannot be viewed again after closing this dialog. If you lose it, you can generate a new one by opening the client and clicking "+ Add secret" &mdash; the old secret will still work until you delete it.</em></li>
+				</ol>
+			</details>
+
+			<details<?php echo $has_accounts ? '' : ' open'; ?>>
+				<summary style="cursor:pointer;font-weight:600;margin-bottom:10px;">
+					Step 5: Create a Picker API Key
+				</summary>
+				<ol style="margin-left:20px;">
+					<li>Navigate to <strong>APIs &amp; Services &rarr; Credentials</strong> (use the main hamburger menu or go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank">console.cloud.google.com/apis/credentials</a>).</li>
+					<li>Click <strong>"+ Create credentials" &rarr; "API key"</strong>.</li>
+					<li>A panel will open where you can configure the key before creating it:
+						<ul style="margin-top:6px;">
+							<li>Under <strong>Application restrictions</strong>, select <strong>"Websites"</strong></li>
+							<li>Click <strong>"+ Add"</strong> and enter your admin domain: <code style="display:inline-block;padding:2px 6px;background:#f0f6fc;border:1px solid #c3c4c7;border-radius:3px;"><?php echo esc_html( wp_parse_url( admin_url(), PHP_URL_HOST ) ); ?>/*</code></li>
+							<li>Under <strong>API restrictions</strong>, select <strong>"Restrict key"</strong> and choose <strong>Google Picker API</strong></li>
+						</ul>
+					</li>
+					<li>Click <strong>"Create"</strong>. Copy the API key from the confirmation dialog.</li>
+				</ol>
+			</details>
+
+			<details<?php echo $has_accounts ? '' : ' open'; ?>>
+				<summary style="cursor:pointer;font-weight:600;margin-bottom:10px;">
+					Step 6: Enter Credentials &amp; Connect
+				</summary>
+				<ol style="margin-left:20px;">
+					<li>In the <strong>Google API Credentials</strong> section below, enter all four values:
+						<ul style="margin-top:6px;">
+							<li><strong>Client ID</strong> &mdash; from Step 4</li>
+							<li><strong>Client Secret</strong> &mdash; from Step 4</li>
+							<li><strong>Picker API Key</strong> &mdash; from Step 5</li>
+							<li><strong>Cloud Project Number</strong> &mdash; the numeric value from Step 1</li>
+						</ul>
+					</li>
+					<li>Click <strong>Save Changes</strong>.</li>
+					<li>Click <strong>"Add Google Account"</strong> to authorize with Google. You'll be redirected to Google's consent screen, then back here.</li>
+					<li>You can connect multiple Google accounts if needed.</li>
 				</ol>
 			</details>
 
 			<details>
 				<summary style="cursor:pointer;font-weight:600;margin-bottom:10px;">
-					Step 3: Link Drive Files to Products
+					Step 7: Link Drive Files to Products
 				</summary>
 				<ol style="margin-left:20px;">
-					<li>Edit any Woo product and click the <strong>"GDrive"</strong> tab in the Product Data section.</li>
-					<li>Select which <strong>Google account</strong> owns the file, then paste a GDrive URL or click <strong>"Browse GDrive"</strong> to select a file or folder.</li>
+					<li>Edit any WooCommerce product and click the <strong>"GDrive"</strong> tab in the Product Data section.</li>
+					<li>Select which <strong>Google account</strong> owns the file, then click <strong>"Browse GDrive"</strong> to open Google Picker and choose a file or folder. You can also paste a Google Drive URL directly.</li>
 					<li>For <strong>variable products</strong> (e.g. Digital vs DVD vs Blu-ray), you can set a different Drive resource on each variation.</li>
 					<li>Save the product. That's it!</li>
 				</ol>
@@ -263,187 +346,162 @@ class WGDP_Admin {
 			<tr>
 				<th scope="row"><label for="wgdp_oauth_client_secret">Client Secret</label></th>
 				<td>
-					<input type="password" id="wgdp_oauth_client_secret" name="wgdp_oauth_client_secret"
-						value="<?php echo $has_creds ? '••••••••' : ''; ?>"
+					<?php
+					$secret_hint = '';
+					if ( $has_creds ) {
+						$dec = $auth->decrypt( get_option( 'wgdp_oauth_client_secret', '' ) );
+						$secret_hint = $dec ? '••••••••' . substr( $dec, -4 ) : '';
+					}
+				?>
+					<input type="text" id="wgdp_oauth_client_secret" name="wgdp_oauth_client_secret"
+						value=""
 						class="regular-text" style="min-width:400px;"
-						placeholder="Enter Client Secret" />
-					<p class="description">Your Client Secret is stored encrypted.</p>
+						placeholder="<?php echo $secret_hint ? esc_attr( $secret_hint ) : 'Enter Client Secret'; ?>" />
+					<p class="description">Your Client Secret is stored encrypted. Leave blank to keep current secret.</p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="wgdp_picker_api_key">Picker API Key</label></th>
+				<td>
+					<?php
+					$api_key = get_option( 'wgdp_picker_api_key', '' );
+					$api_key_hint = $api_key ? '••••••••' . substr( $api_key, -4 ) : '';
+				?>
+					<input type="text" id="wgdp_picker_api_key" name="wgdp_picker_api_key"
+						value=""
+						class="regular-text" style="min-width:400px;"
+						placeholder="<?php echo $api_key_hint ? esc_attr( $api_key_hint ) : 'e.g. AIzaSy...'; ?>" />
+					<p class="description">API key restricted to the Google Picker API. Used client-side to power the file browser.<?php echo $api_key_hint ? ' Leave blank to keep current key.' : ''; ?></p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="wgdp_cloud_project_number">Cloud Project Number</label></th>
+				<td>
+					<input type="text" id="wgdp_cloud_project_number" name="wgdp_cloud_project_number"
+						value="<?php echo esc_attr( get_option( 'wgdp_cloud_project_number', '' ) ); ?>"
+						class="regular-text" style="min-width:400px;"
+						placeholder="e.g. 123456789012" />
+					<p class="description">Found in Google Cloud Console &rarr; project settings. Required by Google Picker for the <code>drive.file</code> scope.</p>
 				</td>
 			</tr>
 		</table>
 
-		<?php if ( $has_creds ) : ?>
-			<h2>Connected Accounts</h2>
-			<?php if ( ! empty( $accounts ) ) : ?>
-				<table class="wp-list-table widefat fixed striped" style="max-width:950px;">
-					<thead>
-						<tr>
-							<th style="width:22%;">Email</th>
-							<th style="width:18%;">Label</th>
-							<th style="width:28%;">Folder Permission</th>
-							<th style="width:32%;">Actions</th>
+		<h2>Connected Accounts</h2>
+		<?php if ( ! empty( $accounts ) ) : ?>
+			<table class="wp-list-table widefat fixed striped" style="max-width:750px;">
+				<thead>
+					<tr>
+						<th style="width:30%;">Email</th>
+						<th style="width:30%;">Label</th>
+						<th style="width:40%;">Actions</th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $accounts as $acct_id => $acct ) : ?>
+						<tr id="wgdp-account-row-<?php echo esc_attr( $acct_id ); ?>">
+							<td><?php echo esc_html( $acct['email'] ); ?></td>
+							<td>
+								<input type="text" class="wgdp-account-label"
+									data-account-id="<?php echo esc_attr( $acct_id ); ?>"
+									value="<?php echo esc_attr( $acct['label'] ); ?>"
+									style="width:100%;" />
+							</td>
+							<td>
+								<button type="button" class="button button-small wgdp-test-account"
+									data-account-id="<?php echo esc_attr( $acct_id ); ?>">Test</button>
+								<button type="button" class="button button-small wgdp-disconnect-account"
+									data-account-id="<?php echo esc_attr( $acct_id ); ?>"
+									style="color:#b32d2e;">Disconnect</button>
+								<span class="wgdp-account-result" data-account-id="<?php echo esc_attr( $acct_id ); ?>" style="margin-left:8px;"></span>
+							</td>
 						</tr>
-					</thead>
-					<tbody>
-						<?php foreach ( $accounts as $acct_id => $acct ) :
-							$root_id   = $acct['root_folder_id'] ?? '';
-							$root_name = $acct['root_folder_name'] ?? '';
-						?>
-							<tr id="wgdp-account-row-<?php echo esc_attr( $acct_id ); ?>">
-								<td><?php echo esc_html( $acct['email'] ); ?></td>
-								<td>
-									<input type="text" class="wgdp-account-label"
-										data-account-id="<?php echo esc_attr( $acct_id ); ?>"
-										value="<?php echo esc_attr( $acct['label'] ); ?>"
-										style="width:100%;" />
-								</td>
-								<td>
-									<span class="wgdp-root-folder-display" data-account-id="<?php echo esc_attr( $acct_id ); ?>">
-										<?php if ( $root_id && $root_name ) : ?>
-											<strong><?php echo esc_html( $root_name ); ?></strong>
-										<?php else : ?>
-											<em>Entire Drive</em>
-										<?php endif; ?>
-									</span>
-									<br>
-									<button type="button" class="button button-small wgdp-pick-root-folder"
-										data-account-id="<?php echo esc_attr( $acct_id ); ?>"
-										style="margin-top:4px;">Browse</button>
-									<?php if ( $root_id ) : ?>
-									<a href="#" class="wgdp-reset-root-folder"
-										data-account-id="<?php echo esc_attr( $acct_id ); ?>"
-										style="margin-left:6px;font-size:12px;">Reset</a>
-									<?php endif; ?>
-								</td>
-								<td>
-									<button type="button" class="button button-small wgdp-test-account"
-										data-account-id="<?php echo esc_attr( $acct_id ); ?>">Test</button>
-									<button type="button" class="button button-small wgdp-disconnect-account"
-										data-account-id="<?php echo esc_attr( $acct_id ); ?>"
-										style="color:#b32d2e;">Disconnect</button>
-									<span class="wgdp-account-result" data-account-id="<?php echo esc_attr( $acct_id ); ?>" style="margin-left:8px;"></span>
-								</td>
-							</tr>
-						<?php endforeach; ?>
-					</tbody>
-				</table>
-				<p class="description" style="max-width:950px;">Folder Permission limits where the plugin browses when selecting files for products. Click Browse to pick a specific folder, or leave as "Entire Drive" for full access. This does not restrict the Google API token — it scopes the plugin's browsing behavior.</p>
-			<?php else : ?>
-				<p>No accounts connected yet.</p>
-			<?php endif; ?>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+		<?php else : ?>
+			<p>No accounts connected yet.</p>
+		<?php endif; ?>
 
+		<?php if ( $has_creds ) : ?>
 			<p style="margin-top:12px;">
 				<a href="<?php echo esc_url( $auth->get_auth_url() ); ?>" class="button button-primary">Add Google Account</a>
 			</p>
-
-			<script>
-			jQuery(function($) {
-				var nonce = '<?php echo esc_js( wp_create_nonce( 'wgdp_admin_nonce' ) ); ?>';
-
-				// Test connection for a specific account.
-				$(document).on('click', '.wgdp-test-account', function() {
-					var $btn = $(this);
-					var accountId = $btn.data('account-id');
-					var $result = $('.wgdp-account-result[data-account-id="' + accountId + '"]');
-					$btn.prop('disabled', true);
-					$result.text('Testing...').css('color', '');
-					$.post(ajaxurl, {
-						action: 'wgdp_test_connection',
-						nonce: nonce,
-						account_id: accountId
-					}, function(r) {
-						$btn.prop('disabled', false);
-						$result.text(r.success ? r.data : 'Error: ' + r.data).css('color', r.success ? 'green' : 'red');
-					}).fail(function() {
-						$btn.prop('disabled', false);
-						$result.text('Request failed.').css('color', 'red');
-					});
-				});
-
-				// Disconnect a specific account.
-				$(document).on('click', '.wgdp-disconnect-account', function() {
-					if (!confirm('Disconnect this Google account? Products using it will not be able to grant permissions until reassigned.')) {
-						return;
-					}
-					var $btn = $(this);
-					var accountId = $btn.data('account-id');
-					$btn.prop('disabled', true);
-					$.post(ajaxurl, {
-						action: 'wgdp_disconnect',
-						nonce: nonce,
-						account_id: accountId
-					}, function(r) {
-						if (r.success) {
-							$('#wgdp-account-row-' + accountId).fadeOut(300, function() { $(this).remove(); });
-						} else {
-							$btn.prop('disabled', false);
-							alert('Error: ' + r.data);
-						}
-					}).fail(function() {
-						$btn.prop('disabled', false);
-						alert('Request failed.');
-					});
-				});
-
-				// Save label on blur/change.
-				$(document).on('change', '.wgdp-account-label', function() {
-					var $input = $(this);
-					var accountId = $input.data('account-id');
-					var label = $input.val().trim();
-					var $result = $('.wgdp-account-result[data-account-id="' + accountId + '"]');
-					$.post(ajaxurl, {
-						action: 'wgdp_update_account_label',
-						nonce: nonce,
-						account_id: accountId,
-						label: label
-					}, function(r) {
-						if (r.success) {
-							$result.text('Saved').css('color', 'green');
-							setTimeout(function() { $result.text(''); }, 2000);
-						} else {
-							$result.text('Error: ' + r.data).css('color', 'red');
-						}
-					});
-				});
-
-				// Pick root folder — open browse modal for the account.
-				$(document).on('click', '.wgdp-pick-root-folder', function() {
-					var accountId = $(this).data('account-id');
-					// Use the existing browse modal but for picking a root folder.
-					if (typeof window.wgdpOpenRootFolderPicker === 'function') {
-						window.wgdpOpenRootFolderPicker(accountId, nonce);
-					}
-				});
-
-				// Reset root folder to entire drive.
-				$(document).on('click', '.wgdp-reset-root-folder', function(e) {
-					e.preventDefault();
-					var accountId = $(this).data('account-id');
-					var $display = $('.wgdp-root-folder-display[data-account-id="' + accountId + '"]');
-					var $result = $('.wgdp-account-result[data-account-id="' + accountId + '"]');
-					$.post(ajaxurl, {
-						action: 'wgdp_update_account_root_folder',
-						nonce: nonce,
-						account_id: accountId,
-						folder_id: '',
-						folder_name: ''
-					}, function(r) {
-						if (r.success) {
-							$display.html('<em>Entire Drive</em>');
-							$display.closest('td').find('.wgdp-reset-root-folder').remove();
-							$result.text('Saved').css('color', 'green');
-							setTimeout(function() { $result.text(''); }, 2000);
-						} else {
-							$result.text('Error: ' + r.data).css('color', 'red');
-						}
-					});
-				});
-			});
-			</script>
 		<?php endif; ?>
 
+		<script>
+		jQuery(function($) {
+			var nonce = '<?php echo esc_js( wp_create_nonce( 'wgdp_admin_nonce' ) ); ?>';
+
+			// Test connection for a specific account.
+			$(document).on('click', '.wgdp-test-account', function() {
+				var $btn = $(this);
+				var accountId = $btn.data('account-id');
+				var $result = $('.wgdp-account-result[data-account-id="' + accountId + '"]');
+				$btn.prop('disabled', true);
+				$result.text('Testing...').css('color', '');
+				$.post(ajaxurl, {
+					action: 'wgdp_test_connection',
+					nonce: nonce,
+					account_id: accountId
+				}, function(r) {
+					$btn.prop('disabled', false);
+					$result.text(r.success ? r.data : 'Error: ' + r.data).css('color', r.success ? 'green' : 'red');
+				}).fail(function() {
+					$btn.prop('disabled', false);
+					$result.text('Request failed.').css('color', 'red');
+				});
+			});
+
+			// Disconnect a specific account.
+			$(document).on('click', '.wgdp-disconnect-account', function() {
+				if (!confirm('Disconnect this account? Products using it will not be able to grant permissions until reassigned.')) {
+					return;
+				}
+				var $btn = $(this);
+				var accountId = $btn.data('account-id');
+				$btn.prop('disabled', true);
+				$.post(ajaxurl, {
+					action: 'wgdp_disconnect',
+					nonce: nonce,
+					account_id: accountId
+				}, function(r) {
+					if (r.success) {
+						$('#wgdp-account-row-' + accountId).fadeOut(300, function() { $(this).remove(); });
+					} else {
+						$btn.prop('disabled', false);
+						alert('Error: ' + r.data);
+					}
+				}).fail(function() {
+					$btn.prop('disabled', false);
+					alert('Request failed.');
+				});
+			});
+
+			// Save label on blur/change.
+			$(document).on('change', '.wgdp-account-label', function() {
+				var $input = $(this);
+				var accountId = $input.data('account-id');
+				var label = $input.val().trim();
+				var $result = $('.wgdp-account-result[data-account-id="' + accountId + '"]');
+				$.post(ajaxurl, {
+					action: 'wgdp_update_account_label',
+					nonce: nonce,
+					account_id: accountId,
+					label: label
+				}, function(r) {
+					if (r.success) {
+						$result.text('Saved').css('color', 'green');
+						setTimeout(function() { $result.text(''); }, 2000);
+					} else {
+						$result.text('Error: ' + r.data).css('color', 'red');
+					}
+				});
+			});
+		});
+		</script>
+
 		<?php
-		// General settings (Shared Drive ID, notifications).
+		// General settings (notifications, etc.).
 		woocommerce_admin_fields( $this->get_settings() );
 		?>
 
@@ -469,9 +527,22 @@ class WGDP_Admin {
 		// Save Client Secret (only if changed from placeholder).
 		if ( isset( $_POST['wgdp_oauth_client_secret'] ) ) {
 			$secret = sanitize_text_field( wp_unslash( $_POST['wgdp_oauth_client_secret'] ) );
-			if ( ! empty( $secret ) && $secret !== '••••••••' ) {
+			if ( ! empty( $secret ) && strpos( $secret, '••••••••' ) !== 0 ) {
 				update_option( 'wgdp_oauth_client_secret', $auth->encrypt( $secret ) );
 			}
+		}
+
+		// Save Picker API Key (only if a new value was entered).
+		if ( isset( $_POST['wgdp_picker_api_key'] ) ) {
+			$api_key = sanitize_text_field( wp_unslash( $_POST['wgdp_picker_api_key'] ) );
+			if ( ! empty( $api_key ) ) {
+				update_option( 'wgdp_picker_api_key', $api_key );
+			}
+		}
+
+		// Save Cloud Project Number.
+		if ( isset( $_POST['wgdp_cloud_project_number'] ) ) {
+			update_option( 'wgdp_cloud_project_number', sanitize_text_field( wp_unslash( $_POST['wgdp_cloud_project_number'] ) ) );
 		}
 
 		// Check if claim page slug changed (before saving, so we can compare).
@@ -683,13 +754,10 @@ class WGDP_Admin {
 			WGDP_VERSION
 		);
 
-		wp_enqueue_script( 'jquery-ui-dialog' );
-		wp_enqueue_style( 'wp-jquery-ui-dialog' );
-
 		wp_enqueue_script(
 			'wgdp-admin',
 			WGDP_PLUGIN_URL . 'admin/js/wgdp-admin.js',
-			array( 'jquery', 'jquery-ui-dialog', 'jquery-ui-autocomplete' ),
+			array( 'jquery', 'jquery-ui-autocomplete' ),
 			WGDP_VERSION,
 			true
 		);
@@ -697,6 +765,8 @@ class WGDP_Admin {
 			'ajax_url'              => admin_url( 'admin-ajax.php' ),
 			'nonce'                 => wp_create_nonce( 'wgdp_admin_nonce' ),
 			'product_search_nonce'  => wp_create_nonce( 'search-products' ),
+			'picker_api_key'        => get_option( 'wgdp_picker_api_key', '' ),
+			'cloud_project_number'  => get_option( 'wgdp_cloud_project_number', '' ),
 		) );
 	}
 
@@ -880,131 +950,7 @@ class WGDP_Admin {
 	 * AJAX: Assign an email to an unassigned order item (create entitlement).
 	 */
 	public function ajax_assign_email() {
-		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
-			wp_send_json_error( 'Permission denied.' );
-		}
-
-		$order_id      = absint( $_POST['order_id'] ?? 0 );
-		$order_item_id = absint( $_POST['order_item_id'] ?? 0 );
-		$email         = sanitize_email( $_POST['email'] ?? '' );
-
-		if ( ! $order_id || ! $order_item_id ) {
-			wp_send_json_error( 'Missing order or item ID.' );
-		}
-		if ( ! is_email( $email ) ) {
-			wp_send_json_error( 'Please enter a valid email address.' );
-		}
-
-		$order = wc_get_order( $order_id );
-		if ( ! $order ) {
-			wp_send_json_error( 'Order not found.' );
-		}
-
-		$item = $order->get_item( $order_item_id );
-		if ( ! $item ) {
-			wp_send_json_error( 'Order item not found.' );
-		}
-
-		$product_id   = $item->get_product_id();
-		$variation_id = $item->get_variation_id();
-
-		if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-			wp_send_json_error( 'This item does not qualify for digital access.' );
-		}
-
-		// Resolve cloud_asset_id.
-		$resource_id = '';
-		if ( $variation_id ) {
-			$resource_id = get_post_meta( $variation_id, '_wgdp_drive_resource_id', true );
-		}
-		if ( empty( $resource_id ) ) {
-			$resource_id = get_post_meta( $product_id, '_wgdp_drive_resource_id', true );
-		}
-
-		// Resolve account.
-		$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
-		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
-			wp_send_json_error( 'No connected Google account for this item.' );
-		}
-
-		$ent = WGDP_Entitlements::instance();
-
-		// Check if a revoked entitlement exists for the same unique key — reactivate it instead of inserting.
-		$revoked = $ent->get_revoked_for_reuse( $order_item_id, $resource_id, $email );
-		if ( $revoked ) {
-			$entitlement_id  = (int) $revoked['id'];
-			$recipient_index = (int) $revoked['recipient_index'];
-			$ent->update( $entitlement_id, array(
-				'verification_status'    => 'pending',
-				'grant_status'           => 'pending',
-				'provider_permission_id' => null,
-				'granted_at'             => null,
-				'revoked_at'             => null,
-				'grant_error'            => null,
-				'grant_retries'          => 0,
-				'account_id'             => $account_id,
-			) );
-		} else {
-			// Calculate recipient_index as max existing + 1.
-			$existing = $ent->get_by_order_item( $order_item_id );
-			$max_index = 0;
-			foreach ( $existing as $row ) {
-				if ( (int) $row['recipient_index'] > $max_index ) {
-					$max_index = (int) $row['recipient_index'];
-				}
-			}
-			$recipient_index = $max_index + 1;
-
-			$entitlement_id = $ent->create( array(
-				'order_id'        => $order_id,
-				'order_item_id'   => $order_item_id,
-				'product_id'      => $product_id,
-				'variation_id'    => $variation_id ?: 0,
-				'cloud_asset_id'  => $resource_id,
-				'account_id'      => $account_id,
-				'recipient_email' => $email,
-				'recipient_index' => $recipient_index,
-			) );
-
-			if ( ! $entitlement_id ) {
-				wp_send_json_error( 'Failed to create entitlement.' );
-			}
-		}
-
-		// Issue OTP and send verification email.
-		$otp    = WGDP_OTP::instance();
-		$tokens = $otp->issue_otp_for_entitlement( $entitlement_id );
-		WGDP_Notification_Email::send_otp( $email, $tokens['otp'], $tokens['claim_token'], $order, $item );
-
-		// Set drive items flag if not already set.
-		if ( ! $order->get_meta( '_wgdp_has_drive_items' ) ) {
-			$order->update_meta_data( '_wgdp_has_drive_items', '1' );
-			$order->save();
-		}
-
-		$order->add_order_note( sprintf(
-			'WGDP: Verification email sent to %s for "%s" (entitlement #%d) — assigned by admin via Access Manager',
-			$email,
-			$item->get_name(),
-			$entitlement_id
-		) );
-
-		delete_transient( 'wgdp_permission_counts' );
-
-		wp_send_json_success( array(
-			'id'              => $entitlement_id,
-			'email'           => $email,
-			'recipient_index' => $recipient_index,
-		) );
+		WGDP_Entitlements::ajax_create_entitlement( 'assigned by admin via Access Manager', true );
 	}
 
-	/**
-	 * Get product name from an entitlement row.
-	 */
-	private function get_product_name_from_row( $row ) {
-		$id = $row['variation_id'] ?: $row['product_id'];
-		$product = wc_get_product( $id );
-		return $product ? $product->get_name() : 'Product #' . $id;
-	}
 }
