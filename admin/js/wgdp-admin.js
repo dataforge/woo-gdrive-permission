@@ -2,260 +2,118 @@
     'use strict';
 
     /* =========================================================
-     * Product page: Drive browser modal
+     * Product page: Google Picker integration
      * ========================================================= */
 
-    var browserState = {
-        $trigger: null,
-        breadcrumbs: [],
-        selectedItem: null,
-        accountId: '',
-        mode: 'select',       // 'select' (product) or 'pick_root' (settings)
-        onSelect: null,        // callback for pick_root mode
-        foldersOnly: false
-    };
+    var gapiLoaded = false;
+    var gapiLoading = false;
+    var gapiCallbacks = [];
 
     function getAccountId($button) {
         var $container = $button.closest('.options_group, .wgdp-variation-fields');
         return $container.find('.wgdp-account-select').val() || '';
     }
 
-    function openBrowseModal($button) {
+    function ensureGapi(callback) {
+        if (gapiLoaded) {
+            callback();
+            return;
+        }
+        gapiCallbacks.push(callback);
+        if (gapiLoading) {
+            return;
+        }
+        gapiLoading = true;
+        var script = document.createElement('script');
+        script.src = 'https://apis.google.com/js/api.js';
+        script.onload = function () {
+            gapi.load('picker', function () {
+                gapiLoaded = true;
+                gapiLoading = false;
+                var cbs = gapiCallbacks.splice(0);
+                for (var i = 0; i < cbs.length; i++) {
+                    cbs[i]();
+                }
+            });
+        };
+        document.head.appendChild(script);
+    }
+
+    function openPicker($button) {
         var accountId = getAccountId($button);
         if (!accountId) {
             alert('Please select a Google Account first.');
             return;
         }
 
-        browserState.$trigger = $button;
-        browserState.accountId = accountId;
-        browserState.breadcrumbs = [{ id: '', name: 'My Drive' }];
-        browserState.selectedItem = null;
-        browserState.mode = 'select';
-        browserState.onSelect = null;
-        browserState.foldersOnly = false;
-
-        var $dialog = getOrCreateDialog();
-        $dialog.dialog('option', 'title', 'Browse GDrive');
-        $dialog.find('.wgdp-browse-hint').html(
-            'Select a <strong>folder</strong> to grant access to everything inside it (including future additions), or select an individual <strong>file</strong>. Double-click a folder to open it.'
-        );
-        $dialog.dialog('open');
-        loadFolder('');
-    }
-
-    /**
-     * Open the browse modal for picking a root folder (settings page).
-     * Always starts from the actual drive root, not the configured root.
-     */
-    window.wgdpOpenRootFolderPicker = function (accountId, nonce) {
-        browserState.$trigger = null;
-        browserState.accountId = accountId;
-        browserState.breadcrumbs = [{ id: '', name: 'My Drive' }];
-        browserState.selectedItem = null;
-        browserState.mode = 'pick_root';
-        browserState.foldersOnly = true;
-        browserState.onSelect = function (file) {
-            var folderName = file.name;
-            var folderId = file.id;
-            $.post(wgdp.ajax_url, {
-                action: 'wgdp_update_account_root_folder',
-                nonce: nonce,
-                account_id: accountId,
-                folder_id: folderId,
-                folder_name: folderName
-            }, function (r) {
-                var $display = $('.wgdp-root-folder-display[data-account-id="' + accountId + '"]');
-                var $result = $('.wgdp-account-result[data-account-id="' + accountId + '"]');
-                if (r.success) {
-                    $display.html('<strong>' + $('<span>').text(folderName).html() + '</strong>');
-                    if (!$display.closest('td').find('.wgdp-reset-root-folder').length) {
-                        $display.after(
-                            '<br><a href="#" class="wgdp-reset-root-folder" data-account-id="' + accountId + '" style="margin-top:4px;font-size:12px;">Reset</a>'
-                        );
-                    }
-                    $result.text('Saved').css('color', 'green');
-                    setTimeout(function () { $result.text(''); }, 2000);
-                } else {
-                    $result.text('Error: ' + r.data).css('color', 'red');
-                }
-            });
-        };
-
-        var $dialog = getOrCreateDialog();
-        $dialog.dialog('option', 'title', 'Choose Root Folder');
-        $dialog.find('.wgdp-browse-hint').html(
-            'Select a <strong>folder</strong> to limit the plugin\'s browsing scope to that folder and everything inside it. Double-click to open a folder.'
-        );
-        $dialog.dialog('open');
-        // Always browse from actual root for root folder picking, ignoring any configured root.
-        loadFolder('', true);
-    };
-
-    function getOrCreateDialog() {
-        var $dialog = $('#wgdp-browse-dialog');
-        if ($dialog.length) {
-            return $dialog;
-        }
-
-        $dialog = $('<div id="wgdp-browse-dialog" title="Browse GDrive">' +
-            '<p class="wgdp-browse-hint">Select a <strong>folder</strong> to grant access to everything inside it (including future additions), or select an individual <strong>file</strong>. Double-click a folder to open it.</p>' +
-            '<div class="wgdp-breadcrumbs"></div>' +
-            '<div class="wgdp-file-list"></div>' +
-            '<div class="wgdp-browse-loading" style="display:none;text-align:center;padding:20px;">Loading...</div>' +
-            '</div>');
-
-        $('body').append($dialog);
-
-        $dialog.dialog({
-            autoOpen: false,
-            modal: true,
-            width: 600,
-            height: 500,
-            buttons: {
-                'Select': function () {
-                    var item = browserState.selectedItem;
-
-                    // Nothing highlighted — use the current folder from breadcrumbs.
-                    if (!item && browserState.breadcrumbs.length > 1) {
-                        var current = browserState.breadcrumbs[browserState.breadcrumbs.length - 1];
-                        item = {
-                            id: current.id,
-                            name: current.name,
-                            mimeType: 'application/vnd.google-apps.folder'
-                        };
-                    }
-
-                    if (!item) {
-                        return;
-                    }
-
-                    if (browserState.mode === 'pick_root' && browserState.onSelect) {
-                        browserState.onSelect(item);
-                    } else {
-                        applySelection(item);
-                    }
-                    $(this).dialog('close');
-                },
-                'Cancel': function () {
-                    $(this).dialog('close');
-                }
-            }
-        });
-
-        return $dialog;
-    }
-
-    function loadFolder(folderId, skipRoot) {
-        var $dialog = $('#wgdp-browse-dialog');
-        var $list = $dialog.find('.wgdp-file-list');
-        var $loading = $dialog.find('.wgdp-browse-loading');
-
-        $list.empty();
-        $loading.show();
-        browserState.selectedItem = null;
-
-        var postData = {
-            action: 'wgdp_browse_drive',
-            nonce: wgdp.nonce,
-            folder_id: folderId,
-            account_id: browserState.accountId
-        };
-        if (skipRoot) {
-            postData.skip_root = '1';
-        }
-
-        $.post(wgdp.ajax_url, postData, function (response) {
-            $loading.hide();
-            if (!response.success) {
-                $list.html('<p class="wgdp-error">Error: ' + $('<span>').text(response.data).html() + '</p>');
-                return;
-            }
-
-            // Update the root breadcrumb name if the server tells us the scoped folder.
-            if (response.data.root_folder_name && browserState.breadcrumbs.length >= 1) {
-                browserState.breadcrumbs[0].name = response.data.root_folder_name;
-                browserState.breadcrumbs[0].id = '';  // still means "start from root"
-            }
-
-            renderBreadcrumbs();
-            renderFileList(response.data);
-        }).fail(function () {
-            $loading.hide();
-            $list.html('<p class="wgdp-error">Request failed.</p>');
-        });
-    }
-
-    function renderBreadcrumbs() {
-        var $bc = $('#wgdp-browse-dialog .wgdp-breadcrumbs');
-        $bc.empty();
-
-        $.each(browserState.breadcrumbs, function (i, crumb) {
-            if (i > 0) {
-                $bc.append(' <span class="wgdp-bc-sep">/</span> ');
-            }
-            var $link = $('<a href="#" class="wgdp-bc-link"></a>')
-                .text(crumb.name)
-                .data('folder-id', crumb.id)
-                .data('index', i);
-            $bc.append($link);
-        });
-
-        // Scroll to the end so the current folder is visible.
-        $bc[0].scrollLeft = $bc[0].scrollWidth;
-    }
-
-    function renderFileList(data) {
-        var $list = $('#wgdp-browse-dialog .wgdp-file-list');
-        var files = data.files || [];
-
-        // In folders-only mode, filter out non-folders.
-        if (browserState.foldersOnly) {
-            files = files.filter(function (f) {
-                return f.mimeType === 'application/vnd.google-apps.folder';
-            });
-        }
-
-        if (!files.length) {
-            var msg = browserState.foldersOnly ? 'No folders found here.' : 'This folder is empty.';
-            $list.html('<p class="wgdp-empty">' + msg + '</p>');
+        if (!wgdp.picker_api_key) {
+            alert('Picker API Key is not configured. Please add it in the plugin settings.');
             return;
         }
 
-        var $ul = $('<ul class="wgdp-files"></ul>');
-        $.each(files, function (i, file) {
-            var isFolder = file.mimeType === 'application/vnd.google-apps.folder';
-            var icon = isFolder ? '&#128193;' : '&#128196;';
-            var $li = $('<li class="wgdp-file-item"></li>')
-                .data('file', file)
-                .addClass(isFolder ? 'wgdp-folder' : 'wgdp-file')
-                .html('<span class="wgdp-file-icon">' + icon + '</span> <span class="wgdp-file-name">' + $('<span>').text(file.name).html() + '</span>');
-            $ul.append($li);
+        $button.prop('disabled', true).text('Loading...');
+
+        // Get the access token for this account.
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_get_picker_token',
+            nonce: wgdp.nonce,
+            account_id: accountId
+        }, function (response) {
+            if (!response.success) {
+                $button.prop('disabled', false).text('Browse GDrive');
+                alert('Error getting token: ' + response.data);
+                return;
+            }
+
+            var token = response.data.token;
+
+            ensureGapi(function () {
+                $button.prop('disabled', false).text('Browse GDrive');
+
+                var docsView = new google.picker.DocsView()
+                    .setIncludeFolders(true)
+                    .setSelectFolderEnabled(true)
+                    .setParent('root')
+                    .setMode(google.picker.DocsViewMode.LIST);
+
+                var builder = new google.picker.PickerBuilder()
+                    .addView(docsView)
+                    .setOAuthToken(token)
+                    .setDeveloperKey(wgdp.picker_api_key)
+                    .setCallback(function (data) {
+                        pickerCallback(data, $button);
+                    });
+
+                if (wgdp.cloud_project_number) {
+                    builder.setAppId(wgdp.cloud_project_number);
+                }
+
+                builder.build().setVisible(true);
+            });
+        }).fail(function () {
+            $button.prop('disabled', false).text('Browse GDrive');
+            alert('Request failed.');
         });
-        $list.append($ul);
     }
 
-    // Single click: select item.
-    $(document).on('click', '.wgdp-file-item', function () {
-        $('.wgdp-file-item').removeClass('wgdp-selected');
-        $(this).addClass('wgdp-selected');
-        browserState.selectedItem = $(this).data('file');
-    });
+    function pickerCallback(data, $button) {
+        if (data.action !== google.picker.Action.PICKED) {
+            return;
+        }
 
-    // Double click: navigate into folder.
-    $(document).on('dblclick', '.wgdp-file-item.wgdp-folder', function () {
-        var file = $(this).data('file');
-        browserState.breadcrumbs.push({ id: file.id, name: file.name });
-        loadFolder(file.id);
-    });
+        var doc = data.docs[0];
+        if (!doc) {
+            return;
+        }
 
-    // Breadcrumb click.
-    $(document).on('click', '.wgdp-bc-link', function (e) {
-        e.preventDefault();
-        var index = $(this).data('index');
-        browserState.breadcrumbs = browserState.breadcrumbs.slice(0, index + 1);
-        loadFolder($(this).data('folder-id'));
-    });
+        var file = {
+            id: doc.id,
+            name: doc.name,
+            mimeType: doc.mimeType
+        };
+
+        applySelection(file, $button);
+    }
 
     /**
      * Show the friendly preview and hide the raw input area.
@@ -276,8 +134,8 @@
         $container.find('.wgdp-resource-url-input').val('');
     }
 
-    function applySelection(file) {
-        var $container = browserState.$trigger.closest('.options_group, .wgdp-variation-fields');
+    function applySelection(file, $button) {
+        var $container = $button.closest('.options_group, .wgdp-variation-fields');
         var isFolder = file.mimeType === 'application/vnd.google-apps.folder';
         var type = isFolder ? 'folder' : 'file';
 
@@ -290,7 +148,7 @@
 
     // Browse button click.
     $(document).on('click', '.wgdp-browse-drive', function () {
-        openBrowseModal($(this));
+        openPicker($(this));
     });
 
     // "Change" link — show the input area so the user can browse or paste a new URL.
