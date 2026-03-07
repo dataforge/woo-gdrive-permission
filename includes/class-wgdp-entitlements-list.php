@@ -32,103 +32,6 @@ class WGDP_Entitlements_List {
 	}
 
 	/**
-	 * Render the entitlements tab content (called by the parent page).
-	 */
-	public function render_tab_content() {
-		// Process bulk actions first so counts reflect changes.
-		$this->process_bulk_actions();
-
-		$counts = $this->get_permission_counts();
-
-		// Summary cards.
-		echo '<div class="wgdp-summary-cards">';
-		$cards = array(
-			'pending_verification' => array( 'label' => 'Pending Verification', 'class' => 'pending' ),
-			'verified'             => array( 'label' => 'Verified',             'class' => 'verified' ),
-			'pending_release'      => array( 'label' => 'Pending Release',      'class' => 'pending-release' ),
-			'granted'              => array( 'label' => 'Granted',              'class' => 'granted' ),
-			'error'                => array( 'label' => 'Error',                'class' => 'failed' ),
-			'revoked'              => array( 'label' => 'Revoked',              'class' => 'revoked' ),
-		);
-		foreach ( $cards as $key => $card ) {
-			echo '<div class="wgdp-summary-card wgdp-summary-card--' . esc_attr( $card['class'] ) . '">';
-			echo '<span class="wgdp-summary-count">' . esc_html( $counts[ $key ] ?? 0 ) . '</span>';
-			echo '<span class="wgdp-summary-label">' . esc_html( $card['label'] ) . '</span>';
-			echo '</div>';
-		}
-		echo '</div>';
-
-		// Render the list table.
-		$table = new WGDP_Entitlements_Table();
-		$table->prepare_items();
-
-		echo '<form method="get">';
-		echo '<input type="hidden" name="page" value="wgdp" />';
-		echo '<input type="hidden" name="tab" value="entitlements" />';
-		$table->search_box( 'Search', 'wgdp-search' );
-		$table->display();
-		echo '</form>';
-	}
-
-	/**
-	 * Process bulk actions from the list table.
-	 */
-	private function process_bulk_actions() {
-		if ( ! isset( $_GET['action'] ) || ! isset( $_GET['entitlement'] ) ) {
-			return;
-		}
-
-		$action = sanitize_text_field( wp_unslash( $_GET['action'] ) );
-		$ids    = array_map( 'absint', (array) $_GET['entitlement'] );
-
-		if ( empty( $ids ) ) {
-			return;
-		}
-
-		check_admin_referer( 'bulk-entitlements' );
-
-		$ent = WGDP_Entitlements::instance();
-		$otp = WGDP_OTP::instance();
-
-		if ( 'resend_otp' === $action ) {
-			$count = 0;
-			foreach ( $ids as $id ) {
-				$row = $ent->get( $id );
-				if ( $row && 'revoked' !== $row['grant_status'] && 'verified' !== $row['verification_status'] ) {
-					$tokens = $otp->issue_otp_for_entitlement( $id );
-					$order  = wc_get_order( $row['order_id'] );
-					$item   = $order ? $order->get_item( $row['order_item_id'] ) : null;
-					if ( $order && $item ) {
-						WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
-						$count++;
-					}
-				}
-			}
-			delete_transient( 'wgdp_permission_counts' );
-			add_settings_error( 'wgdp', 'resent', sprintf( 'Resent OTP to %d entitlement(s).', $count ), 'success' );
-		} elseif ( 'revoke' === $action ) {
-			$count = 0;
-			$drive = WGDP_Google_Drive::instance();
-			foreach ( $ids as $id ) {
-				$row = $ent->get( $id );
-				if ( $row && 'revoked' !== $row['grant_status'] ) {
-					if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
-						if ( ! $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
-							$drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
-						}
-					}
-					$ent->mark_revoked( $id );
-					$count++;
-				}
-			}
-			delete_transient( 'wgdp_permission_counts' );
-			add_settings_error( 'wgdp', 'revoked', sprintf( 'Revoked %d entitlement(s).', $count ), 'success' );
-		}
-
-		settings_errors( 'wgdp' );
-	}
-
-	/**
 	 * AJAX: Bulk resend OTP.
 	 */
 	public function ajax_bulk_resend_otp() {
@@ -159,7 +62,7 @@ class WGDP_Entitlements_List {
 	}
 
 	/**
-	 * AJAX: Bulk revoke.
+	 * AJAX: Bulk revoke — expands each selected ID to include all sibling files for that recipient.
 	 */
 	public function ajax_bulk_revoke() {
 		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
@@ -170,19 +73,44 @@ class WGDP_Entitlements_List {
 		$ids   = array_map( 'absint', (array) ( $_POST['ids'] ?? array() ) );
 		$ent   = WGDP_Entitlements::instance();
 		$drive = WGDP_Google_Drive::instance();
-		$count = 0;
+
+		// Expand selected IDs to full recipient groups (all files per recipient per order item).
+		$groups  = array(); // keyed by "order_item_id|email"
+		$revoked = array(); // track already-processed IDs
 
 		foreach ( $ids as $id ) {
 			$row = $ent->get( $id );
-			if ( $row && 'revoked' !== $row['grant_status'] ) {
-				if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
-					if ( ! $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
-						$drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
+			if ( ! $row || 'revoked' === $row['grant_status'] ) {
+				continue;
+			}
+			$key = $row['order_item_id'] . '|' . $row['recipient_email'];
+			if ( isset( $groups[ $key ] ) ) {
+				continue; // Already queued this recipient group.
+			}
+			$siblings = $ent->get_siblings( $row['order_item_id'], $row['recipient_email'] );
+			$groups[ $key ] = array(
+				'rows'  => ! empty( $siblings ) ? $siblings : array( $row ),
+				'email' => $row['recipient_email'],
+				'row'   => $row,
+			);
+		}
+
+		$count = 0;
+		foreach ( $groups as $group ) {
+			foreach ( $group['rows'] as $sibling ) {
+				if ( 'revoked' === $sibling['grant_status'] || isset( $revoked[ $sibling['id'] ] ) ) {
+					continue;
+				}
+				if ( 'granted' === $sibling['grant_status'] && ! empty( $sibling['provider_permission_id'] ) ) {
+					if ( ! $ent->permission_is_shared( $sibling['provider_permission_id'], $sibling['id'] ) ) {
+						$drive->delete_permission( $sibling['cloud_asset_id'], $sibling['provider_permission_id'], $sibling['account_id'] );
 					}
 				}
-				$ent->mark_revoked( $id );
+				$ent->mark_revoked( $sibling['id'] );
+				$revoked[ $sibling['id'] ] = true;
 				$count++;
 			}
+			WGDP_Notification_Email::send_access_revoked( $group['email'], WGDP_Entitlements::get_product_name( $group['row'] ) );
 		}
 
 		delete_transient( 'wgdp_permission_counts' );

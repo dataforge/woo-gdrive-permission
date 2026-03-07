@@ -75,7 +75,7 @@ class WGDP_Dashboard_Widget {
 
 		?>
 		<p class="wgdp-widget-footer">
-			<a href="<?php echo esc_url( admin_url( 'admin.php?page=wgdp&tab=entitlements' ) ); ?>">View all entitlements</a>
+			<a href="<?php echo esc_url( admin_url( 'admin.php?page=wgdp&tab=access-manager' ) ); ?>">View all entitlements</a>
 		</p>
 		<?php
 	}

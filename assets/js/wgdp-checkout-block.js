@@ -126,7 +126,7 @@
 			el( 'div', { className: 'wgdp-block-recipients' },
 				el( 'h3', { style: { marginBottom: '12px' } }, 'Digital Access Recipients' ),
 				el( 'p', { style: { fontSize: '13px', color: '#666', marginBottom: '16px' } },
-					'Enter the Google account email address for each recipient who will receive access.'
+					'Enter the Google account email for each recipient to grant access right away. If you skip this now, you will receive an email after purchase with a link to provide it later.'
 				),
 				fieldsets
 			)

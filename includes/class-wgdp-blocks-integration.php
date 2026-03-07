@@ -152,36 +152,21 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 	}
 
 	/**
-	 * Build the list of qualifying cart items for the frontend.
+	 * Build the list of qualifying cart items for the frontend (camelCase keys for JS).
 	 */
 	private function get_qualifying_items() {
-		if ( ! did_action( 'woocommerce_blocks_loaded' ) || ! WC()->cart ) {
+		if ( ! did_action( 'woocommerce_blocks_loaded' ) ) {
 			return array();
 		}
 
-		$items = array();
-
-		foreach ( WC()->cart->get_cart() as $cart_key => $cart_item ) {
-			$product_id   = $cart_item['product_id'] ?? 0;
-			$variation_id = $cart_item['variation_id'] ?? 0;
-			$quantity     = $cart_item['quantity'] ?? 1;
-
-			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-				continue;
-			}
-
-			$product = $cart_item['data'] ?? null;
-			$name    = $product ? $product->get_name() : '';
-
-			$items[] = array(
-				'itemKey'     => $cart_key,
-				'productName' => $name,
-				'quantity'    => (int) $quantity,
-				'productId'   => (int) $product_id,
-				'variationId' => (int) $variation_id,
+		return array_map( function ( $item ) {
+			return array(
+				'itemKey'     => $item['cart_key'],
+				'productName' => $item['product_name'],
+				'quantity'    => $item['quantity'],
+				'productId'   => $item['product_id'],
+				'variationId' => $item['variation_id'],
 			);
-		}
-
-		return $items;
+		}, WGDP_Product_Meta::get_qualifying_cart_items() );
 	}
 }

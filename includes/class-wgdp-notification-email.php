@@ -34,7 +34,7 @@ class WGDP_Notification_Email {
 	/**
 	 * Send access-granted confirmation email.
 	 */
-	public static function send_access_granted( $email, $drive_link, $product_name, $resource_type ) {
+	public static function send_access_granted( $email, $drive_link, $product_name, $resource_type = 'file' ) {
 		$site_name = get_bloginfo( 'name' );
 		$subject   = sprintf( 'Your access to %s is ready', $product_name );
 
@@ -50,6 +50,64 @@ class WGDP_Notification_Email {
 
 		$html = self::get_html_wrapper( $content, $site_name );
 
+		self::send( $email, $subject, $html );
+	}
+
+	/**
+	 * Send a single access-granted email listing multiple files.
+	 *
+	 * @param string $email        Recipient email.
+	 * @param array  $file_links   Array of ['name' => string, 'link' => string].
+	 * @param string $product_name Product name.
+	 */
+	public static function send_access_granted_batch( $email, $file_links, $product_name ) {
+		$site_name = get_bloginfo( 'name' );
+		$subject   = sprintf( 'Your access to %s is ready', $product_name );
+
+		$content = '<h2 style="color:#333;margin:0 0 16px;">Access Granted!</h2>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;">Your access to <strong>' . esc_html( $product_name ) . '</strong> has been granted.</p>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;">Make sure you are signed in to Google with this email address (<strong>' . esc_html( $email ) . '</strong>). Your files:</p>'
+			. '<ul style="margin:16px 0;padding:0 0 0 20px;">';
+
+		foreach ( $file_links as $fl ) {
+			$content .= '<li style="margin-bottom:8px;font-size:15px;">'
+				. '<a href="' . esc_url( $fl['link'] ) . '" style="color:#2271b1;">' . esc_html( $fl['name'] ) . '</a>'
+				. '<br><span style="color:#888;font-size:13px;">' . esc_html( $fl['link'] ) . '</span>'
+				. '</li>';
+		}
+
+		$content .= '</ul>';
+
+		$html = self::get_html_wrapper( $content, $site_name );
+		self::send( $email, $subject, $html );
+	}
+
+	/**
+	 * Send a "new files added" email for backfilled entitlements.
+	 *
+	 * @param string $email        Recipient email.
+	 * @param array  $file_links   Array of ['name' => string, 'link' => string].
+	 * @param string $product_name Product name.
+	 */
+	public static function send_new_files_added( $email, $file_links, $product_name ) {
+		$site_name = get_bloginfo( 'name' );
+		$subject   = sprintf( 'New files added to %s', $product_name );
+
+		$content = '<h2 style="color:#333;margin:0 0 16px;">New Files Added</h2>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;">New files have been added to <strong>' . esc_html( $product_name ) . '</strong> and shared with your account (<strong>' . esc_html( $email ) . '</strong>).</p>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;">Make sure you are signed in to Google with this email address. Your new files:</p>'
+			. '<ul style="margin:16px 0;padding:0 0 0 20px;">';
+
+		foreach ( $file_links as $fl ) {
+			$content .= '<li style="margin-bottom:8px;font-size:15px;">'
+				. '<a href="' . esc_url( $fl['link'] ) . '" style="color:#2271b1;">' . esc_html( $fl['name'] ) . '</a>'
+				. '<br><span style="color:#888;font-size:13px;">' . esc_html( $fl['link'] ) . '</span>'
+				. '</li>';
+		}
+
+		$content .= '</ul>';
+
+		$html = self::get_html_wrapper( $content, $site_name );
 		self::send( $email, $subject, $html );
 	}
 
@@ -95,6 +153,25 @@ class WGDP_Notification_Email {
 			. '</td></tr>'
 			. '</table>'
 			. '</body></html>';
+	}
+
+	/**
+	 * Get the billing email for an order if it differs from the recipient.
+	 *
+	 * @param int    $order_id       The order ID.
+	 * @param string $recipient_email The Google account email.
+	 * @return string|null The billing email if different, or null.
+	 */
+	public static function get_billing_email_if_different( $order_id, $recipient_email ) {
+		$order = wc_get_order( $order_id );
+		if ( ! $order ) {
+			return null;
+		}
+		$billing = strtolower( trim( $order->get_billing_email() ) );
+		if ( $billing && $billing !== strtolower( trim( $recipient_email ) ) ) {
+			return $billing;
+		}
+		return null;
 	}
 
 	/**

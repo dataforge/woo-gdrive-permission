@@ -144,9 +144,24 @@ class WGDP_OTP {
 			'verification_status' => 'verified',
 		) );
 
+		// Also verify all sibling entitlements (same order_item_id + recipient_email).
+		$siblings = $entitlements->get_siblings( $entitlement['order_item_id'], $entitlement['recipient_email'], $entitlement['id'] );
+		foreach ( $siblings as $sibling ) {
+			if ( 'pending' === $sibling['verification_status'] ) {
+				$entitlements->update( $sibling['id'], array(
+					'verification_status' => 'verified',
+				) );
+			}
+		}
+
 		// Refresh the entitlement data.
 		$entitlement = $entitlements->get( $entitlement['id'] );
 
-		return array( 'success' => true, 'error' => null, 'entitlement' => $entitlement );
+		return array(
+			'success'     => true,
+			'error'       => null,
+			'entitlement' => $entitlement,
+			'siblings'    => $siblings,
+		);
 	}
 }

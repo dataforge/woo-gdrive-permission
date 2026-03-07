@@ -2,7 +2,7 @@
     'use strict';
 
     /* =========================================================
-     * Product page: Google Picker integration
+     * Product page: Google Picker integration (multi-file)
      * ========================================================= */
 
     var gapiLoaded = false;
@@ -72,12 +72,13 @@
 
                 var docsView = new google.picker.DocsView()
                     .setIncludeFolders(true)
-                    .setSelectFolderEnabled(true)
+                    .setSelectFolderEnabled(false)
                     .setParent('root')
                     .setMode(google.picker.DocsViewMode.LIST);
 
                 var builder = new google.picker.PickerBuilder()
                     .addView(docsView)
+                    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
                     .setOAuthToken(token)
                     .setDeveloperKey(wgdp.picker_api_key)
                     .setCallback(function (data) {
@@ -101,49 +102,99 @@
             return;
         }
 
-        var doc = data.docs[0];
-        if (!doc) {
-            return;
+        var $container = $button.closest('.options_group, .wgdp-variation-fields');
+        var $list = $container.find('.wgdp-resources-list');
+
+        for (var i = 0; i < data.docs.length; i++) {
+            var doc = data.docs[i];
+            if (doc.mimeType === 'application/vnd.google-apps.folder') {
+                alert('Folders cannot be linked — please select individual files.');
+                continue;
+            }
+            addResourceRow({
+                id: doc.id,
+                name: doc.name,
+                type: 'file'
+            }, $list);
         }
 
-        var file = {
-            id: doc.id,
-            name: doc.name,
-            mimeType: doc.mimeType
-        };
-
-        applySelection(file, $button);
+        notifyVariationChanged($list);
     }
 
     /**
-     * Show the friendly preview and hide the raw input area.
+     * Add a resource row to the list. Dedup by file ID.
+     * If file matches an existing retired row, restore it instead.
      */
-    function showResourcePreview($container, id, name, type) {
-        var isFolder = type === 'folder';
-        var link = isFolder
-            ? 'https://drive.google.com/drive/folders/' + id
-            : 'https://drive.google.com/file/d/' + id + '/view';
-
-        $container.find('.wgdp-resource-preview .wgdp-resource-info').html(
-            '<strong>' + $('<span>').text(name).html() + '</strong> ' +
-            '(' + (isFolder ? 'folder' : 'file') + ') &mdash; ' +
-            '<a href="' + link + '" target="_blank">View in Drive</a>'
-        );
-        $container.find('.wgdp-resource-preview').show();
-        $container.find('.wgdp-resource-input-wrap').hide();
-        $container.find('.wgdp-resource-url-input').val('');
+    /**
+     * Notify WooCommerce that a variation's fields changed,
+     * so the "Save changes" button becomes active.
+     */
+    function notifyVariationChanged($el) {
+        var $variation = $el.closest('.woocommerce_variation');
+        if ($variation.length) {
+            $variation.addClass('variation-needs-update');
+            $('button.cancel-variation-changes, button.save-variation-changes').prop('disabled', false);
+            $('#woocommerce-product-data').triggerHandler('wc_variations_input_changed');
+        }
     }
 
-    function applySelection(file, $button) {
-        var $container = $button.closest('.options_group, .wgdp-variation-fields');
-        var isFolder = file.mimeType === 'application/vnd.google-apps.folder';
-        var type = isFolder ? 'folder' : 'file';
+    function addResourceRow(file, $list) {
+        // Dedup check — look for existing row with same ID.
+        var $existing = null;
+        $list.find('input[type="hidden"]').each(function () {
+            if ($(this).attr('name') && $(this).attr('name').indexOf('[id]') !== -1 && $(this).val() === file.id) {
+                $existing = $(this).closest('.wgdp-resource-row');
+                return false;
+            }
+        });
 
-        $container.find('.wgdp-resource-id').val(file.id).trigger('change');
-        $container.find('.wgdp-resource-type').val(type).trigger('change');
-        $container.find('.wgdp-resource-name').val(file.name).trigger('change');
+        if ($existing) {
+            // If retired, restore it.
+            if ($existing.hasClass('wgdp-resource-row--retired')) {
+                $existing.removeClass('wgdp-resource-row--retired');
+                $existing.find('.wgdp-resource-status').val('active');
+                $existing.find('.wgdp-badge--retired').remove();
+                $existing.find('.wgdp-retired-note').remove();
+                $existing.find('.wgdp-resource-row-restore').remove();
+            }
+            return;
+        }
 
-        showResourcePreview($container, file.id, file.name, type);
+        var prefix = $list.data('name-prefix');
+        var index = $list.find('.wgdp-resource-row').length;
+        var viewUrl = (file.type === 'folder')
+            ? 'https://drive.google.com/drive/folders/' + file.id
+            : 'https://drive.google.com/file/d/' + file.id + '/view';
+
+        var $row = $('<span class="wgdp-resource-row">' +
+            '<input type="hidden" name="' + prefix + '[' + index + '][id]" value="' + $('<span>').text(file.id).html() + '" />' +
+            '<input type="hidden" name="' + prefix + '[' + index + '][type]" value="' + $('<span>').text(file.type || 'file').html() + '" />' +
+            '<input type="hidden" name="' + prefix + '[' + index + '][name]" value="' + $('<span>').text(file.name).html() + '" />' +
+            '<input type="hidden" name="' + prefix + '[' + index + '][status]" value="active" class="wgdp-resource-status" />' +
+            '<span class="wgdp-resource-row-info">' +
+                '<strong>' + $('<span>').text(file.name).html() + '</strong> ' +
+                '<a href="' + viewUrl + '" target="_blank">View</a>' +
+            '</span>' +
+            '<a href="#" class="wgdp-resource-row-remove" title="Remove">&times;</a>' +
+        '</span>');
+
+        $list.append($row);
+    }
+
+    /**
+     * Re-index resource row name attributes after removal.
+     */
+    function reindexResourceRows($list) {
+        var prefix = $list.data('name-prefix');
+        $list.find('.wgdp-resource-row').each(function (i) {
+            $(this).find('input[type="hidden"]').each(function () {
+                // Extract the field name (id, type, name) from the last bracket pair.
+                var field = $(this).attr('name').match(/\[([^\]]+)\]$/);
+                if (field) {
+                    $(this).attr('name', prefix + '[' + i + '][' + field[1] + ']');
+                }
+            });
+        });
     }
 
     // Browse button click.
@@ -151,40 +202,42 @@
         openPicker($(this));
     });
 
-    // "Change" link — show the input area so the user can browse or paste a new URL.
-    $(document).on('click', '.wgdp-resource-change', function (e) {
+    // Remove resource row: active → retire (keep in DOM), already retired → remove from DOM.
+    $(document).on('click', '.wgdp-resource-row-remove', function (e) {
         e.preventDefault();
-        var $container = $(this).closest('.options_group, .wgdp-variation-fields');
-        $container.find('.wgdp-resource-preview').hide();
-        $container.find('.wgdp-resource-input-wrap').show()
-            .find('.wgdp-resource-cancel').show();
-    });
+        var $row = $(this).closest('.wgdp-resource-row');
+        var $list = $row.closest('.wgdp-resources-list');
 
-    // "Remove" link — clear the resource entirely.
-    $(document).on('click', '.wgdp-resource-clear', function (e) {
-        e.preventDefault();
-        if (!confirm('Remove this Drive resource from the product?')) {
-            return;
+        if ($row.hasClass('wgdp-resource-row--retired')) {
+            // Already retired — remove from DOM.
+            $row.remove();
+            reindexResourceRows($list);
+        } else {
+            // Active — retire it.
+            $row.addClass('wgdp-resource-row--retired');
+            $row.find('.wgdp-resource-status').val('retired_manual');
+            // Add badge and restore button.
+            $row.find('.wgdp-resource-row-info').append(' <span class="wgdp-badge--retired">Retired</span>');
+            $(this).before('<a href="#" class="wgdp-resource-row-restore" title="Restore">Restore</a> ');
         }
-        var $container = $(this).closest('.options_group, .wgdp-variation-fields');
-        $container.find('.wgdp-resource-id').val('').trigger('change');
-        $container.find('.wgdp-resource-type').val('').trigger('change');
-        $container.find('.wgdp-resource-name').val('').trigger('change');
-        $container.find('.wgdp-resource-preview').hide();
-        $container.find('.wgdp-resource-input-wrap').show()
-            .find('.wgdp-resource-cancel').hide();
+
+        notifyVariationChanged($list);
     });
 
-    // "Cancel" link — go back to preview without changing anything.
-    $(document).on('click', '.wgdp-resource-cancel', function (e) {
+    // Restore a retired resource row.
+    $(document).on('click', '.wgdp-resource-row-restore', function (e) {
         e.preventDefault();
-        var $container = $(this).closest('.options_group, .wgdp-variation-fields');
-        $container.find('.wgdp-resource-input-wrap').hide();
-        $container.find('.wgdp-resource-preview').show();
+        var $row = $(this).closest('.wgdp-resource-row');
+        $row.removeClass('wgdp-resource-row--retired');
+        $row.find('.wgdp-resource-status').val('active');
+        $row.find('.wgdp-badge--retired').remove();
+        $row.find('.wgdp-retired-note').remove();
+        $(this).remove();
+        notifyVariationChanged($row);
     });
 
     /* =========================================================
-     * Product page: URL paste detection
+     * Product page: URL paste detection (multi-file)
      * ========================================================= */
 
     $(document).on('blur', '.wgdp-resource-url-input', function () {
@@ -213,10 +266,18 @@
             $input.prop('disabled', false);
             if (response.success) {
                 var file = response.data;
-                $container.find('.wgdp-resource-id').val(file.id).trigger('change');
-                $container.find('.wgdp-resource-type').val(file.resourceType).trigger('change');
-                $container.find('.wgdp-resource-name').val(file.name).trigger('change');
-                showResourcePreview($container, file.id, file.name, file.resourceType);
+                if (file.resourceType === 'folder') {
+                    alert('Folders cannot be linked — please use individual file URLs.');
+                    return;
+                }
+                var $list = $container.find('.wgdp-resources-list');
+                addResourceRow({
+                    id: file.id,
+                    name: file.name,
+                    type: 'file'
+                }, $list);
+                $input.val('');
+                notifyVariationChanged($list);
             }
         }).fail(function () {
             $input.prop('disabled', false);
@@ -280,9 +341,11 @@
                 var $table = $btn.closest('.wgdp-add-entitlement-form').prev('table.wgdp-recipients-table[data-order-item-id="' + orderItemId + '"]');
 
                 // Build the new row.
+                var fileCount = d.file_count || 1;
                 var newRow = '<tr>' +
                     '<td>' + $('<span>').text(d.recipient_index).html() + '</td>' +
                     '<td>' + $('<span>').text(d.email).html() + '</td>' +
+                    '<td>' + fileCount + ' file' + (fileCount > 1 ? 's' : '') + '</td>' +
                     '<td><span class="wgdp-status-badge wgdp-vstatus--pending">Pending</span></td>' +
                     '<td><span class="wgdp-status-badge wgdp-gstatus--pending">Pending</span></td>' +
                     '<td>' +
@@ -294,7 +357,7 @@
                 if (!$table.length) {
                     // No table yet — create one before the form.
                     var tableHtml = '<table class="widefat fixed striped wgdp-recipients-table" data-order-item-id="' + orderItemId + '" style="margin-bottom:12px;">' +
-                        '<thead><tr><th style="width:30px;">#</th><th>Email</th><th>Verification</th><th>Grant</th><th>Actions</th></tr></thead>' +
+                        '<thead><tr><th style="width:30px;">#</th><th>Email</th><th>Files</th><th>Verification</th><th>Grant</th><th>Actions</th></tr></thead>' +
                         '<tbody>' + newRow + '</tbody></table>';
                     $btn.closest('.wgdp-add-entitlement-form').before(tableHtml);
                 } else {
@@ -325,11 +388,16 @@
         var $btn = $(this);
         $btn.prop('disabled', true).text('Revoking...');
 
-        $.post(wgdp.ajax_url, {
+        var postData = {
             action: 'wgdp_revoke_entitlement',
             nonce: wgdp.nonce,
             entitlement_id: $btn.data('entitlement-id')
-        }, function (response) {
+        };
+        if ($btn.data('scope')) {
+            postData.scope = $btn.data('scope');
+        }
+
+        $.post(wgdp.ajax_url, postData, function (response) {
             if (response.success) {
                 // Update the row to show revoked status.
                 var $row = $btn.closest('tr');
@@ -349,6 +417,52 @@
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Revoke');
+            alert('Request failed.');
+        });
+    });
+
+    /* =========================================================
+     * Order meta box & Access Manager: Retry Grant button
+     * ========================================================= */
+
+    $(document).on('click', '.wgdp-retry-grant-btn', function () {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Retrying...');
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_retry_grant',
+            nonce: wgdp.nonce,
+            entitlement_id: $btn.data('entitlement-id')
+        }, function (response) {
+            if (response.success) {
+                var d = response.data;
+                var $row = $btn.closest('tr');
+                if ($row.length) {
+                    // Update grant status badge.
+                    var statusClass = d.status === 'granted' ? 'wgdp-gstatus--granted' : 'wgdp-gstatus--error';
+                    var statusLabel = d.status === 'granted' ? 'Granted' : 'Error';
+                    $row.find('[class*="wgdp-gstatus--"]')
+                        .removeClass('wgdp-gstatus--error wgdp-gstatus--pending wgdp-gstatus--granted wgdp-gstatus--pending_release')
+                        .addClass(statusClass).text(statusLabel);
+
+                    // Remove error message text.
+                    if (d.status === 'granted') {
+                        $row.find('small[style*="color:#d63638"]').remove();
+                        $btn.replaceWith('<span style="color:#00a32a;font-weight:600;">' + d.message + '</span>');
+                    } else {
+                        $btn.prop('disabled', false).text('Retry Grant');
+                        alert(d.message);
+                    }
+                } else {
+                    $btn.prop('disabled', false).text('Retry Grant');
+                    alert(d.message);
+                }
+            } else {
+                $btn.prop('disabled', false).text('Retry Grant');
+                alert('Error: ' + response.data);
+            }
+        }).fail(function () {
+            $btn.prop('disabled', false).text('Retry Grant');
             alert('Request failed.');
         });
     });
@@ -548,6 +662,33 @@
     });
 
     /* =========================================================
+     * Variation: Release mode override conditional display
+     * ========================================================= */
+
+    $(document).on('change', '.wgdp-var-release-mode', function () {
+        var mode = $(this).val();
+        var $fields = $(this).closest('.wgdp-variation-fields');
+        var isMinSales = mode === 'min_sales_qty';
+
+        $fields.find('.wgdp-var-show-if-min-sales').toggle(isMinSales);
+
+        // Show variation counter only for min_sales_qty + this_variation_only.
+        var scope = $fields.find('[name$="[_wgdp_threshold_scope]"]').val();
+        $fields.find('.wgdp-var-show-if-var-counter').toggle(isMinSales && scope === 'this_variation_only');
+
+        notifyVariationChanged($(this));
+    });
+
+    $(document).on('change', '.wgdp-variation-fields [name$="[_wgdp_threshold_scope]"]', function () {
+        var $fields = $(this).closest('.wgdp-variation-fields');
+        var mode = $fields.find('.wgdp-var-release-mode').val();
+        var scope = $(this).val();
+        $fields.find('.wgdp-var-show-if-var-counter').toggle(mode === 'min_sales_qty' && scope === 'this_variation_only');
+
+        notifyVariationChanged($(this));
+    });
+
+    /* =========================================================
      * Product page: "Release Digital Now" AJAX button
      * ========================================================= */
 
@@ -581,6 +722,39 @@
     });
 
     /* =========================================================
+     * Variation: "Release Now" AJAX button
+     * ========================================================= */
+
+    $(document).on('click', '.wgdp-release-var-now-btn', function () {
+        if (!confirm('Release this variation now? Verified pending entitlements for this variation will be granted.')) {
+            return;
+        }
+
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Releasing...');
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_release_variation_now',
+            nonce: wgdp.nonce,
+            variation_id: $btn.data('variation-id')
+        }, function (response) {
+            if (response.success) {
+                $btn.closest('.wgdp-var-release-status').html(
+                    '<label>Release Status</label>' +
+                    '<span class="wgdp-release-gate-status wgdp-release-gate-status--released">Released</span> ' +
+                    '<span class="description">Just now</span>'
+                );
+            } else {
+                $btn.prop('disabled', false).text('Release Now');
+                alert('Error: ' + response.data);
+            }
+        }).fail(function () {
+            $btn.prop('disabled', false).text('Release Now');
+            alert('Request failed.');
+        });
+    });
+
+    /* =========================================================
      * Product page: "Recalculate Sales" AJAX button
      * ========================================================= */
 
@@ -595,6 +769,35 @@
         }, function (response) {
             if (response.success) {
                 $btn.closest('.form-field').find('.wgdp-sales-count-value').text(response.data.total);
+                $btn.prop('disabled', false).text('Recalculate');
+                if (response.data.is_released) {
+                    location.reload();
+                }
+            } else {
+                $btn.prop('disabled', false).text('Recalculate');
+                alert('Error: ' + response.data);
+            }
+        }).fail(function () {
+            $btn.prop('disabled', false).text('Recalculate');
+            alert('Request failed.');
+        });
+    });
+
+    /* =========================================================
+     * Variation: "Recalculate Sales" AJAX button
+     * ========================================================= */
+
+    $(document).on('click', '.wgdp-recalculate-var-sales-btn', function () {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Recalculating...');
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_recalculate_variation_sales',
+            nonce: wgdp.nonce,
+            variation_id: $btn.data('variation-id')
+        }, function (response) {
+            if (response.success) {
+                $btn.siblings('.wgdp-var-sales-count-value').text(response.data.total);
                 $btn.prop('disabled', false).text('Recalculate');
                 if (response.data.is_released) {
                     location.reload();

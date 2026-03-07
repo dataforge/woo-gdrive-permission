@@ -1,118 +1,81 @@
-/* Drive browser modal */
-#wgdp-browse-dialog {
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden !important;
+/* Multi-file resource list */
+.wgdp-resources-list {
+    display: block;
 }
 
-.wgdp-browse-hint {
-    margin: 0;
-    padding: 8px 12px;
-    background: #f0f6fc;
-    border-bottom: 1px solid #c3c4c7;
-    font-size: 12px;
-    color: #2c3338;
-    line-height: 1.5;
-}
-
-.wgdp-breadcrumbs {
-    padding: 8px 12px;
-    background: #f0f0f1;
-    border-bottom: 1px solid #c3c4c7;
-    font-size: 13px;
-    white-space: nowrap;
-    overflow-x: auto;
-    flex-shrink: 0;
-}
-
-.wgdp-bc-link {
-    text-decoration: none;
-    color: #2271b1;
-}
-
-.wgdp-bc-link:hover {
-    text-decoration: underline;
-}
-
-.wgdp-bc-sep {
-    color: #999;
-    margin: 0 2px;
-}
-
-.wgdp-file-list {
-    flex: 1;
-    overflow-y: auto;
-    min-height: 0;
-    padding: 0;
-}
-
-.wgdp-files {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-
-.wgdp-file-item {
-    padding: 8px 12px;
-    cursor: pointer;
-    border-bottom: 1px solid #f0f0f1;
+.wgdp-resource-row {
     display: flex;
     align-items: center;
     gap: 8px;
-}
-
-.wgdp-file-item:hover {
-    background: #f6f7f7;
-}
-
-.wgdp-file-item.wgdp-selected {
-    background: #2271b1;
-    color: #fff;
-}
-
-.wgdp-file-icon {
-    flex-shrink: 0;
-    font-size: 16px;
-}
-
-.wgdp-file-name {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.wgdp-folder {
-    font-weight: 500;
-}
-
-.wgdp-empty,
-.wgdp-error {
-    padding: 20px;
-    text-align: center;
-    color: #666;
-}
-
-.wgdp-error {
-    color: #d63638;
-}
-
-/* Product meta preview */
-.wgdp-resource-preview .wgdp-resource-info {
-    display: inline-block;
     padding: 6px 10px;
     background: #f0f6fc;
     border: 1px solid #c3c4c7;
     border-radius: 3px;
-    margin-right: 8px;
+    margin-bottom: 4px;
 }
 
-.wgdp-resource-change,
-.wgdp-resource-clear,
-.wgdp-resource-cancel {
+.wgdp-resource-row-info {
+    flex: 1;
+    font-size: 13px;
+}
+
+.wgdp-resource-row-info strong {
+    margin-right: 6px;
+}
+
+.wgdp-resource-row-info a {
+    font-size: 12px;
+    text-decoration: none;
+}
+
+.wgdp-resource-row-remove {
+    color: #b32d2e;
+    text-decoration: none;
+    font-size: 18px;
+    font-weight: bold;
+    line-height: 1;
+    padding: 0 4px;
+}
+
+.wgdp-resource-row-remove:hover {
+    color: #a00;
+}
+
+/* Retired resource rows */
+.wgdp-resource-row--retired {
+    border-style: dashed;
+    opacity: 0.7;
+    background: #f0f0f1;
+}
+
+.wgdp-badge--retired {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 500;
+    background: #fef8e7;
+    color: #996800;
+    margin-left: 6px;
+}
+
+.wgdp-retired-note {
+    display: block;
+    font-size: 11px;
+    color: #787c82;
+    font-style: italic;
+    margin-top: 2px;
+}
+
+.wgdp-resource-row-restore {
+    color: #2271b1;
     text-decoration: none;
     font-size: 12px;
+    padding: 0 4px;
+}
+
+.wgdp-resource-row-restore:hover {
+    color: #135e96;
 }
 
 /* Variation fields container */

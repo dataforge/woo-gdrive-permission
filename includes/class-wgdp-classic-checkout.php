@@ -20,45 +20,10 @@ class WGDP_Classic_Checkout {
 	}
 
 	/**
-	 * Get qualifying cart items that need recipient emails.
-	 */
-	private function get_qualifying_cart_items() {
-		if ( ! WC()->cart ) {
-			return array();
-		}
-
-		$items = array();
-
-		foreach ( WC()->cart->get_cart() as $cart_key => $cart_item ) {
-			$product_id   = $cart_item['product_id'] ?? 0;
-			$variation_id = $cart_item['variation_id'] ?? 0;
-			$quantity     = $cart_item['quantity'] ?? 1;
-
-			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-				continue;
-			}
-
-			$product = $cart_item['data'] ?? null;
-			$name    = $product ? $product->get_name() : '';
-
-			$items[] = array(
-				'cart_key'     => $cart_key,
-				'product_name' => $name,
-				'quantity'     => (int) $quantity,
-				'product_id'   => (int) $product_id,
-				'variation_id' => (int) $variation_id,
-				'key'          => $product_id . '_' . ( $variation_id ?: 0 ),
-			);
-		}
-
-		return $items;
-	}
-
-	/**
 	 * Render recipient email fields on the checkout page.
 	 */
 	public function render_recipient_fields( $checkout ) {
-		$items = $this->get_qualifying_cart_items();
+		$items = WGDP_Product_Meta::get_qualifying_cart_items();
 
 		if ( empty( $items ) ) {
 			return;
@@ -68,7 +33,7 @@ class WGDP_Classic_Checkout {
 		$has_min_sales    = false;
 		$has_manual       = false;
 		foreach ( $items as $item ) {
-			$mode = get_post_meta( $item['product_id'], '_wgdp_release_mode', true ) ?: 'immediate';
+			$mode = WGDP_Release_Gate::get_effective_release_mode( $item['product_id'], $item['variation_id'] ?: 0 );
 			if ( 'min_sales_qty' === $mode ) {
 				$has_min_sales = true;
 			} elseif ( 'manual_release' === $mode ) {
@@ -78,11 +43,11 @@ class WGDP_Classic_Checkout {
 
 		echo '<h3>' . esc_html__( 'Digital Access Recipients', 'woo-gdrive-permission' ) . '</h3>';
 		if ( $has_min_sales ) {
-			echo '<p>' . esc_html__( 'If you would like digital access, enter your Google account email below. Access will be granted once the product reaches its minimum sales goal.', 'woo-gdrive-permission' ) . '</p>';
+			echo '<p>' . esc_html__( 'Enter your Google account email below to receive access once the product reaches its minimum sales goal. If you skip this now, you will receive an email after purchase with a link to provide it later.', 'woo-gdrive-permission' ) . '</p>';
 		} elseif ( $has_manual ) {
-			echo '<p>' . esc_html__( 'If you would like digital access, enter your Google account email below. Access will be granted once it becomes available.', 'woo-gdrive-permission' ) . '</p>';
+			echo '<p>' . esc_html__( 'Enter your Google account email below to receive access once it becomes available. If you skip this now, you will receive an email after purchase with a link to provide it later.', 'woo-gdrive-permission' ) . '</p>';
 		} else {
-			echo '<p>' . esc_html__( 'Enter the Google account email address for each recipient who will receive digital access.', 'woo-gdrive-permission' ) . '</p>';
+			echo '<p>' . esc_html__( 'Enter the Google account email for each recipient to grant access right away. If you skip this now, you will receive an email after purchase with a link to provide it later.', 'woo-gdrive-permission' ) . '</p>';
 		}
 		echo '<div class="woocommerce-additional-fields__field-wrapper">';
 
@@ -117,7 +82,7 @@ class WGDP_Classic_Checkout {
 	 * Validate recipient email fields during checkout processing.
 	 */
 	public function validate_recipient_fields() {
-		$items = $this->get_qualifying_cart_items();
+		$items = WGDP_Product_Meta::get_qualifying_cart_items();
 
 		if ( empty( $items ) ) {
 			return;
@@ -219,7 +184,7 @@ class WGDP_Classic_Checkout {
 			return;
 		}
 
-		$items = $this->get_qualifying_cart_items();
+		$items = WGDP_Product_Meta::get_qualifying_cart_items();
 		if ( empty( $items ) ) {
 			return;
 		}

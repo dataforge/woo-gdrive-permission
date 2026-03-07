@@ -79,8 +79,9 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		}
 
 		return array(
-			'resend_otp' => 'Resend OTP',
-			'revoke'     => 'Revoke',
+			'resend_otp'  => 'Resend OTP',
+			'retry_grant' => 'Retry Grant',
+			'revoke'      => 'Revoke',
 		);
 	}
 
@@ -238,6 +239,12 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					. ' data-entitlement-id="' . esc_attr( $item['id'] ) . '">Verify on Drive</button> ';
 			}
 
+			// Retry Grant button (if error and verified).
+			if ( 'error' === $item['grant_status'] && 'verified' === $item['verification_status'] ) {
+				$html .= '<button type="button" class="button button-small wgdp-retry-grant-btn"'
+					. ' data-entitlement-id="' . esc_attr( $item['id'] ) . '">Retry Grant</button> ';
+			}
+
 			// Resend OTP (if pending/expired verification).
 			if ( 'pending' === $item['verification_status'] || 'expired' === $item['verification_status'] ) {
 				$html .= '<button type="button" class="button button-small wgdp-resend-otp-btn"'
@@ -247,6 +254,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			// Revoke button.
 			$html .= '<button type="button" class="button button-small wgdp-revoke-entitlement-btn"'
 				. ' data-entitlement-id="' . esc_attr( $item['id'] ) . '"'
+				. ' data-scope="single"'
 				. ' style="color:#b32d2e;">Revoke</button>';
 		}
 

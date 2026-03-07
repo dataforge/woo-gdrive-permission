@@ -23,7 +23,6 @@ class WGDP_Product_Meta {
 		add_action( 'woocommerce_save_product_variation', array( $this, 'save_variation_meta' ), 10, 2 );
 
 		// AJAX endpoints.
-		add_action( 'wp_ajax_wgdp_browse_drive', array( $this, 'ajax_browse_drive' ) );
 		add_action( 'wp_ajax_wgdp_get_file_info', array( $this, 'ajax_get_file_info' ) );
 
 		// Enqueue assets.
@@ -44,15 +43,59 @@ class WGDP_Product_Meta {
 	}
 
 	/**
+	 * Get Drive resources for a product/variation.
+	 *
+	 * Returns array of [{id, type, name}, ...]. Checks _wgdp_drive_resources JSON
+	 * first, then falls back to legacy single-resource meta keys.
+	 *
+	 * @param int $product_id   The product ID.
+	 * @param int $variation_id The variation ID (0 for simple products).
+	 * @return array Array of resource objects with id, type, name keys.
+	 */
+	public static function get_drive_resources( $product_id, $variation_id = 0 ) {
+		// Check variation first, then product.
+		$check_ids = array();
+		if ( $variation_id ) {
+			$check_ids[] = $variation_id;
+		}
+		$check_ids[] = $product_id;
+
+		foreach ( $check_ids as $check_id ) {
+			$json = get_post_meta( $check_id, '_wgdp_drive_resources', true );
+			if ( ! empty( $json ) ) {
+				$resources = json_decode( $json, true );
+				if ( is_array( $resources ) && ! empty( $resources ) ) {
+					return $resources;
+				}
+			}
+		}
+
+		// Legacy fallback: single-resource meta keys.
+		foreach ( $check_ids as $check_id ) {
+			$resource_id = get_post_meta( $check_id, '_wgdp_drive_resource_id', true );
+			if ( ! empty( $resource_id ) ) {
+				return array( array(
+					'id'   => $resource_id,
+					'type' => get_post_meta( $check_id, '_wgdp_drive_resource_type', true ) ?: 'file',
+					'name' => get_post_meta( $check_id, '_wgdp_drive_resource_name', true ) ?: '',
+				) );
+			}
+		}
+
+		return array();
+	}
+
+	/**
 	 * Render the simple product panel.
 	 */
 	public function render_product_panel() {
 		global $post;
-		$product_id    = $post->ID;
-		$resource_id   = get_post_meta( $product_id, '_wgdp_drive_resource_id', true );
-		$resource_type = get_post_meta( $product_id, '_wgdp_drive_resource_type', true );
-		$resource_name = get_post_meta( $product_id, '_wgdp_drive_resource_name', true );
-		$account_id    = get_post_meta( $product_id, '_wgdp_account_id', true );
+		if ( ! $post ) {
+			return;
+		}
+		$product_id = $post->ID;
+		$resources  = self::get_drive_resources( $product_id );
+		$account_id = get_post_meta( $product_id, '_wgdp_account_id', true );
 
 		$ent_trigger    = get_post_meta( $product_id, '_wgdp_entitlement_trigger', true ) ?: 'default';
 		$release_mode  = get_post_meta( $product_id, '_wgdp_release_mode', true ) ?: 'immediate';
@@ -63,7 +106,7 @@ class WGDP_Product_Meta {
 		?>
 		<div id="wgdp_drive_data" class="panel woocommerce_options_panel">
 			<div class="options_group show_if_simple show_if_external hide_if_variable">
-				<?php $this->render_drive_fields( '', $resource_id, $resource_type, $resource_name, $account_id ); ?>
+				<?php $this->render_drive_fields( '', $resources, $account_id ); ?>
 			</div>
 
 			<div class="options_group show_if_variable hide_if_simple hide_if_external" style="display:none;">
@@ -77,7 +120,7 @@ class WGDP_Product_Meta {
 				<p class="form-field"><strong><?php esc_html_e( 'Release Gate', 'woo-gdrive-permission' ); ?></strong></p>
 				<p class="form-field">
 					<label>&nbsp;</label>
-					<span class="description"><?php esc_html_e( 'Controls when buyers receive Google Drive access. This applies across all variations.', 'woo-gdrive-permission' ); ?></span>
+					<span class="description"><?php esc_html_e( 'Controls when buyers receive Google Drive access. Variations inherit this setting unless overridden.', 'woo-gdrive-permission' ); ?></span>
 				</p>
 
 				<p class="form-field">
@@ -147,17 +190,19 @@ class WGDP_Product_Meta {
 
 	/**
 	 * Render Drive fields (reusable for simple and variations).
+	 *
+	 * @param string $name_prefix Form field name prefix (empty for simple products).
+	 * @param array  $resources   Array of [{id, type, name}, ...].
+	 * @param string $account_id  Selected Google account ID.
 	 */
-	private function render_drive_fields( $name_prefix, $resource_id, $resource_type, $resource_name, $account_id = '' ) {
+	private function render_drive_fields( $name_prefix, $resources, $account_id = '' ) {
 		$auth     = WGDP_Google_Auth::instance();
 		$accounts = $auth->get_accounts();
 		$has_accounts = $auth->has_accounts();
 
-		$id_field_name      = $name_prefix ? $name_prefix . '[_wgdp_drive_resource_id]' : '_wgdp_drive_resource_id';
-		$type_field_name    = $name_prefix ? $name_prefix . '[_wgdp_drive_resource_type]' : '_wgdp_drive_resource_type';
-		$name_field_name    = $name_prefix ? $name_prefix . '[_wgdp_drive_resource_name]' : '_wgdp_drive_resource_name';
-		$account_field_name = $name_prefix ? $name_prefix . '[_wgdp_account_id]' : '_wgdp_account_id';
-		$unique_id          = $name_prefix ? 'wgdp-' . esc_attr( $name_prefix ) : 'wgdp-simple';
+		$account_field_name   = $name_prefix ? $name_prefix . '[_wgdp_account_id]' : '_wgdp_account_id';
+		$resources_field_name = $name_prefix ? $name_prefix . '[_wgdp_drive_resources]' : '_wgdp_drive_resources';
+		$unique_id            = $name_prefix ? 'wgdp-' . esc_attr( $name_prefix ) : 'wgdp-simple';
 
 		if ( ! $has_accounts ) : ?>
 			<p class="form-field">
@@ -190,43 +235,54 @@ class WGDP_Product_Meta {
 			</select>
 		</p>
 
-		<input type="hidden" class="wgdp-resource-id" name="<?php echo esc_attr( $id_field_name ); ?>" value="<?php echo esc_attr( $resource_id ); ?>" />
-		<input type="hidden" class="wgdp-resource-type" name="<?php echo esc_attr( $type_field_name ); ?>" value="<?php echo esc_attr( $resource_type ); ?>" />
-		<input type="hidden" class="wgdp-resource-name" name="<?php echo esc_attr( $name_field_name ); ?>" value="<?php echo esc_attr( $resource_name ); ?>" />
-
-		<?php $has_resource = $resource_id && $resource_name; ?>
-
-		<p class="form-field wgdp-resource-preview" <?php echo $has_resource ? '' : 'style="display:none;"'; ?>>
-			<label><?php esc_html_e( 'Drive Resource', 'woo-gdrive-permission' ); ?></label>
-			<span class="wgdp-resource-info">
-				<?php if ( $has_resource ) : ?>
-					<strong><?php echo esc_html( $resource_name ); ?></strong>
-					(<?php echo esc_html( $resource_type ?: 'file' ); ?>)
-					&mdash;
-					<a href="<?php echo esc_url( WGDP_Google_Drive::build_web_link( $resource_id, $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' ) ); ?>" target="_blank">View in Drive</a>
-				<?php endif; ?>
+		<p class="form-field">
+			<label><?php esc_html_e( 'Drive Files', 'woo-gdrive-permission' ); ?></label>
+			<span class="wgdp-resources-list-wrap">
+				<span class="wgdp-resources-list" data-name-prefix="<?php echo esc_attr( $resources_field_name ); ?>">
+					<?php foreach ( $resources as $i => $res ) :
+						$res_status = $res['status'] ?? 'active';
+						$is_retired = in_array( $res_status, array( 'retired_manual', 'retired_missing' ), true );
+						$row_class  = 'wgdp-resource-row' . ( $is_retired ? ' wgdp-resource-row--retired' : '' );
+					?>
+						<span class="<?php echo esc_attr( $row_class ); ?>">
+							<input type="hidden" name="<?php echo esc_attr( $resources_field_name ); ?>[<?php echo (int) $i; ?>][id]" value="<?php echo esc_attr( $res['id'] ); ?>" />
+							<input type="hidden" name="<?php echo esc_attr( $resources_field_name ); ?>[<?php echo (int) $i; ?>][type]" value="<?php echo esc_attr( $res['type'] ?? 'file' ); ?>" />
+							<input type="hidden" name="<?php echo esc_attr( $resources_field_name ); ?>[<?php echo (int) $i; ?>][name]" value="<?php echo esc_attr( $res['name'] ?? '' ); ?>" />
+							<input type="hidden" name="<?php echo esc_attr( $resources_field_name ); ?>[<?php echo (int) $i; ?>][status]" value="<?php echo esc_attr( $res_status ); ?>" class="wgdp-resource-status" />
+							<span class="wgdp-resource-row-info">
+								<strong><?php echo esc_html( $res['name'] ?? $res['id'] ); ?></strong>
+								<a href="<?php echo esc_url( WGDP_Google_Drive::build_web_link( $res['id'], $res['type'] ?? '' ) ); ?>" target="_blank"><?php esc_html_e( 'View', 'woo-gdrive-permission' ); ?></a>
+								<?php if ( $is_retired ) : ?>
+									<span class="wgdp-badge--retired"><?php esc_html_e( 'Retired', 'woo-gdrive-permission' ); ?></span>
+									<?php if ( 'retired_missing' === $res_status ) : ?>
+										<em class="wgdp-retired-note"><?php esc_html_e( 'Auto-retired: file not found on Google Drive', 'woo-gdrive-permission' ); ?></em>
+									<?php endif; ?>
+								<?php endif; ?>
+							</span>
+							<?php if ( $is_retired ) : ?>
+								<a href="#" class="wgdp-resource-row-restore" title="<?php esc_attr_e( 'Restore', 'woo-gdrive-permission' ); ?>"><?php esc_html_e( 'Restore', 'woo-gdrive-permission' ); ?></a>
+							<?php endif; ?>
+							<a href="#" class="wgdp-resource-row-remove" title="<?php esc_attr_e( 'Remove', 'woo-gdrive-permission' ); ?>">&times;</a>
+						</span>
+					<?php endforeach; ?>
+				</span>
 			</span>
-			<a href="#" class="wgdp-resource-change"><?php esc_html_e( 'Change', 'woo-gdrive-permission' ); ?></a>
-			<a href="#" class="wgdp-resource-clear" style="color:#b32d2e;margin-left:8px;"><?php esc_html_e( 'Remove', 'woo-gdrive-permission' ); ?></a>
 		</p>
 
-		<div class="wgdp-resource-input-wrap" <?php echo $has_resource ? 'style="display:none;"' : ''; ?>>
+		<div class="wgdp-resource-input-wrap">
 			<p class="form-field">
-				<label for="<?php echo esc_attr( $unique_id ); ?>-resource-id">
-					<?php esc_html_e( 'Drive Resource', 'woo-gdrive-permission' ); ?>
+				<label for="<?php echo esc_attr( $unique_id ); ?>-resource-url">
+					<?php esc_html_e( 'Add File', 'woo-gdrive-permission' ); ?>
 				</label>
 				<input type="text"
 					class="short wgdp-resource-url-input"
-					id="<?php echo esc_attr( $unique_id ); ?>-resource-id"
+					id="<?php echo esc_attr( $unique_id ); ?>-resource-url"
 					placeholder="<?php esc_attr_e( 'Paste a GDrive URL or click Browse', 'woo-gdrive-permission' ); ?>"
 				/>
 			</p>
 			<p class="form-field">
 				<label>&nbsp;</label>
 				<button type="button" class="button wgdp-browse-drive"><?php esc_html_e( 'Browse GDrive', 'woo-gdrive-permission' ); ?></button>
-				<?php if ( $has_resource ) : ?>
-					<a href="#" class="wgdp-resource-cancel" style="margin-left:8px;"><?php esc_html_e( 'Cancel', 'woo-gdrive-permission' ); ?></a>
-				<?php endif; ?>
 			</p>
 		</div>
 		<?php
@@ -245,15 +301,39 @@ class WGDP_Product_Meta {
 			return;
 		}
 
-		$fields = array( '_wgdp_drive_resource_id', '_wgdp_drive_resource_type', '_wgdp_drive_resource_name', '_wgdp_account_id' );
-		foreach ( $fields as $field ) {
-			if ( isset( $_POST[ $field ] ) ) {
-				$value = sanitize_text_field( wp_unslash( $_POST[ $field ] ) );
-				if ( '_wgdp_drive_resource_id' === $field && ! empty( $value ) ) {
-					$value = WGDP_Google_Drive::extract_id_from_url( $value );
+		// Account ID.
+		if ( isset( $_POST['_wgdp_account_id'] ) ) {
+			update_post_meta( $post_id, '_wgdp_account_id', sanitize_text_field( wp_unslash( $_POST['_wgdp_account_id'] ) ) );
+		}
+
+		// Multi-file resources.
+		$old_resources  = self::get_drive_resources( $post_id );
+		$old_active_ids = self::extract_active_resource_ids( $old_resources );
+
+		if ( isset( $_POST['_wgdp_drive_resources'] ) && is_array( $_POST['_wgdp_drive_resources'] ) ) {
+			$raw       = wp_unslash( $_POST['_wgdp_drive_resources'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+			$resources = self::sanitize_resources_array( $raw );
+			update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
+			// Clean up legacy keys.
+			delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
+			delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
+			delete_post_meta( $post_id, '_wgdp_drive_resource_name' );
+
+			// Detect new active resources and queue backfill.
+			$new_active_ids = self::extract_active_resource_ids( $resources );
+			$added_ids      = array_diff( $new_active_ids, $old_active_ids );
+			if ( ! empty( $added_ids ) ) {
+				$account_id = self::get_account_for_item( $post_id, 0 );
+				if ( $account_id ) {
+					self::queue_backfill( $post_id, 0, array_values( $added_ids ), $account_id );
 				}
-				update_post_meta( $post_id, $field, $value );
 			}
+		} elseif ( ! isset( $_POST['_wgdp_drive_resources'] ) ) {
+			// No resources submitted — clear.
+			update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
+			delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
+			delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
+			delete_post_meta( $post_id, '_wgdp_drive_resource_name' );
 		}
 
 		// Entitlement trigger.
@@ -280,13 +360,26 @@ class WGDP_Product_Meta {
 	 * Render variation fields.
 	 */
 	public function render_variation_fields( $loop, $variation_data, $variation ) {
-		$variation_id    = $variation->ID;
-		$resource_id     = get_post_meta( $variation_id, '_wgdp_drive_resource_id', true );
-		$resource_type   = get_post_meta( $variation_id, '_wgdp_drive_resource_type', true );
-		$resource_name   = get_post_meta( $variation_id, '_wgdp_drive_resource_name', true );
-		$account_id      = get_post_meta( $variation_id, '_wgdp_account_id', true );
+		$variation_id      = $variation->ID;
+		$product_id        = wp_get_post_parent_id( $variation_id );
+		$resources         = self::get_drive_resources( $product_id, $variation_id );
+		$account_id        = get_post_meta( $variation_id, '_wgdp_account_id', true );
 		$includes_digital  = get_post_meta( $variation_id, '_wgdp_includes_digital', true ) ?: 'yes';
 		$requires_shipping = get_post_meta( $variation_id, '_wgdp_requires_shipping', true );
+
+		// Release override fields.
+		$var_release_mode    = get_post_meta( $variation_id, '_wgdp_release_mode', true ) ?: 'inherit_from_product';
+		$var_threshold_qty   = (int) get_post_meta( $variation_id, '_wgdp_threshold_qty', true );
+		$var_threshold_scope = get_post_meta( $variation_id, '_wgdp_threshold_scope', true ) ?: 'entire_product';
+		$var_counts_toward   = get_post_meta( $variation_id, '_wgdp_counts_toward_product_threshold', true );
+		$var_counts_toward   = '' === $var_counts_toward || 'yes' === $var_counts_toward ? 'yes' : 'no';
+		$var_is_released     = '1' === get_post_meta( $variation_id, '_wgdp_is_released', true );
+		$var_released_at     = get_post_meta( $variation_id, '_wgdp_released_at', true );
+		$var_paid_qty        = (int) get_post_meta( $variation_id, '_wgdp_variation_paid_qty_total', true );
+
+		// Product-level mode for display in "Inherit" label.
+		$product_mode       = get_post_meta( $product_id, '_wgdp_release_mode', true ) ?: 'immediate';
+		$product_mode_label = self::release_mode_label( $product_mode );
 
 		$name_prefix = 'wgdp_var[' . $loop . ']';
 
@@ -302,7 +395,7 @@ class WGDP_Product_Meta {
 		echo esc_html__( 'Includes Digital Access', 'woo-gdrive-permission' );
 		echo '</label>';
 		echo '<br><span class="description">'
-			. esc_html__( 'Grants the buyer Google Drive access when they purchase this variation. Timing is controlled by the trigger and release settings in the product\'s GDrive tab.', 'woo-gdrive-permission' )
+			. esc_html__( 'Grants the buyer Google Drive access when they purchase this variation.', 'woo-gdrive-permission' )
 			. '</span>';
 		echo '</p>';
 
@@ -319,8 +412,96 @@ class WGDP_Product_Meta {
 			. '</span>';
 		echo '</p>';
 
-		$this->render_drive_fields( $name_prefix, $resource_id, $resource_type, $resource_name, $account_id );
+		$this->render_drive_fields( $name_prefix, $resources, $account_id );
+
+		// Release override section.
+		echo '<p class="form-row form-row-full" style="margin-top:12px;"><strong>' . esc_html__( 'Release Gate Override', 'woo-gdrive-permission' ) . '</strong></p>';
+
+		// Release Mode Override.
+		echo '<p class="form-row form-row-full">';
+		echo '<label>' . esc_html__( 'Release Mode', 'woo-gdrive-permission' ) . '</label>';
+		echo '<select class="wgdp-var-release-mode" name="' . esc_attr( $name_prefix . '[_wgdp_release_mode]' ) . '" style="width:100%;">';
+		/* translators: %s: current product-level release mode */
+		echo '<option value="inherit_from_product"' . selected( $var_release_mode, 'inherit_from_product', false ) . '>'
+			. sprintf( esc_html__( 'Inherit from product (%s)', 'woo-gdrive-permission' ), esc_html( $product_mode_label ) )
+			. '</option>';
+		echo '<option value="immediate"' . selected( $var_release_mode, 'immediate', false ) . '>' . esc_html__( 'Immediate', 'woo-gdrive-permission' ) . '</option>';
+		echo '<option value="manual_release"' . selected( $var_release_mode, 'manual_release', false ) . '>' . esc_html__( 'Manual Release', 'woo-gdrive-permission' ) . '</option>';
+		echo '<option value="min_sales_qty"' . selected( $var_release_mode, 'min_sales_qty', false ) . '>' . esc_html__( 'Min Sales Qty', 'woo-gdrive-permission' ) . '</option>';
+		echo '</select>';
+		echo '</p>';
+
+		// Threshold Qty (shown when min_sales_qty).
+		echo '<p class="form-row form-row-full wgdp-var-show-if-min-sales"' . ( 'min_sales_qty' !== $var_release_mode ? ' style="display:none;"' : '' ) . '>';
+		echo '<label>' . esc_html__( 'Threshold Qty', 'woo-gdrive-permission' ) . '</label>';
+		echo '<input type="number" name="' . esc_attr( $name_prefix . '[_wgdp_threshold_qty]' ) . '" min="0" step="1" value="' . esc_attr( $var_threshold_qty ) . '" style="width:100%;" />';
+		echo '</p>';
+
+		// Count Sales From (shown when min_sales_qty).
+		echo '<p class="form-row form-row-full wgdp-var-show-if-min-sales"' . ( 'min_sales_qty' !== $var_release_mode ? ' style="display:none;"' : '' ) . '>';
+		echo '<label>' . esc_html__( 'Count Sales From', 'woo-gdrive-permission' ) . '</label>';
+		echo '<select name="' . esc_attr( $name_prefix . '[_wgdp_threshold_scope]' ) . '" style="width:100%;">';
+		echo '<option value="entire_product"' . selected( $var_threshold_scope, 'entire_product', false ) . '>' . esc_html__( 'Entire product', 'woo-gdrive-permission' ) . '</option>';
+		echo '<option value="this_variation_only"' . selected( $var_threshold_scope, 'this_variation_only', false ) . '>' . esc_html__( 'This variation only', 'woo-gdrive-permission' ) . '</option>';
+		echo '</select>';
+		echo '</p>';
+
+		// Variation Sales Count (shown when min_sales_qty with this_variation_only scope).
+		$show_var_counter = 'min_sales_qty' === $var_release_mode && 'this_variation_only' === $var_threshold_scope;
+		echo '<p class="form-row form-row-full wgdp-var-show-if-var-counter"' . ( ! $show_var_counter ? ' style="display:none;"' : '' ) . '>';
+		echo '<label>' . esc_html__( 'Variation Sales Count', 'woo-gdrive-permission' ) . '</label>';
+		echo '<span class="wgdp-var-sales-count-value">' . esc_html( $var_paid_qty ) . '</span> ';
+		echo '<button type="button" class="button button-small wgdp-recalculate-var-sales-btn" data-variation-id="' . esc_attr( $variation_id ) . '">' . esc_html__( 'Recalculate', 'woo-gdrive-permission' ) . '</button>';
+		echo '</p>';
+
+		// Counts toward product threshold (always shown).
+		echo '<p class="form-row form-row-full">';
+		echo '<label>';
+		echo '<input type="hidden" name="' . esc_attr( $name_prefix . '[_wgdp_counts_toward_product_threshold]' ) . '" value="no" />';
+		echo '<input type="checkbox" name="' . esc_attr( $name_prefix . '[_wgdp_counts_toward_product_threshold]' ) . '" value="yes"'
+			. checked( $var_counts_toward, 'yes', false ) . ' /> ';
+		echo esc_html__( 'Counts toward product threshold', 'woo-gdrive-permission' );
+		echo '</label>';
+		echo '<br><span class="description">'
+			. esc_html__( 'Sales of this variation count toward the product-level min sales threshold. Uncheck for free/test variations.', 'woo-gdrive-permission' )
+			. '</span>';
+		echo '</p>';
+
+		// Variation release status (shown when variation has its own gate).
+		$has_own_gate = in_array( $var_release_mode, array( 'manual_release', 'min_sales_qty' ), true );
+		if ( $has_own_gate ) {
+			echo '<p class="form-row form-row-full wgdp-var-release-status">';
+			echo '<label>' . esc_html__( 'Release Status', 'woo-gdrive-permission' ) . '</label>';
+			if ( $var_is_released ) {
+				echo '<span class="wgdp-release-gate-status wgdp-release-gate-status--released">' . esc_html__( 'Released', 'woo-gdrive-permission' ) . '</span>';
+				if ( $var_released_at ) {
+					echo ' <span class="description">' . esc_html( $var_released_at ) . '</span>';
+				}
+			} else {
+				echo '<span class="wgdp-release-gate-status wgdp-release-gate-status--pending">' . esc_html__( 'Pending', 'woo-gdrive-permission' ) . '</span> ';
+				echo '<button type="button" class="button button-small wgdp-release-var-now-btn" data-variation-id="' . esc_attr( $variation_id ) . '">'
+					. esc_html__( 'Release Now', 'woo-gdrive-permission' ) . '</button>';
+			}
+			echo '</p>';
+		}
+
 		echo '</div>';
+	}
+
+	/**
+	 * Get a human-readable label for a release mode.
+	 */
+	private static function release_mode_label( $mode ) {
+		switch ( $mode ) {
+			case 'immediate':
+				return __( 'Immediate', 'woo-gdrive-permission' );
+			case 'manual_release':
+				return __( 'Manual Release', 'woo-gdrive-permission' );
+			case 'min_sales_qty':
+				return __( 'Min Sales Qty', 'woo-gdrive-permission' );
+			default:
+				return __( 'Immediate', 'woo-gdrive-permission' );
+		}
 	}
 
 	/**
@@ -339,21 +520,44 @@ class WGDP_Product_Meta {
 		}
 
 		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- individual fields sanitized below.
-		$data   = wp_unslash( $_POST['wgdp_var'][ $loop ] );
-		$fields = array( '_wgdp_drive_resource_id', '_wgdp_drive_resource_type', '_wgdp_drive_resource_name', '_wgdp_account_id' );
+		$data = wp_unslash( $_POST['wgdp_var'][ $loop ] );
 
-		foreach ( $fields as $field ) {
-			if ( isset( $data[ $field ] ) ) {
-				$value = sanitize_text_field( $data[ $field ] );
-				if ( '' === $value ) {
-					delete_post_meta( $variation_id, $field );
-				} else {
-					if ( '_wgdp_drive_resource_id' === $field ) {
-						$value = WGDP_Google_Drive::extract_id_from_url( $value );
-					}
-					update_post_meta( $variation_id, $field, $value );
+		// Account ID.
+		if ( isset( $data['_wgdp_account_id'] ) ) {
+			$acct = sanitize_text_field( $data['_wgdp_account_id'] );
+			if ( '' === $acct ) {
+				delete_post_meta( $variation_id, '_wgdp_account_id' );
+			} else {
+				update_post_meta( $variation_id, '_wgdp_account_id', $acct );
+			}
+		}
+
+		// Multi-file resources.
+		$product_id     = wp_get_post_parent_id( $variation_id );
+		$old_resources  = self::get_drive_resources( $product_id, $variation_id );
+		$old_active_ids = self::extract_active_resource_ids( $old_resources );
+
+		if ( isset( $data['_wgdp_drive_resources'] ) && is_array( $data['_wgdp_drive_resources'] ) ) {
+			$resources = self::sanitize_resources_array( $data['_wgdp_drive_resources'] );
+			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
+			delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
+			delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
+			delete_post_meta( $variation_id, '_wgdp_drive_resource_name' );
+
+			// Detect new active resources and queue backfill.
+			$new_active_ids = self::extract_active_resource_ids( $resources );
+			$added_ids      = array_diff( $new_active_ids, $old_active_ids );
+			if ( ! empty( $added_ids ) ) {
+				$account_id = self::get_account_for_item( $product_id, $variation_id );
+				if ( $account_id ) {
+					self::queue_backfill( $product_id, $variation_id, array_values( $added_ids ), $account_id );
 				}
 			}
+		} else {
+			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
+			delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
+			delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
+			delete_post_meta( $variation_id, '_wgdp_drive_resource_name' );
 		}
 
 		// Includes digital.
@@ -367,6 +571,33 @@ class WGDP_Product_Meta {
 			$val = sanitize_text_field( $data['_wgdp_requires_shipping'] );
 			update_post_meta( $variation_id, '_wgdp_requires_shipping', 'yes' === $val ? 'yes' : 'no' );
 		}
+
+		// Release mode override.
+		if ( isset( $data['_wgdp_release_mode'] ) ) {
+			$mode = sanitize_text_field( $data['_wgdp_release_mode'] );
+			if ( in_array( $mode, array( 'inherit_from_product', 'immediate', 'manual_release', 'min_sales_qty' ), true ) ) {
+				update_post_meta( $variation_id, '_wgdp_release_mode', $mode );
+			}
+		}
+
+		// Threshold qty (variation-level).
+		if ( isset( $data['_wgdp_threshold_qty'] ) ) {
+			update_post_meta( $variation_id, '_wgdp_threshold_qty', absint( $data['_wgdp_threshold_qty'] ) );
+		}
+
+		// Threshold scope.
+		if ( isset( $data['_wgdp_threshold_scope'] ) ) {
+			$scope = sanitize_text_field( $data['_wgdp_threshold_scope'] );
+			if ( in_array( $scope, array( 'entire_product', 'this_variation_only' ), true ) ) {
+				update_post_meta( $variation_id, '_wgdp_threshold_scope', $scope );
+			}
+		}
+
+		// Counts toward product threshold.
+		if ( isset( $data['_wgdp_counts_toward_product_threshold'] ) ) {
+			$val = sanitize_text_field( $data['_wgdp_counts_toward_product_threshold'] );
+			update_post_meta( $variation_id, '_wgdp_counts_toward_product_threshold', 'yes' === $val ? 'yes' : 'no' );
+		}
 	}
 
 	/**
@@ -377,19 +608,12 @@ class WGDP_Product_Meta {
 	 * For simple products ($variation_id=0), returns true if resource exists (backward compat).
 	 */
 	public static function variation_qualifies_for_digital( $product_id, $variation_id = 0 ) {
-		// Resolve Drive resource ID.
-		$resource_id = '';
-		if ( $variation_id ) {
-			$resource_id = get_post_meta( $variation_id, '_wgdp_drive_resource_id', true );
-		}
-		if ( empty( $resource_id ) ) {
-			$resource_id = get_post_meta( $product_id, '_wgdp_drive_resource_id', true );
-		}
-		if ( empty( $resource_id ) ) {
+		$resources = self::get_drive_resources( $product_id, $variation_id );
+		if ( empty( $resources ) ) {
 			return false;
 		}
 
-		// Simple product (no variation) — qualifies if resource exists.
+		// Simple product (no variation) — qualifies if resources exist.
 		if ( ! $variation_id ) {
 			return true;
 		}
@@ -397,6 +621,42 @@ class WGDP_Product_Meta {
 		// Check includes_digital flag (defaults to yes if never set).
 		$includes_digital = get_post_meta( $variation_id, '_wgdp_includes_digital', true );
 		return '' === $includes_digital || 'yes' === $includes_digital;
+	}
+
+	/**
+	 * Get cart items that qualify for digital access.
+	 *
+	 * @return array[] Each element has: cart_key, product_name, quantity, product_id, variation_id, key.
+	 */
+	public static function get_qualifying_cart_items() {
+		if ( ! WC()->cart ) {
+			return array();
+		}
+
+		$items = array();
+
+		foreach ( WC()->cart->get_cart() as $cart_key => $cart_item ) {
+			$product_id   = $cart_item['product_id'] ?? 0;
+			$variation_id = $cart_item['variation_id'] ?? 0;
+			$quantity     = $cart_item['quantity'] ?? 1;
+
+			if ( ! self::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+				continue;
+			}
+
+			$product = $cart_item['data'] ?? null;
+
+			$items[] = array(
+				'cart_key'     => $cart_key,
+				'product_name' => $product ? $product->get_name() : '',
+				'quantity'     => (int) $quantity,
+				'product_id'   => (int) $product_id,
+				'variation_id' => (int) $variation_id,
+				'key'          => $product_id . '_' . ( $variation_id ?: 0 ),
+			);
+		}
+
+		return $items;
 	}
 
 	/**
@@ -443,45 +703,156 @@ class WGDP_Product_Meta {
 	}
 
 	/**
-	 * AJAX: Browse Drive folder contents.
+	 * Get only active (non-retired) Drive resources for a product/variation.
+	 *
+	 * @param int $product_id   The product ID.
+	 * @param int $variation_id The variation ID (0 for simple products).
+	 * @return array Array of active resource objects.
 	 */
-	public function ajax_browse_drive() {
-		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
+	public static function get_active_drive_resources( $product_id, $variation_id = 0 ) {
+		$resources = self::get_drive_resources( $product_id, $variation_id );
+		return array_values( array_filter( $resources, function( $r ) {
+			return empty( $r['status'] ) || 'active' === $r['status'];
+		} ) );
+	}
 
-		if ( ! current_user_can( 'edit_products' ) ) {
-			wp_send_json_error( 'Permission denied.' );
+	/**
+	 * Extract active resource IDs from a resources array.
+	 *
+	 * @param array $resources Resources array.
+	 * @return array Array of active resource IDs.
+	 */
+	private static function extract_active_resource_ids( $resources ) {
+		$ids = array();
+		foreach ( $resources as $r ) {
+			if ( empty( $r['status'] ) || 'active' === $r['status'] ) {
+				$ids[] = $r['id'];
+			}
+		}
+		return $ids;
+	}
+
+	/**
+	 * Retire a resource on a product/variation.
+	 *
+	 * @param int    $product_id   The product ID.
+	 * @param int    $variation_id The variation ID (0 for simple products).
+	 * @param string $asset_id     The resource ID to retire.
+	 * @param string $reason       The retirement reason: 'retired_manual' or 'retired_missing'.
+	 * @return bool True if modified.
+	 */
+	public static function maybe_retire_resource( $product_id, $variation_id, $asset_id, $reason = 'retired_manual' ) {
+		$check_id = $variation_id ?: $product_id;
+		$json     = get_post_meta( $check_id, '_wgdp_drive_resources', true );
+		if ( empty( $json ) ) {
+			return false;
+		}
+		$resources = json_decode( $json, true );
+		if ( ! is_array( $resources ) ) {
+			return false;
 		}
 
-		$account_id = isset( $_POST['account_id'] ) ? sanitize_text_field( wp_unslash( $_POST['account_id'] ) ) : '';
-		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
-			wp_send_json_error( 'Please select a connected Google account.' );
+		$modified = false;
+		foreach ( $resources as &$r ) {
+			if ( $r['id'] === $asset_id && ( empty( $r['status'] ) || 'active' === $r['status'] ) ) {
+				$r['status'] = $reason;
+				$modified     = true;
+				break;
+			}
+		}
+		unset( $r );
+
+		if ( $modified ) {
+			update_post_meta( $check_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
 		}
 
-		$folder_id  = isset( $_POST['folder_id'] ) ? sanitize_text_field( wp_unslash( $_POST['folder_id'] ) ) : '';
-		$page_token = isset( $_POST['page_token'] ) ? sanitize_text_field( wp_unslash( $_POST['page_token'] ) ) : '';
-		$skip_root  = ! empty( $_POST['skip_root'] );
+		return $modified;
+	}
 
-		// Use the account's configured root folder unless explicitly skipped (e.g. root folder picker).
-		$root_folder_id = '';
-		if ( ! $skip_root ) {
-			$acct = WGDP_Google_Auth::instance()->get_account( $account_id );
-			$root_folder_id = $acct ? ( $acct['root_folder_id'] ?? '' ) : '';
+	/**
+	 * Queue a backfill job for newly added resources.
+	 *
+	 * @param int    $product_id   The product ID.
+	 * @param int    $variation_id The variation ID (0 for simple products).
+	 * @param array  $added_ids    Array of newly added resource IDs.
+	 * @param string $account_id   The Google account ID.
+	 */
+	public static function queue_backfill( $product_id, $variation_id, $added_ids, $account_id ) {
+		global $wpdb;
+
+		if ( empty( $added_ids ) || empty( $account_id ) ) {
+			return;
 		}
 
-		$result = WGDP_Google_Drive::instance()->list_files( $folder_id, $page_token, 50, $account_id, $root_folder_id );
+		sort( $added_ids );
+		$table = WGDP_DB::get_backfill_table_name();
 
-		if ( is_wp_error( $result ) ) {
-			wp_send_json_error( $result->get_error_message() );
+		// Check for existing pending/processing job for same product+variation.
+		$existing = $wpdb->get_row( $wpdb->prepare(
+			"SELECT id, asset_ids FROM {$table} WHERE product_id = %d AND variation_id = %d AND status IN ('pending', 'processing') LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$product_id,
+			$variation_id
+		), ARRAY_A );
+
+		if ( $existing ) {
+			// Merge new asset IDs into existing job and reset cursor to re-scan
+			// from the beginning. The unique constraint on entitlements makes
+			// re-scanning safe — already-created rows are skipped.
+			// Also reset status to 'pending' so the cursor reset is authoritative
+			// and any in-flight batch completion won't overwrite it.
+			$old_ids  = json_decode( $existing['asset_ids'], true ) ?: array();
+			$merged   = array_values( array_unique( array_merge( $old_ids, $added_ids ) ) );
+			sort( $merged );
+			$wpdb->update( $table, array(
+				'asset_ids'      => wp_json_encode( $merged ),
+				'account_id'     => $account_id,
+				'cursor_item_id' => 0,
+				'cursor_email'   => '',
+				'status'         => 'pending',
+				'started_at'     => null,
+			), array( 'id' => $existing['id'] ) );
+		} else {
+			$wpdb->insert( $table, array(
+				'product_id'   => $product_id,
+				'variation_id' => $variation_id,
+				'account_id'   => $account_id,
+				'asset_ids'    => wp_json_encode( $added_ids ),
+			) );
 		}
 
-		// Include root folder metadata so the client can show the correct breadcrumb name.
-		if ( ! $skip_root && $root_folder_id ) {
-			$root_folder_name = $acct ? ( $acct['root_folder_name'] ?? '' ) : '';
-			$result['root_folder_id']   = $root_folder_id;
-			$result['root_folder_name'] = $root_folder_name;
-		}
+		wp_schedule_single_event( time(), 'wgdp_process_backfill' );
+	}
 
-		wp_send_json_success( $result );
+	/**
+	 * Sanitize the resources array from POST data.
+	 *
+	 * @param array $raw Raw resources array from $_POST.
+	 * @return array Sanitized array of [{id, type, name, status?}, ...].
+	 */
+	private static function sanitize_resources_array( $raw ) {
+		$resources = array();
+		$seen_ids  = array();
+		foreach ( $raw as $entry ) {
+			if ( ! is_array( $entry ) || empty( $entry['id'] ) ) {
+				continue;
+			}
+			$id = sanitize_text_field( $entry['id'] );
+			$id = WGDP_Google_Drive::extract_id_from_url( $id );
+			if ( empty( $id ) || isset( $seen_ids[ $id ] ) ) {
+				continue;
+			}
+			$seen_ids[ $id ] = true;
+			$res = array(
+				'id'   => $id,
+				'type' => sanitize_text_field( $entry['type'] ?? 'file' ),
+				'name' => sanitize_text_field( $entry['name'] ?? '' ),
+			);
+			if ( ! empty( $entry['status'] ) && in_array( $entry['status'], array( 'active', 'retired_manual', 'retired_missing' ), true ) ) {
+				$res['status'] = $entry['status'];
+			}
+			$resources[] = $res;
+		}
+		return $resources;
 	}
 
 	/**
@@ -534,19 +905,18 @@ class WGDP_Product_Meta {
 			WGDP_VERSION
 		);
 
-		wp_enqueue_script( 'jquery-ui-dialog' );
-		wp_enqueue_style( 'wp-jquery-ui-dialog' );
-
 		wp_enqueue_script(
 			'wgdp-admin',
 			WGDP_PLUGIN_URL . 'admin/js/wgdp-admin.js',
-			array( 'jquery', 'jquery-ui-dialog' ),
+			array( 'jquery' ),
 			WGDP_VERSION,
 			true
 		);
 		wp_localize_script( 'wgdp-admin', 'wgdp', array(
-			'ajax_url' => admin_url( 'admin-ajax.php' ),
-			'nonce'    => wp_create_nonce( 'wgdp_admin_nonce' ),
+			'ajax_url'             => admin_url( 'admin-ajax.php' ),
+			'nonce'                => wp_create_nonce( 'wgdp_admin_nonce' ),
+			'picker_api_key'       => get_option( 'wgdp_picker_api_key', '' ),
+			'cloud_project_number' => get_option( 'wgdp_cloud_project_number', '' ),
 		) );
 	}
 }

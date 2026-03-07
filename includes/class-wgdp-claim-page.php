@@ -4,6 +4,7 @@ defined( 'ABSPATH' ) || exit;
 class WGDP_Claim_Page {
 
 	private static $instance = null;
+	private $post_result     = null;
 
 	public static function instance() {
 		if ( null === self::$instance ) {
@@ -139,6 +140,29 @@ class WGDP_Claim_Page {
 		}
 
 		if ( 'granted' === $entitlement['grant_status'] ) {
+			// Check for siblings to show multi-file success.
+			$siblings = $ent->get_siblings( $entitlement['order_item_id'], $entitlement['recipient_email'], $entitlement['id'] );
+			if ( ! empty( $siblings ) ) {
+				$all = array_merge( array( $entitlement ), $siblings );
+				$granted_links = array();
+				$resources = WGDP_Product_Meta::get_drive_resources( $entitlement['product_id'], $entitlement['variation_id'] ?: 0 );
+				$res_map = array();
+				foreach ( $resources as $r ) {
+					$res_map[ $r['id'] ] = $r['name'] ?: $r['id'];
+				}
+				foreach ( $all as $eg ) {
+					if ( 'granted' === $eg['grant_status'] ) {
+						$granted_links[] = array(
+							'name' => $res_map[ $eg['cloud_asset_id'] ] ?? $eg['cloud_asset_id'],
+							'link' => $this->get_drive_link( $eg ),
+						);
+					}
+				}
+				if ( count( $granted_links ) > 1 ) {
+					$this->post_result = $this->wrap_content( $this->success_content_multi( $granted_links, $entitlement, false ) );
+					return;
+				}
+			}
 			$drive_link = $this->get_drive_link( $entitlement );
 			$this->post_result = $this->wrap_content( $this->success_content( $drive_link, $entitlement ) );
 			return;
@@ -165,28 +189,89 @@ class WGDP_Claim_Page {
 		$result    = $otp_service->attempt_verification( $token, $otp_input );
 
 		if ( $result['success'] ) {
-			$product_id = (int) $result['entitlement']['product_id'];
+			$product_id   = (int) $result['entitlement']['product_id'];
+			$variation_id = (int) ( $result['entitlement']['variation_id'] ?? 0 );
+			$siblings     = $result['siblings'] ?? array();
 
-			if ( ! WGDP_Release_Gate::is_product_released( $product_id ) ) {
-				$ent->mark_pending_release( $result['entitlement']['id'] );
+			// Collect all entitlements to grant (primary + siblings).
+			$all_to_grant = array_merge( array( $result['entitlement'] ), $siblings );
+
+			if ( ! WGDP_Release_Gate::is_item_released( $product_id, $variation_id ) ) {
+				foreach ( $all_to_grant as $eg ) {
+					$ent->mark_pending_release( $eg['id'] );
+				}
 				$this->post_result = $this->wrap_content( $this->pending_release_content() );
 				return;
 			}
 
-			$grant_result = self::grant_drive_access_for_entitlement( $result['entitlement'] );
+			$granted_links = array();
+			$had_errors    = false;
 
-			if ( is_wp_error( $grant_result ) ) {
-				$ent->mark_error( $result['entitlement']['id'], $grant_result->get_error_message() );
+			foreach ( $all_to_grant as $eg ) {
+				// Skip retired resources.
+				if ( self::is_resource_retired( (int) $eg['product_id'], (int) ( $eg['variation_id'] ?? 0 ), $eg['cloud_asset_id'] ) ) {
+					continue;
+				}
+
+				$grant_result = self::grant_drive_access_for_entitlement( $eg, count( $all_to_grant ) > 1 );
+
+				if ( is_wp_error( $grant_result ) ) {
+					$ent->mark_error( $eg['id'], $grant_result->get_error_message() );
+					$had_errors = true;
+				} else {
+					$refreshed = $ent->get( $eg['id'] );
+					$granted_links[] = array(
+						'name' => $refreshed['cloud_asset_id'],
+						'link' => $this->get_drive_link( $refreshed ),
+					);
+				}
+			}
+
+			// Send consolidated email if multiple files.
+			if ( count( $all_to_grant ) > 1 && ! empty( $granted_links ) ) {
+				$product_name = WGDP_Entitlements::get_product_name( $result['entitlement'], 'your purchase' );
+				// Resolve friendly names from resources.
+				$resources = WGDP_Product_Meta::get_drive_resources(
+					$result['entitlement']['product_id'],
+					$result['entitlement']['variation_id'] ?: 0
+				);
+				$res_map = array();
+				foreach ( $resources as $r ) {
+					$res_map[ $r['id'] ] = $r['name'] ?: $r['id'];
+				}
+				foreach ( $granted_links as &$gl ) {
+					if ( isset( $res_map[ $gl['name'] ] ) ) {
+						$gl['name'] = $res_map[ $gl['name'] ];
+					}
+				}
+				unset( $gl );
+				WGDP_Notification_Email::send_access_granted_batch(
+					$result['entitlement']['recipient_email'],
+					$granted_links,
+					$product_name
+				);
+				// Also notify the billing email if different.
+				$billing = WGDP_Notification_Email::get_billing_email_if_different(
+					$result['entitlement']['order_id'],
+					$result['entitlement']['recipient_email']
+				);
+				if ( $billing ) {
+					WGDP_Notification_Email::send_access_granted_batch( $billing, $granted_links, $product_name );
+				}
+			}
+
+			if ( ! empty( $granted_links ) ) {
+				if ( count( $granted_links ) > 1 ) {
+					$this->post_result = $this->wrap_content( $this->success_content_multi( $granted_links, $result['entitlement'], $had_errors ) );
+				} else {
+					$this->post_result = $this->wrap_content( $this->success_content( $granted_links[0]['link'], $result['entitlement'] ) );
+				}
+
+				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $result['entitlement']['order_id'] );
+			} else {
 				$this->post_result = $this->wrap_content( $this->error_content(
 					'Your identity has been verified, but we encountered an error granting access. We will retry automatically. Please check back later.'
 				) );
-			} else {
-				$refreshed = $ent->get( $result['entitlement']['id'] );
-				$drive_link = $this->get_drive_link( $refreshed );
-				$this->post_result = $this->wrap_content( $this->success_content( $drive_link, $refreshed ) );
-
-				// Check if the order can be auto-completed now.
-				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $result['entitlement']['order_id'] );
 			}
 		} else {
 			$this->post_result = $this->wrap_content( $this->form_content( $token, $result['error'], $result['entitlement'] ) );
@@ -228,6 +313,28 @@ class WGDP_Claim_Page {
 		}
 
 		if ( 'granted' === $entitlement['grant_status'] ) {
+			// Check for siblings to show multi-file success.
+			$siblings = $ent->get_siblings( $entitlement['order_item_id'], $entitlement['recipient_email'], $entitlement['id'] );
+			if ( ! empty( $siblings ) ) {
+				$all = array_merge( array( $entitlement ), $siblings );
+				$granted_links = array();
+				$resources = WGDP_Product_Meta::get_drive_resources( $entitlement['product_id'], $entitlement['variation_id'] ?: 0 );
+				$res_map = array();
+				foreach ( $resources as $r ) {
+					$res_map[ $r['id'] ] = $r['name'] ?: $r['id'];
+				}
+				foreach ( $all as $eg ) {
+					if ( 'granted' === $eg['grant_status'] ) {
+						$granted_links[] = array(
+							'name' => $res_map[ $eg['cloud_asset_id'] ] ?? $eg['cloud_asset_id'],
+							'link' => $this->get_drive_link( $eg ),
+						);
+					}
+				}
+				if ( count( $granted_links ) > 1 ) {
+					return $this->wrap_content( $this->success_content_multi( $granted_links, $entitlement, false ) );
+				}
+			}
 			$drive_link = $this->get_drive_link( $entitlement );
 			return $this->wrap_content( $this->success_content( $drive_link, $entitlement ) );
 		}
@@ -256,8 +363,12 @@ class WGDP_Claim_Page {
 
 	/**
 	 * Grant Drive access for a verified entitlement (public static for batch grant).
+	 *
+	 * @param array $entitlement    The entitlement row.
+	 * @param bool  $suppress_email When true, skip sending individual access-granted email (caller will send batch).
+	 * @return true|WP_Error
 	 */
-	public static function grant_drive_access_for_entitlement( $entitlement ) {
+	public static function grant_drive_access_for_entitlement( $entitlement, $suppress_email = false ) {
 		$ent   = WGDP_Entitlements::instance();
 		$drive = WGDP_Google_Drive::instance();
 
@@ -266,10 +377,16 @@ class WGDP_Claim_Page {
 		if ( $existing && ! empty( $existing['provider_permission_id'] ) && (int) $existing['id'] !== (int) $entitlement['id'] ) {
 			$ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
 
-			$resource_type = self::resolve_resource_type( $entitlement );
-			$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
-			$product_name  = self::resolve_product_name( $entitlement );
-			WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
+			if ( ! $suppress_email ) {
+				$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
+				$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
+				$product_name  = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
+				WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
+				$billing = WGDP_Notification_Email::get_billing_email_if_different( $entitlement['order_id'], $entitlement['recipient_email'] );
+				if ( $billing ) {
+					WGDP_Notification_Email::send_access_granted( $billing, $drive_link, $product_name, $resource_type );
+				}
+			}
 
 			return true;
 		}
@@ -289,10 +406,16 @@ class WGDP_Claim_Page {
 		$permission_id = $result['id'] ?? '';
 		$ent->mark_granted( $entitlement['id'], $permission_id );
 
-		$resource_type = self::resolve_resource_type( $entitlement );
-		$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
-		$product_name  = self::resolve_product_name( $entitlement );
-		WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
+		if ( ! $suppress_email ) {
+			$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
+			$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
+			$product_name  = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
+			WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
+			$billing = WGDP_Notification_Email::get_billing_email_if_different( $entitlement['order_id'], $entitlement['recipient_email'] );
+			if ( $billing ) {
+				WGDP_Notification_Email::send_access_granted( $billing, $drive_link, $product_name, $resource_type );
+			}
+		}
 
 		return true;
 	}
@@ -342,7 +465,7 @@ class WGDP_Claim_Page {
 	 * Render the OTP input form.
 	 */
 	private function form_content( $token, $error = '', $entitlement = null, $success_message = '' ) {
-		$product_name = $entitlement ? $this->get_product_name( $entitlement ) : '';
+		$product_name = $entitlement ? WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' ) : '';
 
 		// Detect if OTP is expired (but claim token still valid).
 		$otp_expired = false;
@@ -408,7 +531,7 @@ class WGDP_Claim_Page {
 	 * Render the success content.
 	 */
 	private function success_content( $drive_link, $entitlement ) {
-		$product_name = $this->get_product_name( $entitlement );
+		$product_name = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
 		$email        = $entitlement['recipient_email'];
 
 		$html = '<div style="text-align:center;">'
@@ -417,9 +540,45 @@ class WGDP_Claim_Page {
 			. '<p style="color:#555;font-size:15px;">Your access to <strong>' . esc_html( $product_name ) . '</strong> has been granted.</p>'
 			. '<p style="color:#555;font-size:14px;">Sign in to Google as <strong>' . esc_html( $email ) . '</strong> to access your content.</p>'
 			. '<div style="margin:24px 0;">'
-			. '<a href="' . esc_url( $drive_link ) . '" style="display:inline-block;background:#00a32a;color:#fff;text-decoration:none;padding:14px 40px;border-radius:4px;font-size:16px;font-weight:600;">Open in Google Drive</a>'
+			. '<a href="' . esc_url( $drive_link ) . '" target="_blank" rel="noopener" style="display:inline-block;background:#00a32a;color:#fff;text-decoration:none;padding:14px 40px;border-radius:4px;font-size:16px;font-weight:600;">Open in Google Drive</a>'
+			. '<br><a href="' . esc_url( $drive_link ) . '" target="_blank" rel="noopener" style="color:#1a73e8;font-size:13px;word-break:break-all;">' . esc_html( $drive_link ) . '</a>'
 			. '</div>'
 			. '</div>';
+
+		return $html;
+	}
+
+	/**
+	 * Render success content for multiple files.
+	 *
+	 * @param array $granted_links Array of ['name' => string, 'link' => string].
+	 * @param array $entitlement   The primary entitlement row.
+	 * @param bool  $had_errors    Whether some files had errors.
+	 */
+	private function success_content_multi( $granted_links, $entitlement, $had_errors ) {
+		$product_name = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
+		$email        = $entitlement['recipient_email'];
+
+		$html = '<div style="text-align:center;">'
+			. '<div style="font-size:48px;margin-bottom:12px;">&#10003;</div>'
+			. '<h2 style="color:#00a32a;margin:0 0 12px;">Access Granted!</h2>'
+			. '<p style="color:#555;font-size:15px;">Your access to <strong>' . esc_html( $product_name ) . '</strong> has been granted.</p>'
+			. '<p style="color:#555;font-size:14px;">Sign in to Google as <strong>' . esc_html( $email ) . '</strong> to access your content.</p>'
+			. '</div>';
+
+		if ( $had_errors ) {
+			$html .= '<p style="color:#d63638;font-size:14px;text-align:center;">Some files encountered errors and will be retried automatically.</p>';
+		}
+
+		$html .= '<div style="margin:24px 0;">';
+		foreach ( $granted_links as $gl ) {
+			$html .= '<div style="margin-bottom:12px;">'
+				. '<a href="' . esc_url( $gl['link'] ) . '" target="_blank" rel="noopener" style="display:inline-block;background:#00a32a;color:#fff;text-decoration:none;padding:10px 24px;border-radius:4px;font-size:14px;font-weight:600;">'
+				. esc_html( $gl['name'] ) . '</a>'
+				. '<br><a href="' . esc_url( $gl['link'] ) . '" target="_blank" rel="noopener" style="color:#1a73e8;font-size:13px;word-break:break-all;">' . esc_html( $gl['link'] ) . '</a>'
+				. '</div>';
+		}
+		$html .= '</div>';
 
 		return $html;
 	}
@@ -443,46 +602,25 @@ class WGDP_Claim_Page {
 	}
 
 	/**
+	 * Check if a resource is retired in product meta.
+	 */
+	private static function is_resource_retired( $product_id, $variation_id, $asset_id ) {
+		$resources = WGDP_Product_Meta::get_drive_resources( $product_id, $variation_id );
+		foreach ( $resources as $r ) {
+			if ( $r['id'] === $asset_id ) {
+				return ! empty( $r['status'] ) && 'active' !== $r['status'];
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Get the Drive link for an entitlement.
 	 */
 	private function get_drive_link( $entitlement ) {
-		$resource_type = $this->get_resource_type( $entitlement );
+		$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
 		$mime = $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '';
 		return WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $mime );
 	}
 
-	/**
-	 * Get resource type from product/variation meta.
-	 */
-	private function get_resource_type( $entitlement ) {
-		return self::resolve_resource_type( $entitlement );
-	}
-
-	/**
-	 * Get resource type (static version for use by grant_drive_access_for_entitlement).
-	 */
-	private static function resolve_resource_type( $entitlement ) {
-		$check_id = $entitlement['variation_id'] ?: $entitlement['product_id'];
-		$type = get_post_meta( $check_id, '_wgdp_drive_resource_type', true );
-		if ( empty( $type ) ) {
-			$type = get_post_meta( $entitlement['product_id'], '_wgdp_drive_resource_type', true );
-		}
-		return $type ?: 'file';
-	}
-
-	/**
-	 * Get product name from entitlement data.
-	 */
-	private function get_product_name( $entitlement ) {
-		return self::resolve_product_name( $entitlement );
-	}
-
-	/**
-	 * Get product name (static version for use by grant_drive_access_for_entitlement).
-	 */
-	private static function resolve_product_name( $entitlement ) {
-		$id = $entitlement['variation_id'] ?: $entitlement['product_id'];
-		$product = wc_get_product( $id );
-		return $product ? $product->get_name() : 'your purchase';
-	}
 }

@@ -21,6 +21,7 @@ class WGDP_Self_Service {
 		add_filter( 'the_content', array( $this, 'filter_page_content' ) );
 		add_action( 'wp_ajax_wgdp_self_service_email', array( $this, 'ajax_self_service_email' ) );
 		add_action( 'wp_ajax_nopriv_wgdp_self_service_email', array( $this, 'ajax_self_service_email' ) );
+		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_page_styles' ) );
 	}
 
 	/**
@@ -31,6 +32,21 @@ class WGDP_Self_Service {
 		if ( $page_id && is_page( $page_id ) ) {
 			header( 'Referrer-Policy: no-referrer' );
 		}
+	}
+
+	/**
+	 * Enqueue inline styles on the self-service page so text is readable
+	 * regardless of theme heading/body color choices.
+	 */
+	public function enqueue_page_styles() {
+		$page_id = (int) get_option( 'wgdp_provide_email_page_id', 0 );
+		if ( ! $page_id || ! is_page( $page_id ) ) {
+			return;
+		}
+		wp_add_inline_style( 'wp-block-library', '
+			body.page-id-' . $page_id . ' .entry-title,
+			body.page-id-' . $page_id . ' .wp-block-post-title { color: #333; }
+		' );
 	}
 
 	/**
@@ -123,7 +139,7 @@ class WGDP_Self_Service {
 			$quantity        = $item->get_quantity();
 			$qty_refunded    = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
 			$effective_qty   = max( 0, $quantity - $qty_refunded );
-			$active_count    = $ent->count_confirmed_for_item( $item->get_id() );
+			$active_count    = $ent->count_confirmed_recipients_for_item( $item->get_id() );
 
 			if ( $effective_qty > 0 && $active_count < $effective_qty ) {
 				$unassigned[] = array(
@@ -174,7 +190,7 @@ class WGDP_Self_Service {
 		$has_min_sales = false;
 		$has_manual    = false;
 		foreach ( $unassigned as $ua ) {
-			$mode = get_post_meta( $ua['product_id'], '_wgdp_release_mode', true ) ?: 'immediate';
+			$mode = WGDP_Release_Gate::get_effective_release_mode( $ua['product_id'], $ua['variation_id'] ?? 0 );
 			if ( 'min_sales_qty' === $mode ) {
 				$has_min_sales = true;
 			} elseif ( 'manual_release' === $mode ) {
@@ -281,7 +297,6 @@ class WGDP_Self_Service {
 		}
 
 		$ent  = WGDP_Entitlements::instance();
-		$otp  = WGDP_OTP::instance();
 		$auth = WGDP_Google_Auth::instance();
 
 		$created_count = 0;
@@ -310,22 +325,19 @@ class WGDP_Self_Service {
 			// Revoke any previous unverified entitlements so the customer can retry with a new email.
 			$ent->revoke_unverified_for_item( $order_item_id );
 
-			// Check slot availability (account for refunded qty); only count verified/granted.
+			// Check slot availability (account for refunded qty); count distinct confirmed recipients.
 			$quantity      = $item->get_quantity();
 			$qty_refunded  = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
 			$effective_qty = max( 0, $quantity - $qty_refunded );
-			$active_count  = $ent->count_confirmed_for_item( $order_item_id );
+			$active_count  = $ent->count_confirmed_recipients_for_item( $order_item_id );
 			if ( $effective_qty <= 0 || $active_count >= $effective_qty ) {
 				continue;
 			}
 
-			// Resolve resource_id.
-			$resource_id = '';
-			if ( $variation_id ) {
-				$resource_id = get_post_meta( $variation_id, '_wgdp_drive_resource_id', true );
-			}
-			if ( empty( $resource_id ) ) {
-				$resource_id = get_post_meta( $product_id, '_wgdp_drive_resource_id', true );
+			// Resolve active resources (multi-file, excludes retired).
+			$resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
+			if ( empty( $resources ) ) {
+				continue;
 			}
 
 			// Resolve account.
@@ -334,49 +346,21 @@ class WGDP_Self_Service {
 				continue;
 			}
 
-			// Check for revoked-row reuse.
-			$revoked = $ent->get_revoked_for_reuse( $order_item_id, $resource_id, $email );
-			if ( $revoked ) {
-				$entitlement_id  = (int) $revoked['id'];
-				$ent->update( $entitlement_id, array(
-					'verification_status'    => 'pending',
-					'grant_status'           => 'pending',
-					'provider_permission_id' => null,
-					'granted_at'             => null,
-					'revoked_at'             => null,
-					'grant_error'            => null,
-					'grant_retries'          => 0,
-					'account_id'             => $account_id,
-				) );
-			} else {
-				// Calculate recipient_index as max existing + 1.
-				$existing  = $ent->get_by_order_item( $order_item_id );
-				$max_index = 0;
-				foreach ( $existing as $row ) {
-					if ( (int) $row['recipient_index'] > $max_index ) {
-						$max_index = (int) $row['recipient_index'];
-					}
-				}
+			$result = $ent->create_entitlements_for_recipient( array(
+				'order_id'       => $order_id,
+				'order_item_id'  => $order_item_id,
+				'product_id'     => $product_id,
+				'variation_id'   => $variation_id ?: 0,
+				'email'          => $email,
+				'account_id'     => $account_id,
+				'resources'      => $resources,
+			) );
 
-				$entitlement_id = $ent->create( array(
-					'order_id'        => $order_id,
-					'order_item_id'   => $order_item_id,
-					'product_id'      => $product_id,
-					'variation_id'    => $variation_id ?: 0,
-					'cloud_asset_id'  => $resource_id,
-					'account_id'      => $account_id,
-					'recipient_email' => $email,
-					'recipient_index' => $max_index + 1,
-				) );
-
-				if ( ! $entitlement_id ) {
-					continue;
-				}
+			if ( is_wp_error( $result ) ) {
+				continue;
 			}
 
-			// Issue OTP and send verification email.
-			$tokens = $otp->issue_otp_for_entitlement( $entitlement_id );
-			WGDP_Notification_Email::send_otp( $email, $tokens['otp'], $tokens['claim_token'], $order, $item );
+			WGDP_Notification_Email::send_otp( $email, $result['tokens']['otp'], $result['tokens']['claim_token'], $order, $item );
 
 			// Set drive items flag if not already set.
 			if ( ! $order->get_meta( '_wgdp_has_drive_items' ) ) {
@@ -388,7 +372,7 @@ class WGDP_Self_Service {
 				'WGDP: Verification email sent to %s for "%s" (entitlement #%d) — self-service',
 				$email,
 				$item->get_name(),
-				$entitlement_id
+				$result['primary_id']
 			) );
 
 			$created_count++;
@@ -535,7 +519,7 @@ class WGDP_Self_Service {
 		$has_min_sales = false;
 		$has_manual    = false;
 		foreach ( $unassigned as $ua ) {
-			$mode = get_post_meta( $ua['product_id'], '_wgdp_release_mode', true ) ?: 'immediate';
+			$mode = WGDP_Release_Gate::get_effective_release_mode( $ua['product_id'], $ua['variation_id'] ?? 0 );
 			if ( 'min_sales_qty' === $mode ) {
 				$has_min_sales = true;
 			} elseif ( 'manual_release' === $mode ) {
@@ -570,7 +554,7 @@ class WGDP_Self_Service {
 				}
 
 				$html .= '<div style="margin-bottom:16px;">';
-				$html .= '<label style="display:block;font-weight:600;margin-bottom:4px;font-size:14px;">' . $label . '</label>';
+				$html .= '<label style="display:block;font-weight:600;margin-bottom:4px;font-size:14px;color:#333;">' . $label . '</label>';
 				$html .= '<input type="email" '
 					. 'name="items[' . $field_index . '][email]" '
 					. 'data-order-item-id="' . esc_attr( $ua['order_item_id'] ) . '" '
