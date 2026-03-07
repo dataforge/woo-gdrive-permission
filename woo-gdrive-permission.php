@@ -68,6 +68,7 @@ add_action( 'plugins_loaded', function () {
 	require_once WGDP_PLUGIN_PATH . 'includes/class-wgdp-access-manager-table.php';
 	require_once WGDP_PLUGIN_PATH . 'includes/class-wgdp-entitlements-list.php';
 	require_once WGDP_PLUGIN_PATH . 'includes/class-wgdp-dashboard-widget.php';
+	require_once WGDP_PLUGIN_PATH . 'includes/class-wgdp-shortcodes.php';
 	require_once WGDP_PLUGIN_PATH . 'includes/class-wgdp-admin.php';
 
 	// DB upgrade check.
@@ -87,6 +88,7 @@ add_action( 'plugins_loaded', function () {
 	WGDP_Cron::instance();
 	WGDP_Entitlements_List::instance();
 	WGDP_Dashboard_Widget::instance();
+	WGDP_Shortcodes::instance();
 	WGDP_Admin::instance();
 } );
 

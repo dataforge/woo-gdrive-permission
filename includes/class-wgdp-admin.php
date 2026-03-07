@@ -532,6 +532,38 @@ class WGDP_Admin {
 		</p>
 
 		</form>
+
+		<!-- Shortcode Reference -->
+		<div class="wgdp-shortcode-ref" style="background:#fff;border:1px solid #c3c4c7;border-left:4px solid #2271b1;padding:15px 20px;margin:20px 0;">
+			<h2 style="margin-top:0;">Shortcode Reference</h2>
+			<table class="widefat striped" style="max-width:800px;">
+				<thead>
+					<tr>
+						<th style="width:40%;">Shortcode</th>
+						<th>Description</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td><code>[wgdp_sold_count]</code></td>
+						<td>Displays the total number of paid units for the current product, using the plugin's own sales counter (not WooCommerce's <code>total_sales</code>). Refund-aware and respects per-variation threshold settings.</td>
+					</tr>
+					<tr>
+						<td><code>[wgdp_sold_count id="123"]</code></td>
+						<td>Same as above but for a specific product ID. Useful when embedding the count outside of a product page.</td>
+					</tr>
+					<tr>
+						<td><code>[wgdp_sold_count additional="10"]</code></td>
+						<td>Adds a manual offset to the displayed count (e.g. to include sales from before the plugin was installed).</td>
+					</tr>
+					<tr>
+						<td><code>[wgdp_sold_count subtract="5"]</code></td>
+						<td>Subtracts a manual offset from the displayed count.</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="description" style="margin-top:10px;">All parameters can be combined: <code>[wgdp_sold_count id="123" additional="10" subtract="2"]</code></p>
+		</div>
 		<?php
 	}
 
