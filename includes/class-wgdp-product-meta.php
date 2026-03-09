@@ -328,12 +328,23 @@ class WGDP_Product_Meta {
 					self::queue_backfill( $post_id, 0, array_values( $added_ids ), $account_id );
 				}
 			}
+
+			// Detect removed resources and auto-revoke.
+			$removed_ids = array_diff( $old_active_ids, $new_active_ids );
+			if ( ! empty( $removed_ids ) ) {
+				self::revoke_removed_assets( $post_id, 0, array_values( $removed_ids ), $old_resources );
+			}
 		} elseif ( ! isset( $_POST['_wgdp_drive_resources'] ) ) {
 			// No resources submitted — clear.
 			update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
 			delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
 			delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
 			delete_post_meta( $post_id, '_wgdp_drive_resource_name' );
+
+			// All resources removed — revoke all.
+			if ( ! empty( $old_active_ids ) ) {
+				self::revoke_removed_assets( $post_id, 0, array_values( $old_active_ids ), $old_resources );
+			}
 		}
 
 		// Entitlement trigger.
@@ -553,11 +564,22 @@ class WGDP_Product_Meta {
 					self::queue_backfill( $product_id, $variation_id, array_values( $added_ids ), $account_id );
 				}
 			}
+
+			// Detect removed resources and auto-revoke.
+			$removed_ids = array_diff( $old_active_ids, $new_active_ids );
+			if ( ! empty( $removed_ids ) ) {
+				self::revoke_removed_assets( $product_id, $variation_id, array_values( $removed_ids ), $old_resources );
+			}
 		} else {
 			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_name' );
+
+			// All resources removed — revoke all.
+			if ( ! empty( $old_active_ids ) ) {
+				self::revoke_removed_assets( $product_id, $variation_id, array_values( $old_active_ids ), $old_resources );
+			}
 		}
 
 		// Includes digital.
@@ -767,6 +789,85 @@ class WGDP_Product_Meta {
 		}
 
 		return $modified;
+	}
+
+	/**
+	 * Revoke Drive permissions for assets removed from a product/variation.
+	 *
+	 * @param int   $product_id    The product ID.
+	 * @param int   $variation_id  The variation ID (0 for simple products).
+	 * @param array $removed_ids   Array of removed asset IDs.
+	 * @param array $old_resources The previous resource list (to look up file names).
+	 */
+	public static function revoke_removed_assets( $product_id, $variation_id, $removed_ids, $old_resources = array() ) {
+		if ( empty( $removed_ids ) ) {
+			return;
+		}
+
+		// Build asset ID → name map from old resources.
+		$asset_names = array();
+		foreach ( $old_resources as $r ) {
+			if ( ! empty( $r['id'] ) && ! empty( $r['name'] ) ) {
+				$asset_names[ $r['id'] ] = $r['name'];
+			}
+		}
+
+		global $wpdb;
+		$ent   = WGDP_Entitlements::instance();
+		$table = $wpdb->prefix . 'wgdp_entitlements';
+		$drive = WGDP_Google_Drive::instance();
+
+		// Find all non-revoked entitlements for these assets on this product/variation.
+		$placeholders = implode( ',', array_fill( 0, count( $removed_ids ), '%s' ) );
+		$args         = array_merge( array( $product_id, $variation_id ), $removed_ids );
+
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT * FROM {$table}
+			 WHERE product_id = %d AND variation_id = %d
+			   AND cloud_asset_id IN ({$placeholders})
+			   AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$args
+		), ARRAY_A );
+
+		if ( empty( $rows ) ) {
+			return;
+		}
+
+		// Group by recipient: email => [ 'rows' => [...], 'file_names' => [...] ].
+		$by_recipient = array();
+		foreach ( $rows as $row ) {
+			// Try to remove Drive permission.
+			if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
+				if ( ! $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
+					$drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
+				}
+			}
+			$ent->mark_revoked( $row['id'] );
+
+			if ( ! empty( $row['recipient_email'] ) ) {
+				$email = $row['recipient_email'];
+				if ( ! isset( $by_recipient[ $email ] ) ) {
+					$by_recipient[ $email ] = array( 'row' => $row, 'file_names' => array() );
+				}
+				$file_name = $asset_names[ $row['cloud_asset_id'] ] ?? '';
+				if ( $file_name && ! in_array( $file_name, $by_recipient[ $email ]['file_names'], true ) ) {
+					$by_recipient[ $email ]['file_names'][] = $file_name;
+				}
+			}
+		}
+
+		// Send revocation emails with file-level detail.
+		foreach ( $by_recipient as $email => $info ) {
+			$product_name = WGDP_Entitlements::get_product_name( $info['row'] );
+			$order_id     = $info['row']['order_id'] ?? 0;
+			if ( ! empty( $info['file_names'] ) ) {
+				WGDP_Notification_Email::send_file_access_revoked( $email, $product_name, $info['file_names'], $order_id );
+			} else {
+				WGDP_Notification_Email::send_access_revoked( $email, $product_name, $order_id );
+			}
+		}
+
+		delete_transient( 'wgdp_permission_counts' );
 	}
 
 	/**

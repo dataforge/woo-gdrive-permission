@@ -332,6 +332,8 @@ class WGDP_Entitlements {
 			'verification_status' => '',
 			'grant_status'        => '',
 			'product_id'          => 0,
+			'product_name'        => '',
+			'order_id'            => 0,
 			'exclude_grant_status' => '',
 		);
 		$args = wp_parse_args( $args, $defaults );
@@ -352,6 +354,32 @@ class WGDP_Entitlements {
 		if ( ! empty( $args['product_id'] ) ) {
 			$where[]  = 'product_id = %d';
 			$values[] = absint( $args['product_id'] );
+		}
+
+		if ( ! empty( $args['product_name'] ) ) {
+			// Find product IDs matching the name, then filter by those.
+			$like = '%' . $wpdb->esc_like( $args['product_name'] ) . '%';
+			$matching_ids = $wpdb->get_col( $wpdb->prepare(
+				"SELECT ID FROM {$wpdb->posts} WHERE post_type IN ('product', 'product_variation') AND post_title LIKE %s",
+				$like
+			) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			if ( ! empty( $matching_ids ) ) {
+				$placeholders = implode( ',', array_fill( 0, count( $matching_ids ), '%d' ) );
+				$where[]      = "(product_id IN ({$placeholders}) OR variation_id IN ({$placeholders}))";
+				foreach ( $matching_ids as $mid ) {
+					$values[] = absint( $mid );
+				}
+				foreach ( $matching_ids as $mid ) {
+					$values[] = absint( $mid );
+				}
+			} else {
+				$where[] = '1=0'; // No products match — return empty.
+			}
+		}
+
+		if ( ! empty( $args['order_id'] ) ) {
+			$where[]  = 'order_id = %d';
+			$values[] = absint( $args['order_id'] );
 		}
 
 		if ( ! empty( $args['exclude_grant_status'] ) ) {
@@ -404,12 +432,16 @@ class WGDP_Entitlements {
 
 		$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"SELECT DISTINCT recipient_email FROM {$table}
-				 WHERE order_item_id = %d AND grant_status != 'revoked'
-				 ORDER BY
-				   CASE WHEN verification_status = 'pending' THEN 0 ELSE 1 END,
-				   recipient_index DESC
-				 LIMIT %d",
+				"SELECT recipient_email FROM (
+				   SELECT recipient_email,
+				     MIN(CASE WHEN verification_status = 'pending' THEN 0 ELSE 1 END) AS priority,
+				     MAX(recipient_index) AS max_index
+				   FROM {$table}
+				   WHERE order_item_id = %d AND grant_status != 'revoked'
+				   GROUP BY recipient_email
+				   ORDER BY priority, max_index DESC
+				   LIMIT %d
+				 ) sub",
 				$order_item_id,
 				$excess
 			),
@@ -491,10 +523,12 @@ class WGDP_Entitlements {
 		global $wpdb;
 
 		$defaults = array(
-			'per_page'   => 20,
-			'page'       => 1,
-			'product_id' => 0,
-			'search'     => '',
+			'per_page'     => 20,
+			'page'         => 1,
+			'product_id'   => 0,
+			'product_name' => '',
+			'order_id'     => 0,
+			'search'       => '',
 		);
 		$args = wp_parse_args( $args, $defaults );
 
@@ -509,6 +543,31 @@ class WGDP_Entitlements {
 		if ( ! empty( $args['product_id'] ) ) {
 			$extra_where   .= ' AND CAST(prod_meta.meta_value AS UNSIGNED) = %d';
 			$extra_values[] = absint( $args['product_id'] );
+		}
+
+		if ( ! empty( $args['product_name'] ) ) {
+			$like = '%' . $wpdb->esc_like( $args['product_name'] ) . '%';
+			$matching_ids = $wpdb->get_col( $wpdb->prepare(
+				"SELECT ID FROM {$wpdb->posts} WHERE post_type IN ('product', 'product_variation') AND post_title LIKE %s",
+				$like
+			) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			if ( ! empty( $matching_ids ) ) {
+				$placeholders   = implode( ',', array_fill( 0, count( $matching_ids ), '%d' ) );
+				$extra_where   .= " AND (CAST(prod_meta.meta_value AS UNSIGNED) IN ({$placeholders}) OR COALESCE(CAST(var_meta.meta_value AS UNSIGNED), 0) IN ({$placeholders}))";
+				foreach ( $matching_ids as $mid ) {
+					$extra_values[] = absint( $mid );
+				}
+				foreach ( $matching_ids as $mid ) {
+					$extra_values[] = absint( $mid );
+				}
+			} else {
+				$extra_where .= ' AND 1=0';
+			}
+		}
+
+		if ( ! empty( $args['order_id'] ) ) {
+			$extra_where   .= ' AND oi.order_id = %d';
+			$extra_values[] = absint( $args['order_id'] );
 		}
 
 		if ( ! empty( $args['search'] ) ) {

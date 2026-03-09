@@ -110,7 +110,7 @@ class WGDP_Entitlements_List {
 				$revoked[ $sibling['id'] ] = true;
 				$count++;
 			}
-			WGDP_Notification_Email::send_access_revoked( $group['email'], WGDP_Entitlements::get_product_name( $group['row'] ) );
+			WGDP_Notification_Email::send_access_revoked( $group['email'], WGDP_Entitlements::get_product_name( $group['row'] ), $group['row']['order_id'] ?? 0 );
 		}
 
 		delete_transient( 'wgdp_permission_counts' );

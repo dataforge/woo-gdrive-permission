@@ -152,15 +152,6 @@ class WGDP_Release_Gate {
 	}
 
 	/**
-	 * Check if a product's digital content is released (legacy/product-level).
-	 *
-	 * Kept for backward compatibility. Prefer is_item_released().
-	 */
-	public static function is_product_released( $product_id ) {
-		return self::is_item_released( $product_id, 0 );
-	}
-
-	/**
 	 * Get the post ID that holds the release latch for an item.
 	 *
 	 * If the variation has its own release mode override, the latch lives on

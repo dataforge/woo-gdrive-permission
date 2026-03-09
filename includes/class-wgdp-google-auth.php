@@ -329,22 +329,6 @@ class WGDP_Google_Auth {
 	}
 
 	/**
-	 * Get a single account's display data (without sensitive tokens).
-	 */
-	public function get_account( $account_id ) {
-		$accounts = $this->get_all_accounts();
-		if ( ! isset( $accounts[ $account_id ] ) ) {
-			return null;
-		}
-		$account = $accounts[ $account_id ];
-		return array(
-			'type'  => $account['type'] ?? 'google_drive',
-			'label' => $account['label'] ?? '',
-			'email' => $account['email'] ?? '',
-		);
-	}
-
-	/**
 	 * Update the display label for an account.
 	 */
 	public function update_account_label( $account_id, $label ) {

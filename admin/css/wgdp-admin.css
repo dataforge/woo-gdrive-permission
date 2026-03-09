@@ -48,6 +48,17 @@
     background: #f0f0f1;
 }
 
+.wgdp-badge--removed {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 500;
+    background: #fcecec;
+    color: #d63638;
+    margin-left: 6px;
+}
+
 .wgdp-badge--retired {
     display: inline-block;
     padding: 1px 6px;
@@ -441,11 +452,26 @@ a.wgdp-summary-card:focus {
  * ===================================================== */
 
 .wgdp-am-assign-form {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
+    flex-wrap: wrap;
 }
 
 .wgdp-am-assign-email-input {
     vertical-align: middle;
+}
+
+/* =====================================================
+ * Access Manager: Column widths
+ * ===================================================== */
+
+.wp-list-table .column-seat,
+.wp-list-table .column-files {
+    width: 55px;
+    text-align: center;
+}
+
+.wp-list-table .column-actions .button-small {
+    margin-bottom: 3px;
 }

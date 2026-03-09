@@ -480,8 +480,36 @@ class WGDP_Claim_Page {
 		}
 
 		$html = '<h2 style="color:#333;margin:0 0 8px;text-align:center;">Verify Your Access</h2>';
-		if ( $product_name ) {
-			$html .= '<p style="color:#666;text-align:center;margin-bottom:24px;">for <strong>' . esc_html( $product_name ) . '</strong></p>';
+
+		// Show order and product details.
+		if ( $entitlement ) {
+			$order_id = $entitlement['order_id'];
+
+			// Get the base product name (without variation suffixes).
+			$base_product_name = $entitlement['product_id'] ? get_the_title( $entitlement['product_id'] ) : $product_name;
+
+			// Build variation label from the order item meta.
+			$variation_label = '';
+			if ( ! empty( $entitlement['variation_id'] ) ) {
+				$order = wc_get_order( $order_id );
+				$item  = $order ? $order->get_item( $entitlement['order_item_id'] ) : null;
+				if ( $item instanceof WC_Order_Item_Product ) {
+					$attrs = $item->get_formatted_meta_data( '_', true );
+					$parts = array();
+					foreach ( $attrs as $attr ) {
+						$parts[] = wp_strip_all_tags( $attr->display_key . ': ' . $attr->display_value );
+					}
+					if ( ! empty( $parts ) ) {
+						$variation_label = implode( ', ', $parts );
+					}
+				}
+			}
+
+			$html .= '<div style="background:#f8f9fa;border:1px solid #e2e4e7;border-radius:6px;padding:12px 16px;margin:16px 0 24px;font-size:14px;">'
+				. '<div style="margin-bottom:6px;"><span style="color:#888;">Order:</span> <strong style="color:#333;">#' . esc_html( $order_id ) . '</strong></div>'
+				. '<div' . ( $variation_label ? ' style="margin-bottom:6px;"' : '' ) . '><span style="color:#888;">Product:</span> <strong style="color:#333;">' . esc_html( $base_product_name ) . '</strong></div>'
+				. ( $variation_label ? '<div><span style="color:#888;">Variant:</span> <span style="color:#333;">' . esc_html( $variation_label ) . '</span></div>' : '' )
+				. '</div>';
 		}
 
 		if ( $success_message ) {

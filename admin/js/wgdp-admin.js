@@ -122,10 +122,6 @@
     }
 
     /**
-     * Add a resource row to the list. Dedup by file ID.
-     * If file matches an existing retired row, restore it instead.
-     */
-    /**
      * Notify WooCommerce that a variation's fields changed,
      * so the "Save changes" button becomes active.
      */
@@ -157,6 +153,13 @@
                 $existing.find('.wgdp-retired-note').remove();
                 $existing.find('.wgdp-resource-row-restore').remove();
             }
+            // Update name in case the file was renamed on Drive.
+            var safeName = $('<span>').text(file.name).html();
+            $existing.find('input[type="hidden"]').filter(function () {
+                return $(this).attr('name') && $(this).attr('name').indexOf('[name]') !== -1;
+            }).val(safeName);
+            $existing.find('.wgdp-resource-row-info strong').text(file.name);
+            notifyVariationChanged($existing);
             return;
         }
 
@@ -313,6 +316,62 @@
     });
 
     /* =========================================================
+     * Access Manager: Send Access Email
+     * ========================================================= */
+
+    $(document).on('click', '.wgdp-am-send-access-email-btn', function () {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Sending...');
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_am_send_access_email',
+            nonce: wgdp.nonce,
+            entitlement_id: $btn.data('entitlement-id')
+        }, function (response) {
+            if (response.success) {
+                $btn.text('Sent!');
+                setTimeout(function () {
+                    $btn.prop('disabled', false).text('Send Access Email');
+                }, 2000);
+            } else {
+                $btn.prop('disabled', false).text('Send Access Email');
+                alert('Error: ' + response.data);
+            }
+        }).fail(function () {
+            $btn.prop('disabled', false).text('Send Access Email');
+            alert('Request failed.');
+        });
+    });
+
+    /* =========================================================
+     * Access Manager: Resend Order Email
+     * ========================================================= */
+
+    $(document).on('click', '.wgdp-am-resend-order-email-btn', function () {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Sending...');
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_am_resend_order_email',
+            nonce: wgdp.nonce,
+            order_id: $btn.data('order-id')
+        }, function (response) {
+            if (response.success) {
+                $btn.text('Sent!');
+                setTimeout(function () {
+                    $btn.prop('disabled', false).text('Resend Order Email');
+                }, 2000);
+            } else {
+                $btn.prop('disabled', false).text('Resend Order Email');
+                alert('Error: ' + response.data);
+            }
+        }).fail(function () {
+            $btn.prop('disabled', false).text('Resend Order Email');
+            alert('Request failed.');
+        });
+    });
+
+    /* =========================================================
      * Order meta box: Add entitlement
      * ========================================================= */
 
@@ -409,8 +468,13 @@
                     }).removeClass('wgdp-gstatus--pending wgdp-gstatus--granted wgdp-gstatus--error')
                       .addClass('wgdp-gstatus--revoked').text('Revoked');
                 }
-                $btn.closest('td').find('.wgdp-resend-otp-btn').remove();
+                $btn.closest('td').find('.wgdp-resend-otp-btn, .wgdp-am-change-email-btn, .wgdp-am-verify-btn, .wgdp-retry-grant-btn').remove();
                 $btn.remove();
+
+                // Show warning if Drive permission couldn't be removed.
+                if (response.data && typeof response.data === 'string' && response.data.indexOf('Note:') !== -1) {
+                    alert(response.data);
+                }
             } else {
                 $btn.prop('disabled', false).text('Revoke');
                 alert('Error: ' + response.data);
@@ -620,7 +684,7 @@
 
     $('.wgdp-product-filter').autocomplete({
         source: function (request, response) {
-            $.post(wgdp.ajax_url, {
+            $.getJSON(wgdp.ajax_url, {
                 term: request.term,
                 action: 'woocommerce_json_search_products',
                 security: wgdp.product_search_nonce
@@ -645,6 +709,20 @@
             if (!$(this).val()) {
                 $(this).siblings('.wgdp-product-filter-id').val('');
             }
+        }
+    });
+
+    // On form submit, sync the product text for free-text server-side search.
+    $('.wgdp-product-filter').closest('form').on('submit', function () {
+        var $input = $(this).find('.wgdp-product-filter');
+        var $hiddenId = $(this).find('.wgdp-product-filter-id');
+        var $hiddenName = $(this).find('.wgdp-product-filter-name');
+        if ($hiddenId.val()) {
+            // A product was selected from autocomplete — clear free-text.
+            $hiddenName.val('');
+        } else {
+            // No autocomplete selection — pass the typed text for server-side search.
+            $hiddenName.val($input.val());
         }
     });
 

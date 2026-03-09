@@ -227,7 +227,7 @@ class WGDP_Order_Handler {
 
 		// Send one revocation email per recipient.
 		foreach ( $notified_emails as $email => $row ) {
-			WGDP_Notification_Email::send_access_revoked( $email, WGDP_Entitlements::get_product_name( $row ) );
+			WGDP_Notification_Email::send_access_revoked( $email, WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
 		}
 
 		if ( $drive_failures > 0 ) {
@@ -375,6 +375,9 @@ class WGDP_Order_Handler {
 			// Revoke all entitlements for each email.
 			foreach ( $emails_to_revoke as $revoke_email ) {
 				$sibling_rows = $ent->get_siblings( $order_item_id, $revoke_email );
+				if ( empty( $sibling_rows ) ) {
+					continue;
+				}
 				foreach ( $sibling_rows as $row ) {
 					// If granted, revoke on Drive.
 					if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
@@ -397,7 +400,7 @@ class WGDP_Order_Handler {
 					$ent->mark_revoked( $row['id'] );
 				}
 
-				WGDP_Notification_Email::send_access_revoked( $revoke_email, WGDP_Entitlements::get_product_name( $sibling_rows[0] ?? $row ) );
+				WGDP_Notification_Email::send_access_revoked( $revoke_email, WGDP_Entitlements::get_product_name( $sibling_rows[0] ), $row['order_id'] );
 				$order->add_order_note( sprintf(
 					'WGDP: Revoked all entitlements for %s (partial refund)',
 					$revoke_email
@@ -683,7 +686,7 @@ class WGDP_Order_Handler {
 
 			// "Add Recipient" inline form.
 			echo '<div class="wgdp-add-entitlement-form" style="margin-bottom:16px;">';
-			echo '<input type="email" class="wgdp-add-email-input" placeholder="recipient@gmail.com" style="width:260px;margin-right:4px;" />';
+			echo '<input type="email" class="wgdp-add-email-input" placeholder="recipient@example.com" style="width:260px;margin-right:4px;" />';
 			echo '<button type="button" class="button button-small wgdp-add-entitlement-btn" '
 				. 'data-order-id="' . esc_attr( $order->get_id() ) . '" '
 				. 'data-order-item-id="' . esc_attr( $order_item_id ) . '">'
@@ -872,7 +875,8 @@ class WGDP_Order_Handler {
 			}
 		}
 
-		$drive = WGDP_Google_Drive::instance();
+		$drive         = WGDP_Google_Drive::instance();
+		$drive_warning = '';
 
 		foreach ( $all_rows as $sibling ) {
 			if ( 'revoked' === $sibling['grant_status'] ) {
@@ -888,7 +892,7 @@ class WGDP_Order_Handler {
 						$sibling['account_id']
 					);
 					if ( is_wp_error( $result ) ) {
-						wp_send_json_error( 'Drive API error: ' . $result->get_error_message() );
+						$drive_warning = $result->get_error_message();
 					}
 				}
 			}
@@ -897,10 +901,14 @@ class WGDP_Order_Handler {
 		}
 
 		// Send one revocation email for the recipient.
-		WGDP_Notification_Email::send_access_revoked( $row['recipient_email'], WGDP_Entitlements::get_product_name( $row ) );
+		WGDP_Notification_Email::send_access_revoked( $row['recipient_email'], WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
 		delete_transient( 'wgdp_permission_counts' );
 
-		wp_send_json_success( 'Entitlement revoked.' );
+		$msg = 'Entitlement revoked.';
+		if ( $drive_warning ) {
+			$msg .= ' Note: Could not remove Drive permission (' . $drive_warning . '). You may need to remove it manually in Google Drive.';
+		}
+		wp_send_json_success( $msg );
 	}
 
 	/**

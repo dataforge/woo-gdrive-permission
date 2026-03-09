@@ -20,6 +20,7 @@ class WGDP_Shortcodes {
 
 	private function __construct() {
 		add_shortcode( 'wgdp_sold_count', array( $this, 'sold_count_shortcode' ) );
+		add_shortcode( 'wgdp_min_sales_qty', array( $this, 'min_sales_qty_shortcode' ) );
 	}
 
 	/**
@@ -81,5 +82,45 @@ class WGDP_Shortcodes {
 		$total -= (int) $atts['subtract'];
 
 		return (string) max( 0, $total );
+	}
+
+	/**
+	 * [wgdp_min_sales_qty id="OPTIONAL" variation_id="OPTIONAL"]
+	 *
+	 * Displays the sales threshold quantity for a product or variation.
+	 * If variation_id is provided and that variation has its own min_sales_qty
+	 * release mode, returns the variation's threshold; otherwise returns the
+	 * product-level threshold.
+	 */
+	public function min_sales_qty_shortcode( $atts ) {
+		global $product;
+
+		$atts = shortcode_atts(
+			array(
+				'id'           => 0,
+				'variation_id' => 0,
+			),
+			$atts,
+			'wgdp_min_sales_qty'
+		);
+
+		$product_id   = (int) $atts['id'];
+		$variation_id = (int) $atts['variation_id'];
+
+		if ( ! $product_id && $product instanceof WC_Product ) {
+			$product_id = $product->get_id();
+		}
+
+		if ( ! $product_id ) {
+			$product_id = (int) get_the_ID();
+		}
+
+		if ( ! $product_id ) {
+			return '0';
+		}
+
+		$threshold = WGDP_Release_Gate::get_effective_threshold_qty( $product_id, $variation_id );
+
+		return (string) max( 0, $threshold );
 	}
 }

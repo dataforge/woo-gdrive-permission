@@ -141,18 +141,30 @@ class WGDP_Self_Service {
 			$effective_qty   = max( 0, $quantity - $qty_refunded );
 			$active_count    = $ent->count_confirmed_recipients_for_item( $item->get_id() );
 
-			if ( $effective_qty > 0 && $active_count < $effective_qty ) {
-				$unassigned[] = array(
-					'item'            => $item,
-					'product_name'    => $item->get_name(),
-					'order_item_id'   => $item->get_id(),
-					'product_id'      => $product_id,
-					'variation_id'    => $variation_id,
-					'quantity'        => $effective_qty,
-					'active_count'    => $active_count,
-					'slots_remaining' => $effective_qty - $active_count,
-				);
+			if ( $effective_qty <= 0 || $active_count >= $effective_qty ) {
+				continue;
 			}
+
+			// Collect pending (unverified) emails for this item.
+			$pending_emails = array();
+			$entitlements   = $ent->get_by_order_item( $item->get_id() );
+			foreach ( $entitlements as $row ) {
+				if ( 'pending' === $row['verification_status'] && 'revoked' !== $row['grant_status'] && ! empty( $row['recipient_email'] ) ) {
+					$pending_emails[ $row['recipient_email'] ] = true;
+				}
+			}
+
+			$unassigned[] = array(
+				'item'            => $item,
+				'product_name'    => $item->get_name(),
+				'order_item_id'   => $item->get_id(),
+				'product_id'      => $product_id,
+				'variation_id'    => $variation_id,
+				'quantity'        => $effective_qty,
+				'active_count'    => $active_count,
+				'slots_remaining' => $effective_qty - $active_count,
+				'pending_emails'  => array_keys( $pending_emails ),
+			);
 		}
 
 		return $unassigned;
@@ -547,19 +559,44 @@ class WGDP_Self_Service {
 
 		$field_index = 0;
 		foreach ( $unassigned as $ua ) {
+			$pending = $ua['pending_emails'] ?? array();
 			for ( $i = 0; $i < $ua['slots_remaining']; $i++ ) {
 				$label = esc_html( $ua['product_name'] );
 				if ( $ua['slots_remaining'] > 1 ) {
 					$label .= ' &mdash; Recipient ' . ( $i + 1 );
 				}
 
+				$pending_email = isset( $pending[ $i ] ) ? $pending[ $i ] : '';
+
 				$html .= '<div style="margin-bottom:16px;">';
 				$html .= '<label style="display:block;font-weight:600;margin-bottom:4px;font-size:14px;color:#333;">' . $label . '</label>';
-				$html .= '<input type="email" '
-					. 'name="items[' . $field_index . '][email]" '
-					. 'data-order-item-id="' . esc_attr( $ua['order_item_id'] ) . '" '
-					. 'placeholder="Google account email" '
-					. 'style="width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;font-size:15px;box-sizing:border-box;" />';
+
+				if ( $pending_email ) {
+					// Show pending email with unverified status and option to change.
+					$html .= '<div class="wgdp-ss-pending-wrap" style="border:1px solid #dba617;border-radius:4px;padding:10px 12px;background:#fef9e7;">';
+					$html .= '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">';
+					$html .= '<div>';
+					$html .= '<span style="font-size:15px;color:#333;">' . esc_html( $pending_email ) . '</span> ';
+					$html .= '<span style="display:inline-block;background:#dba617;color:#fff;font-size:11px;font-weight:600;padding:2px 8px;border-radius:3px;vertical-align:middle;">Unverified</span>';
+					$html .= '</div>';
+					$html .= '<a href="#" class="wgdp-ss-change-email" style="font-size:13px;color:#2271b1;text-decoration:none;font-weight:600;white-space:nowrap;">Use a different email</a>';
+					$html .= '</div>';
+					$html .= '</div>';
+					// Hidden email input pre-filled; revealed when "Use a different email" is clicked.
+					$html .= '<input type="email" '
+						. 'name="items[' . $field_index . '][email]" '
+						. 'data-order-item-id="' . esc_attr( $ua['order_item_id'] ) . '" '
+						. 'value="' . esc_attr( $pending_email ) . '" '
+						. 'placeholder="Google account email" '
+						. 'style="display:none;width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;font-size:15px;box-sizing:border-box;margin-top:8px;" />';
+				} else {
+					$html .= '<input type="email" '
+						. 'name="items[' . $field_index . '][email]" '
+						. 'data-order-item-id="' . esc_attr( $ua['order_item_id'] ) . '" '
+						. 'placeholder="Google account email" '
+						. 'style="width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;font-size:15px;box-sizing:border-box;" />';
+				}
+
 				$html .= '<input type="hidden" name="items[' . $field_index . '][order_item_id]" value="' . esc_attr( $ua['order_item_id'] ) . '" />';
 				$html .= '</div>';
 				$field_index++;
@@ -578,6 +615,19 @@ class WGDP_Self_Service {
 	var form = document.getElementById("wgdp-ss-form");
 	var btn = document.getElementById("wgdp-ss-submit");
 	var msg = document.getElementById("wgdp-ss-message");
+
+	// Handle "Use a different email" links.
+	form.addEventListener("click", function(e) {
+		var link = e.target.closest(".wgdp-ss-change-email");
+		if (!link) return;
+		e.preventDefault();
+		var wrap = link.closest(".wgdp-ss-pending-wrap");
+		var emailInput = wrap.nextElementSibling;
+		wrap.style.display = "none";
+		emailInput.style.display = "block";
+		emailInput.value = "";
+		emailInput.focus();
+	});
 
 	form.addEventListener("submit", function(e) {
 		e.preventDefault();
