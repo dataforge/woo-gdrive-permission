@@ -17,6 +17,7 @@ class WGDP_Admin {
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_notices', array( $this, 'maybe_show_setup_notice' ) );
 		add_action( 'admin_notices', array( $this, 'maybe_show_token_error_notice' ) );
+		add_action( 'admin_notices', array( $this, 'maybe_show_backfill_error_notice' ) );
 		add_action( 'wp_ajax_wgdp_dismiss_setup_notice', array( $this, 'dismiss_setup_notice' ) );
 
 		// Access Manager AJAX handlers.
@@ -26,6 +27,14 @@ class WGDP_Admin {
 		add_action( 'wp_ajax_wgdp_retry_grant', array( $this, 'ajax_retry_grant' ) );
 		add_action( 'wp_ajax_wgdp_am_send_access_email', array( $this, 'ajax_send_access_email' ) );
 		add_action( 'wp_ajax_wgdp_am_resend_order_email', array( $this, 'ajax_resend_order_email' ) );
+		add_action( 'wp_ajax_wgdp_am_request_new_email', array( $this, 'ajax_request_new_email' ) );
+	}
+
+	/**
+	 * Settings and OAuth credentials require a narrower capability than operations.
+	 */
+	private static function current_user_can_manage_settings() {
+		return WGDP_Google_Auth::current_user_can_manage_credentials();
 	}
 
 	/**
@@ -47,6 +56,9 @@ class WGDP_Admin {
 	 */
 	public function render_page() {
 		$current_tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'settings';
+		if ( 'settings' === $current_tab && ! self::current_user_can_manage_settings() ) {
+			$current_tab = 'access-manager';
+		}
 		$tabs = array(
 			'settings'       => 'Settings',
 			'access-manager' => 'Access Manager',
@@ -54,7 +66,7 @@ class WGDP_Admin {
 
 		// Handle settings save before rendering.
 		if ( 'settings' === $current_tab && 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['wgdp_save_settings_nonce'] ) ) {
-			if ( wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['wgdp_save_settings_nonce'] ) ), 'wgdp_save_settings' ) && current_user_can( 'manage_woocommerce' ) ) {
+			if ( wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['wgdp_save_settings_nonce'] ) ), 'wgdp_save_settings' ) && self::current_user_can_manage_settings() ) {
 				$this->save_settings();
 				echo '<div class="notice notice-success"><p>Settings saved.</p></div>';
 			}
@@ -78,6 +90,10 @@ class WGDP_Admin {
 				$this->render_access_manager_tab();
 				break;
 			default:
+				if ( ! self::current_user_can_manage_settings() ) {
+					echo '<div class="notice notice-error"><p>You do not have permission to manage Google Drive credentials.</p></div>';
+					break;
+				}
 				$this->render_settings_tab();
 				break;
 		}
@@ -106,19 +122,23 @@ class WGDP_Admin {
 		check_admin_referer( 'bulk-am-items' );
 
 		$ent = WGDP_Entitlements::instance();
-		$otp = WGDP_OTP::instance();
 
 		if ( 'resend_otp' === $action ) {
 			$count = 0;
 			foreach ( $ids as $id ) {
 				$row = $ent->get( $id );
 				if ( $row && 'revoked' !== $row['grant_status'] && 'verified' !== $row['verification_status'] ) {
-					$tokens = $otp->issue_otp_for_entitlement( $id );
+					$tokens = $ent->issue_otp_for_recipient_group( $id );
+					if ( is_wp_error( $tokens ) ) {
+						continue;
+					}
 					$order  = wc_get_order( $row['order_id'] );
 					$item   = $order ? $order->get_item( $row['order_item_id'] ) : null;
 					if ( $order && $item ) {
-						WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
-						$count++;
+						$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+						if ( ! is_wp_error( $mail_result ) ) {
+							$count++;
+						}
 					}
 				}
 			}
@@ -147,17 +167,16 @@ class WGDP_Admin {
 			echo '<div class="notice notice-' . ( $errors ? 'warning' : 'success' ) . '"><p>' . esc_html( $msg ) . '.</p></div>';
 		} elseif ( 'revoke' === $action ) {
 			$count = 0;
-			$drive = WGDP_Google_Drive::instance();
+			$errors = 0;
 			$notified_emails = array();
 			foreach ( $ids as $id ) {
 				$row = $ent->get( $id );
 				if ( $row && 'revoked' !== $row['grant_status'] ) {
-					if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
-						if ( ! $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
-							$drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
-						}
+					$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_MANUAL );
+					if ( is_wp_error( $result ) ) {
+						$errors++;
+						continue;
 					}
-					$ent->mark_revoked( $id );
 					$count++;
 
 					// Collect product names per recipient for notification.
@@ -170,7 +189,11 @@ class WGDP_Admin {
 				WGDP_Notification_Email::send_access_revoked( $email, $product_name, $data['row']['order_id'] ?? 0 );
 			}
 			delete_transient( 'wgdp_permission_counts' );
-			echo '<div class="notice notice-success"><p>' . esc_html( sprintf( 'Revoked %d entitlement(s).', $count ) ) . '</p></div>';
+			$msg = sprintf( 'Revoked %d entitlement(s).', $count );
+			if ( $errors ) {
+				$msg .= sprintf( ' %d entitlement(s) could not be removed from Drive and will be retried.', $errors );
+			}
+			echo '<div class="notice notice-' . ( $errors ? 'warning' : 'success' ) . '"><p>' . esc_html( $msg ) . '</p></div>';
 		}
 	}
 
@@ -593,14 +616,14 @@ class WGDP_Admin {
 
 		// Save Client ID.
 		if ( isset( $_POST['wgdp_oauth_client_id'] ) ) {
-			update_option( 'wgdp_oauth_client_id', sanitize_text_field( wp_unslash( $_POST['wgdp_oauth_client_id'] ) ) );
+			update_option( 'wgdp_oauth_client_id', sanitize_text_field( wp_unslash( $_POST['wgdp_oauth_client_id'] ) ), false );
 		}
 
 		// Save Client Secret (only if changed from placeholder).
 		if ( isset( $_POST['wgdp_oauth_client_secret'] ) ) {
 			$secret = sanitize_text_field( wp_unslash( $_POST['wgdp_oauth_client_secret'] ) );
 			if ( ! empty( $secret ) && strpos( $secret, '••••••••' ) !== 0 ) {
-				update_option( 'wgdp_oauth_client_secret', $auth->encrypt( $secret ) );
+				update_option( 'wgdp_oauth_client_secret', $auth->encrypt( $secret ), false );
 			}
 		}
 
@@ -608,13 +631,13 @@ class WGDP_Admin {
 		if ( isset( $_POST['wgdp_picker_api_key'] ) ) {
 			$api_key = sanitize_text_field( wp_unslash( $_POST['wgdp_picker_api_key'] ) );
 			if ( ! empty( $api_key ) ) {
-				update_option( 'wgdp_picker_api_key', $api_key );
+				update_option( 'wgdp_picker_api_key', $api_key, false );
 			}
 		}
 
 		// Save Cloud Project Number.
 		if ( isset( $_POST['wgdp_cloud_project_number'] ) ) {
-			update_option( 'wgdp_cloud_project_number', sanitize_text_field( wp_unslash( $_POST['wgdp_cloud_project_number'] ) ) );
+			update_option( 'wgdp_cloud_project_number', sanitize_text_field( wp_unslash( $_POST['wgdp_cloud_project_number'] ) ), false );
 		}
 
 		// Check if claim page slug changed (before saving, so we can compare).
@@ -730,6 +753,8 @@ class WGDP_Admin {
 			. '<td style="padding:6px 8px;">Send a new verification code to the recipient. Use when the original code expired or the email was lost. Resets the OTP expiry timer.</td></tr>';
 		echo '<tr><td style="font-weight:600;white-space:nowrap;vertical-align:top;padding:6px 8px;">Change Email</td>'
 			. '<td style="padding:6px 8px;">Switch the recipient to a different Google account. If access was already granted on Drive, the old permission is removed first. A new verification email is sent to the new address.</td></tr>';
+		echo '<tr><td style="font-weight:600;white-space:nowrap;vertical-align:top;padding:6px 8px;">Remove Account</td>'
+			. '<td style="padding:6px 8px;">Remove the current Google Drive permission and free the order slot. The row becomes Awaiting Assignment; use Resend Order Email to send the purchaser the Provide Google Email link.</td></tr>';
 		echo '<tr><td style="font-weight:600;white-space:nowrap;vertical-align:top;padding:6px 8px;">Verify on Drive</td>'
 			. '<td style="padding:6px 8px;">Check that the Google Drive permission still exists and is valid. Useful for confirming access wasn\'t removed outside of the plugin (e.g. manually in Drive).</td></tr>';
 		echo '<tr><td style="font-weight:600;white-space:nowrap;vertical-align:top;padding:6px 8px;">Send Access Email</td>'
@@ -800,6 +825,34 @@ class WGDP_Admin {
 	}
 
 	/**
+	 * Show an admin notice when async backfill jobs fail.
+	 */
+	public function maybe_show_backfill_error_notice() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			return;
+		}
+
+		global $wpdb;
+		$table = WGDP_DB::get_backfill_table_name();
+		$row   = $wpdb->get_row( // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			"SELECT COUNT(*) AS cnt, MAX(last_error) AS last_error FROM {$table} WHERE status = 'failed'",
+			ARRAY_A
+		);
+
+		if ( empty( $row ) || empty( $row['cnt'] ) ) {
+			return;
+		}
+
+		$settings_url = admin_url( 'admin.php?page=wgdp&tab=settings' );
+		echo '<div class="notice notice-warning"><p><strong>Woo GDrive Permission:</strong> ';
+		echo esc_html( sprintf( '%d Drive file backfill job(s) failed.', (int) $row['cnt'] ) ) . ' ';
+		if ( ! empty( $row['last_error'] ) ) {
+			echo esc_html( 'Error: ' . $row['last_error'] ) . ' ';
+		}
+		echo '<a href="' . esc_url( $settings_url ) . '">Check Google account settings</a>.</p></div>';
+	}
+
+	/**
 	 * Show a dismissible admin notice until the plugin is configured.
 	 */
 	public function maybe_show_setup_notice() {
@@ -867,13 +920,15 @@ class WGDP_Admin {
 			WGDP_VERSION,
 			true
 		);
+		$can_manage_settings = self::current_user_can_manage_settings();
 		wp_localize_script( 'wgdp-admin', 'wgdp', array(
 			'ajax_url'              => admin_url( 'admin-ajax.php' ),
 			'nonce'                 => wp_create_nonce( 'wgdp_admin_nonce' ),
 			'product_search_nonce'  => wp_create_nonce( 'search-products' ),
-			'oauth_client_id'       => get_option( 'wgdp_oauth_client_id', '' ),
-			'picker_api_key'        => get_option( 'wgdp_picker_api_key', '' ),
-			'cloud_project_number'  => get_option( 'wgdp_cloud_project_number', '' ),
+			'oauth_client_id'       => $can_manage_settings ? get_option( 'wgdp_oauth_client_id', '' ) : '',
+			'picker_api_key'        => $can_manage_settings ? get_option( 'wgdp_picker_api_key', '' ) : '',
+			'cloud_project_number'  => $can_manage_settings ? get_option( 'wgdp_cloud_project_number', '' ) : '',
+			'can_manage_settings'   => $can_manage_settings,
 		) );
 	}
 
@@ -927,7 +982,7 @@ class WGDP_Admin {
 		}
 
 		$entitlement_id = absint( $_POST['entitlement_id'] ?? 0 );
-		$new_email      = sanitize_email( $_POST['new_email'] ?? '' );
+		$new_email      = WGDP_Entitlements::normalize_email( $_POST['new_email'] ?? '' );
 
 		if ( ! $entitlement_id ) {
 			wp_send_json_error( 'Missing entitlement ID.' );
@@ -941,79 +996,173 @@ class WGDP_Admin {
 		if ( ! $row ) {
 			wp_send_json_error( 'Entitlement not found.' );
 		}
-		if ( 'revoked' === $row['grant_status'] ) {
-			wp_send_json_error( 'Cannot change email on a revoked entitlement.' );
-		}
 
-		$old_email    = $row['recipient_email'];
-		$drive_warning = '';
-
-		// Collect all siblings (same order_item_id + same old email) to update together.
-		$all_rows = $ent->get_siblings( $row['order_item_id'], $old_email );
-		if ( empty( $all_rows ) ) {
-			$all_rows = array( $row );
-		}
-
-		$drive = WGDP_Google_Drive::instance();
-
-		foreach ( $all_rows as $sibling ) {
-			if ( 'revoked' === $sibling['grant_status'] ) {
-				continue;
+		$result = $ent->with_order_item_lock( (int) $row['order_item_id'], function () use ( $ent, $entitlement_id, $new_email ) {
+			$row = $ent->get( $entitlement_id );
+			if ( ! $row ) {
+				return new WP_Error( 'wgdp_entitlement_not_found', 'Entitlement not found.' );
+			}
+			if ( 'revoked' === $row['grant_status'] ) {
+				return new WP_Error( 'wgdp_entitlement_revoked', 'Cannot change email on a revoked entitlement.' );
+			}
+			if ( 'revocation_error' === $row['grant_status'] ) {
+				return new WP_Error( 'wgdp_revocation_pending', 'Cannot change email while Drive access removal is pending retry.' );
 			}
 
-			// If was granted with a Drive permission, revoke it (unless shared).
-			if ( 'granted' === $sibling['grant_status'] && ! empty( $sibling['provider_permission_id'] ) ) {
-				if ( ! $ent->permission_is_shared( $sibling['provider_permission_id'], $sibling['id'] ) ) {
-					$delete_result = $drive->delete_permission(
-						$sibling['cloud_asset_id'],
-						$sibling['provider_permission_id'],
-						$sibling['account_id']
+			$old_email = $row['recipient_email'];
+			if ( strtolower( trim( $old_email ) ) === strtolower( trim( $new_email ) ) ) {
+				return new WP_Error( 'wgdp_same_email', 'The new email is the same as the current email.' );
+			}
+
+			// Collect all siblings (same order_item_id + same old email) to update together.
+			$all_rows = $ent->get_siblings( $row['order_item_id'], $old_email );
+			if ( empty( $all_rows ) ) {
+				$all_rows = array( $row );
+			}
+
+			$group_ids = array_map( 'intval', wp_list_pluck( $all_rows, 'id' ) );
+
+			foreach ( $all_rows as $sibling ) {
+				if ( 'revoked' === $sibling['grant_status'] ) {
+					continue;
+				}
+				if ( 'revocation_error' === $sibling['grant_status'] ) {
+					return new WP_Error( 'wgdp_revocation_pending', 'Cannot change email while Drive access removal is pending retry.' );
+				}
+
+				$conflict = $ent->get_existing_entitlement(
+					(int) $sibling['order_item_id'],
+					$sibling['cloud_asset_id'],
+					$new_email
+				);
+				if ( $conflict && 'revoked' !== $conflict['grant_status'] && ! in_array( (int) $conflict['id'], $group_ids, true ) ) {
+					return new WP_Error(
+						'wgdp_duplicate_recipient',
+						'That email is already assigned to this order item and Drive file.'
 					);
-					if ( is_wp_error( $delete_result ) && empty( $drive_warning ) ) {
-						$drive_warning = 'Warning: Could not remove Drive access for the old email (' . $old_email . '). Error: ' . $delete_result->get_error_message() . '. You may need to remove it manually in Google Drive.';
-					}
 				}
 			}
 
-			// Update entitlement: new email and reset statuses.
-			$ent->update( $sibling['id'], array(
-				'recipient_email'       => $new_email,
-				'verification_status'   => 'pending',
-				'grant_status'          => 'pending',
-				'provider_permission_id' => null,
-				'granted_at'            => null,
-				'grant_error'           => null,
-				'grant_retries'         => 0,
+			$current_resources = WGDP_Product_Meta::get_drive_resources( $row['product_id'], $row['variation_id'] ?: 0 );
+			$resource_map      = array();
+			foreach ( $current_resources as $resource ) {
+				if ( ! empty( $resource['id'] ) ) {
+					$resource_map[ $resource['id'] ] = $resource;
+				}
+			}
+
+			$replacement_resources = array();
+			$deferred_revoke_ids   = array();
+			foreach ( $all_rows as $sibling ) {
+				if ( 'revoked' === $sibling['grant_status'] ) {
+					continue;
+				}
+				$replacement_resources[] = array(
+					'id'   => $sibling['cloud_asset_id'],
+					'type' => $resource_map[ $sibling['cloud_asset_id'] ]['type'] ?? WGDP_Entitlements::get_resource_type( $sibling ),
+					'name' => $resource_map[ $sibling['cloud_asset_id'] ]['name'] ?? $sibling['cloud_asset_id'],
+				);
+
+				if ( 'granted' === $sibling['grant_status'] && ! empty( $sibling['provider_permission_id'] ) ) {
+					$delete_result = $ent->delete_drive_permission_for_row( $sibling );
+					if ( is_wp_error( $delete_result ) ) {
+						$data   = $delete_result->get_error_data();
+						$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 0;
+						if ( 404 !== $status ) {
+							$ent->mark_revocation_error(
+								$sibling['id'],
+								WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT,
+								$delete_result->get_error_message()
+							);
+							return new WP_Error(
+								'wgdp_old_permission_delete_failed',
+								'Could not remove Drive access for the old email (' . $old_email . '): ' . $delete_result->get_error_message() . '. Replacement was not completed; any removed permissions were marked revoked and this revocation will be retried automatically.'
+							);
+						}
+					}
+					$ent->mark_revoked( $sibling['id'], WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT );
+				} else {
+					$deferred_revoke_ids[] = (int) $sibling['id'];
+				}
+			}
+
+			if ( empty( $replacement_resources ) ) {
+				return new WP_Error( 'wgdp_no_replacement_resources', 'No active entitlement rows were available to replace.' );
+			}
+
+			foreach ( $deferred_revoke_ids as $revoke_id ) {
+				$ent->mark_revoked( $revoke_id, WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT );
+			}
+
+			$replacement = $ent->create_entitlements_for_recipient( array(
+				'order_id'        => (int) $row['order_id'],
+				'order_item_id'   => (int) $row['order_item_id'],
+				'product_id'      => (int) $row['product_id'],
+				'variation_id'    => (int) ( $row['variation_id'] ?? 0 ),
+				'email'           => $new_email,
+				'account_id'      => $row['account_id'],
+				'resources'       => $replacement_resources,
+				'recipient_index' => (int) $row['recipient_index'],
+				'reuse_revoked'   => true,
 			) );
+
+			if ( is_wp_error( $replacement ) ) {
+				return $replacement;
+			}
+
+			if ( empty( $replacement['tokens'] ) ) {
+				return new WP_Error( 'wgdp_replacement_exists', 'The new email is already assigned for these Drive files.' );
+			}
+
+			return array(
+				'row'         => $row,
+				'all_rows'    => $all_rows,
+				'old_email'   => $old_email,
+				'tokens'      => $replacement['tokens'],
+				'file_count'  => $replacement['file_count'],
+				'primary_id'  => $replacement['primary_id'],
+			);
+		} );
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( $result->get_error_message() );
 		}
 
-		// Issue new OTP and send verification email (only once, on the primary entitlement).
-		$otp    = WGDP_OTP::instance();
-		$tokens = $otp->issue_otp_for_entitlement( $entitlement_id );
-		$order  = wc_get_order( $row['order_id'] );
-		$item   = $order ? $order->get_item( $row['order_item_id'] ) : null;
-		if ( $order && $item ) {
-			WGDP_Notification_Email::send_otp( $new_email, $tokens['otp'], $tokens['claim_token'], $order, $item );
-			$order->add_order_note( sprintf(
-				'WGDP: Recipient email changed from %s to %s for "%s" (%d file(s)) — changed by admin',
-				$old_email,
-				$new_email,
-				$item->get_name(),
-				count( $all_rows )
-			) );
-		}
+		$row       = $result['row'];
+		$old_email = $result['old_email'];
+		$tokens    = $result['tokens'];
+		$file_count = (int) ( $result['file_count'] ?? count( $result['all_rows'] ) );
+		$order     = wc_get_order( $row['order_id'] );
+		$item      = $order ? $order->get_item( $row['order_item_id'] ) : null;
+			if ( $order && $item ) {
+				$mail_result = WGDP_Notification_Email::send_otp( $new_email, $tokens['otp'], $tokens['claim_token'], $order, $item );
+				if ( is_wp_error( $mail_result ) ) {
+					$order->add_order_note( sprintf(
+						'WGDP: Recipient email changed from %s to %s for "%s" (%d file(s)), but verification email failed — %s',
+							$old_email,
+							$new_email,
+							$item->get_name(),
+							$file_count,
+							$mail_result->get_error_message()
+						) );
+					} else {
+						$order->add_order_note( sprintf(
+							'WGDP: Recipient email changed from %s to %s for "%s" (%d file(s)) — changed by admin',
+							$old_email,
+							$new_email,
+							$item->get_name(),
+							$file_count
+						) );
+					}
+				}
 
 		delete_transient( 'wgdp_permission_counts' );
 
-		$response = array(
+		wp_send_json_success( array(
 			'new_email'           => $new_email,
 			'verification_status' => 'pending',
 			'grant_status'        => 'pending',
-		);
-		if ( $drive_warning ) {
-			$response['warning'] = $drive_warning;
-		}
-		wp_send_json_success( $response );
+		) );
 	}
 
 	/**
@@ -1206,7 +1355,7 @@ class WGDP_Admin {
 
 		// Revoke the stale error entitlements.
 		foreach ( $stale_rows as $r ) {
-			$ent->mark_revoked( $r['id'] );
+			$ent->mark_revoked( $r['id'], WGDP_Entitlements::REVOCATION_REASON_REPROVISION );
 		}
 
 		// Create new entitlements for current resources, pre-verified.
@@ -1230,6 +1379,9 @@ class WGDP_Admin {
 					'provider_permission_id' => null,
 					'granted_at'             => null,
 					'revoked_at'             => null,
+					'revocation_reason'      => null,
+					'revocation_error'       => null,
+					'revocation_retries'     => 0,
 					'grant_error'            => null,
 					'grant_retries'          => 0,
 					'account_id'             => $account_id,
@@ -1376,14 +1528,18 @@ class WGDP_Admin {
 			wp_send_json_error( 'No granted files found for this recipient.' );
 		}
 
-		$product_name = WGDP_Entitlements::get_product_name( $row, 'your purchase' );
-		if ( count( $granted_links ) > 1 ) {
-			WGDP_Notification_Email::send_access_granted_batch( $row['recipient_email'], $granted_links, $product_name );
-		} else {
-			WGDP_Notification_Email::send_access_granted( $row['recipient_email'], $granted_links[0]['link'], $product_name );
-		}
+			$product_name = WGDP_Entitlements::get_product_name( $row, 'your purchase' );
+			if ( count( $granted_links ) > 1 ) {
+				$mail_result = WGDP_Notification_Email::send_access_granted_batch( $row['recipient_email'], $granted_links, $product_name );
+			} else {
+				$mail_result = WGDP_Notification_Email::send_access_granted( $row['recipient_email'], $granted_links[0]['link'], $product_name );
+			}
 
-		wp_send_json_success( array(
+			if ( is_wp_error( $mail_result ) ) {
+				wp_send_json_error( 'Access email failed: ' . $mail_result->get_error_message() );
+			}
+
+			wp_send_json_success( array(
 			'message' => sprintf( 'Access email sent to %s.', $row['recipient_email'] ),
 		) );
 	}
@@ -1414,10 +1570,96 @@ class WGDP_Admin {
 			wp_send_json_error( 'Customer invoice email not available.' );
 		}
 
+		$order->update_meta_data( '_wgdp_self_service_link_resent_at', time() );
+		$order->save();
+
 		$emails['WC_Email_Customer_Invoice']->trigger( $order_id );
 
 		wp_send_json_success( array(
 			'message' => sprintf( 'Order email resent for order #%d.', $order_id ),
+		) );
+	}
+
+	/**
+	 * AJAX: Remove the current recipient's Drive access and request a replacement Google email.
+	 */
+	public function ajax_request_new_email() {
+		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$entitlement_id = absint( $_POST['entitlement_id'] ?? 0 );
+		if ( ! $entitlement_id ) {
+			wp_send_json_error( 'Missing entitlement ID.' );
+		}
+
+		$ent = WGDP_Entitlements::instance();
+		$row = $ent->get( $entitlement_id );
+		if ( ! $row ) {
+			wp_send_json_error( 'Entitlement not found.' );
+		}
+
+		if ( 'revoked' === $row['grant_status'] ) {
+			wp_send_json_error( 'This entitlement is already revoked. Use Resend Order Email if the order still has an unassigned slot.' );
+		}
+
+		$order = wc_get_order( $row['order_id'] );
+		if ( ! $order ) {
+			wp_send_json_error( 'Order not found.' );
+		}
+
+		if ( ! in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
+			wp_send_json_error( 'This order is not eligible for self-service reassignment.' );
+		}
+
+		$all_rows = $ent->get_siblings( $row['order_item_id'], $row['recipient_email'] );
+		if ( empty( $all_rows ) ) {
+			$all_rows = array( $row );
+		}
+
+		$drive_warning = '';
+		$revoked_count = 0;
+
+		foreach ( $all_rows as $sibling ) {
+			if ( 'revoked' === $sibling['grant_status'] ) {
+				continue;
+			}
+
+			$result = $ent->revoke_with_drive_delete( $sibling, WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT );
+			if ( is_wp_error( $result ) ) {
+				$drive_warning = $drive_warning ?: $result->get_error_message();
+				continue;
+			}
+			$revoked_count++;
+		}
+
+		delete_transient( 'wgdp_permission_counts' );
+
+		if ( $drive_warning ) {
+			$order->add_order_note( sprintf(
+				'WGDP: Could not fully remove access for %s; %d file(s) removed, at least one Drive permission is pending retry.',
+				$row['recipient_email'],
+				$revoked_count
+			) );
+
+			wp_send_json_success( array(
+				'status'        => 'revocation_error',
+				'message'       => 'Could not remove one Drive permission (' . $drive_warning . '). The order item is not ready for reassignment until revocation retry succeeds or the permission is removed manually.',
+				'revoked_count' => $revoked_count,
+			) );
+		}
+
+		$order->add_order_note( sprintf(
+			'WGDP: Removed access for %s (%d file(s)); order item is awaiting replacement Google email assignment.',
+			$row['recipient_email'],
+			$revoked_count
+		) );
+
+		wp_send_json_success( array(
+			'status'        => 'removed',
+			'message'       => sprintf( 'Removed access for %s. Reloading will show this order item as Awaiting Assignment; use Resend Order Email to send the Provide Google Email link.', $row['recipient_email'] ),
+			'revoked_count' => $revoked_count,
 		) );
 	}
 

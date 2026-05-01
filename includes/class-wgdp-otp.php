@@ -65,7 +65,7 @@ class WGDP_OTP {
 		$claim_token = $this->generate_claim_token();
 
 		$entitlements = WGDP_Entitlements::instance();
-		$entitlements->update( $entitlement_id, array(
+		$updated      = $entitlements->update( $entitlement_id, array(
 			'otp_hash'               => $this->hash_otp( $otp ),
 			'otp_expires_at'         => gmdate( 'Y-m-d H:i:s', time() + ( self::OTP_EXPIRY_MINUTES * 60 ) ),
 			'otp_attempts'           => 0,
@@ -73,6 +73,10 @@ class WGDP_OTP {
 			'claim_token_expires_at' => gmdate( 'Y-m-d H:i:s', time() + ( self::CLAIM_TOKEN_EXPIRY_HOURS * 3600 ) ),
 			'verification_status'    => 'pending',
 		) );
+
+		if ( false === $updated || 0 === (int) $updated ) {
+			return new WP_Error( 'wgdp_otp_store_failed', 'Could not store the verification code. Please try again.' );
+		}
 
 		return array(
 			'otp'         => $otp,
@@ -139,10 +143,29 @@ class WGDP_OTP {
 			return array( 'success' => false, 'error' => $msg, 'entitlement' => $entitlement );
 		}
 
-		// Mark as verified.
-		$entitlements->update( $entitlement['id'], array(
-			'verification_status' => 'verified',
-		) );
+		// Mark as verified once. A concurrent valid submit may have done this first.
+		global $wpdb;
+		$table = WGDP_DB::get_table_name();
+		$verified = (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"UPDATE {$table} SET verification_status = 'verified' WHERE id = %d AND verification_status = 'pending'",
+				$entitlement['id']
+			)
+		);
+
+		if ( 0 === $verified ) {
+			$refreshed = $entitlements->get( $entitlement['id'] );
+			if ( $refreshed && 'verified' === $refreshed['verification_status'] ) {
+				$siblings = $entitlements->get_siblings( $refreshed['order_item_id'], $refreshed['recipient_email'], $refreshed['id'] );
+				return array(
+					'success'     => true,
+					'error'       => null,
+					'entitlement' => $refreshed,
+					'siblings'    => $siblings,
+				);
+			}
+			return array( 'success' => false, 'error' => 'This access could not be verified. Please request a new verification email.', 'entitlement' => $refreshed );
+		}
 
 		// Also verify all sibling entitlements (same order_item_id + recipient_email).
 		$siblings = $entitlements->get_siblings( $entitlement['order_item_id'], $entitlement['recipient_email'], $entitlement['id'] );

@@ -42,6 +42,11 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 	 */
 	private $active_asset_ids_cache = array();
 
+	/**
+	 * Cached billing email by order ID.
+	 */
+	private $billing_email_cache = array();
+
 	public function __construct( $display_mode = 'entitlements' ) {
 		$this->display_mode = $display_mode;
 		parent::__construct( array(
@@ -318,11 +323,19 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 
 		$status = $item['grant_status'];
 		$class  = 'wgdp-gstatus--' . esc_attr( $status );
-		$label  = 'pending_release' === $status ? 'Pending Release' : ucfirst( $status );
+		if ( 'pending_release' === $status ) {
+			$label = 'Pending Release';
+		} elseif ( 'revocation_error' === $status ) {
+			$label = 'Revocation Error';
+		} else {
+			$label = ucfirst( $status );
+		}
 		$html   = '<span class="wgdp-status-badge ' . $class . '">' . esc_html( $label ) . '</span>';
 
 		if ( 'error' === $status && ! empty( $item['grant_error'] ) ) {
 			$html .= '<br><small style="color:#d63638;">' . esc_html( $item['grant_error'] ) . '</small>';
+		} elseif ( 'revocation_error' === $status && ! empty( $item['revocation_error'] ) ) {
+			$html .= '<br><small style="color:#d63638;">' . esc_html( $item['revocation_error'] ) . '</small>';
 		}
 
 		return $html;
@@ -358,8 +371,11 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 	 */
 	public function column_actions( $item ) {
 		if ( 'missing_email' === $this->display_mode || ! empty( $item['_unassigned'] ) ) {
+			$billing_email = $this->get_billing_email_for_order( $item['order_id'] );
+			$placeholder   = $billing_email ? 'Billing: ' . $billing_email : 'Enter Google email';
+
 			return '<div class="wgdp-am-assign-form">'
-				. '<input type="email" class="wgdp-am-assign-email-input" placeholder="recipient@example.com" style="width:150px;" />'
+				. '<input type="email" class="wgdp-am-assign-email-input" placeholder="' . esc_attr( $placeholder ) . '" style="width:190px;" />'
 				. '<button class="button button-small wgdp-am-assign-btn"'
 				. ' data-order-id="' . esc_attr( $item['order_id'] ) . '"'
 				. ' data-order-item-id="' . esc_attr( $item['order_item_id'] ) . '">Assign</button> '
@@ -374,6 +390,10 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			// Change Email button.
 			$html .= '<button type="button" class="button button-small wgdp-am-change-email-btn">Change Email</button> ';
 
+				// Remove the current account so the purchaser can provide a replacement.
+				$html .= '<button type="button" class="button button-small wgdp-am-request-new-email-btn"'
+					. ' data-entitlement-id="' . esc_attr( $item['id'] ) . '">Remove Account</button> ';
+
 			// Send Access Email button (only if verified and granted).
 			if ( 'verified' === $item['verification_status'] && 'granted' === $item['grant_status'] ) {
 				$html .= '<button type="button" class="button button-small wgdp-am-send-access-email-btn"'
@@ -386,11 +406,11 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					. ' data-entitlement-id="' . esc_attr( $item['id'] ) . '">Verify on Drive</button> ';
 			}
 
-			// Retry Grant button (if error and verified).
-			if ( 'error' === $item['grant_status'] && 'verified' === $item['verification_status'] ) {
-				$html .= '<button type="button" class="button button-small wgdp-retry-grant-btn"'
-					. ' data-entitlement-id="' . esc_attr( $item['id'] ) . '">Retry Grant</button> ';
-			}
+				// Retry Grant button (if error and verified).
+				if ( 'error' === $item['grant_status'] && 'verified' === $item['verification_status'] ) {
+					$html .= '<button type="button" class="button button-small wgdp-retry-grant-btn"'
+						. ' data-entitlement-id="' . esc_attr( $item['id'] ) . '">Retry Grant</button> ';
+				}
 
 			// Resend OTP (if pending/expired verification).
 			if ( 'pending' === $item['verification_status'] || 'expired' === $item['verification_status'] ) {
@@ -413,6 +433,21 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		$html .= '<span class="wgdp-am-verify-result" style="margin-left:6px;"></span>';
 
 		return $html;
+	}
+
+	/**
+	 * Get billing email with an instance-level cache to avoid repeated order loads.
+	 */
+	private function get_billing_email_for_order( $order_id ) {
+		$order_id = (int) $order_id;
+		if ( isset( $this->billing_email_cache[ $order_id ] ) ) {
+			return $this->billing_email_cache[ $order_id ];
+		}
+
+		$order = wc_get_order( $order_id );
+		$this->billing_email_cache[ $order_id ] = $order ? $order->get_billing_email() : '';
+
+		return $this->billing_email_cache[ $order_id ];
 	}
 
 	/**
@@ -505,13 +540,19 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 				'page'         => $page,
 				'orderby'      => isset( $_GET['orderby'] ) ? sanitize_text_field( wp_unslash( $_GET['orderby'] ) ) : 'id',
 				'order'        => isset( $_GET['order'] ) ? sanitize_text_field( wp_unslash( $_GET['order'] ) ) : 'DESC',
-				'search'       => $search,
-				'product_id'   => $product_id,
-				'product_name' => $product_name,
-				'order_id'     => $order_id,
-			);
+					'search'       => $search,
+					'product_id'   => $product_id,
+					'product_name' => $product_name,
+					'order_id'     => $order_id,
+				);
+				if ( 'revoked' !== $status ) {
+					$query_args['hide_shadow_revoked'] = true;
+				}
+				if ( empty( $status ) ) {
+					$query_args['exclude_grant_status'] = 'revoked';
+				}
 
-			switch ( $status ) {
+				switch ( $status ) {
 				case 'pending_verification':
 					$query_args['verification_status'] = 'pending';
 					$query_args['exclude_grant_status'] = 'revoked';
@@ -523,7 +564,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					$query_args['grant_status'] = 'granted';
 					break;
 				case 'error':
-					$query_args['grant_status'] = 'error';
+					$query_args['grant_statuses'] = array( 'error', 'revocation_error' );
 					break;
 				case 'revoked':
 					$query_args['grant_status'] = 'revoked';
@@ -595,7 +636,8 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			}
 			foreach ( $order->get_items() as $oi ) {
 				if ( isset( $item_ids[ $oi->get_id() ] ) ) {
-					$this->item_qty_cache[ $oi->get_id() ] = (int) $oi->get_quantity();
+					$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $oi->get_id() ) );
+					$this->item_qty_cache[ $oi->get_id() ] = max( 0, (int) $oi->get_quantity() - $qty_refunded );
 				}
 			}
 		}

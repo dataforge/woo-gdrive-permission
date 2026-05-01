@@ -203,6 +203,7 @@ class WGDP_Product_Meta {
 
 		$account_field_name   = $name_prefix ? $name_prefix . '[_wgdp_account_id]' : '_wgdp_account_id';
 		$resources_field_name = $name_prefix ? $name_prefix . '[_wgdp_drive_resources]' : '_wgdp_drive_resources';
+		$resources_submitted_field_name = $name_prefix ? $name_prefix . '[_wgdp_drive_resources_submitted]' : '_wgdp_drive_resources_submitted';
 		$unique_id            = $name_prefix ? 'wgdp-' . esc_attr( $name_prefix ) : 'wgdp-simple';
 
 		if ( ! $has_accounts ) : ?>
@@ -236,10 +237,11 @@ class WGDP_Product_Meta {
 			</select>
 		</p>
 
-		<p class="form-field">
-			<label><?php esc_html_e( 'Drive Files', 'woo-gdrive-permission' ); ?></label>
-			<span class="wgdp-resources-list-wrap">
-				<span class="wgdp-resources-list" data-name-prefix="<?php echo esc_attr( $resources_field_name ); ?>">
+			<p class="form-field">
+				<label><?php esc_html_e( 'Drive Files', 'woo-gdrive-permission' ); ?></label>
+				<span class="wgdp-resources-list-wrap">
+					<input type="hidden" name="<?php echo esc_attr( $resources_submitted_field_name ); ?>" value="1" />
+					<span class="wgdp-resources-list" data-name-prefix="<?php echo esc_attr( $resources_field_name ); ?>">
 					<?php foreach ( $resources as $i => $res ) :
 						$res_status = $res['status'] ?? 'active';
 						$is_retired = in_array( $res_status, array( 'retired_manual', 'retired_missing' ), true );
@@ -314,6 +316,8 @@ class WGDP_Product_Meta {
 		$old_resources  = self::get_drive_resources( $post_id );
 		$old_active_ids = self::extract_active_resource_ids( $old_resources );
 
+		$resources_submitted = isset( $_POST['_wgdp_drive_resources_submitted'] );
+
 		if ( isset( $_POST['_wgdp_drive_resources'] ) && is_array( $_POST['_wgdp_drive_resources'] ) ) {
 			$raw       = wp_unslash( $_POST['_wgdp_drive_resources'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 			$resources = self::sanitize_resources_array( $raw );
@@ -338,8 +342,8 @@ class WGDP_Product_Meta {
 			if ( ! empty( $removed_ids ) ) {
 				self::revoke_removed_assets( $post_id, 0, array_values( $removed_ids ), $old_resources );
 			}
-		} elseif ( ! isset( $_POST['_wgdp_drive_resources'] ) ) {
-			// No resources submitted — clear.
+		} elseif ( $resources_submitted ) {
+			// Resources UI was submitted with an intentionally empty list.
 			update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
 			delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
 			delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
@@ -552,6 +556,8 @@ class WGDP_Product_Meta {
 		$old_resources  = self::get_drive_resources( $product_id, $variation_id );
 		$old_active_ids = self::extract_active_resource_ids( $old_resources );
 
+		$resources_submitted = isset( $data['_wgdp_drive_resources_submitted'] );
+
 		if ( isset( $data['_wgdp_drive_resources'] ) && is_array( $data['_wgdp_drive_resources'] ) ) {
 			$resources = self::sanitize_resources_array( $data['_wgdp_drive_resources'] );
 			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
@@ -574,7 +580,7 @@ class WGDP_Product_Meta {
 			if ( ! empty( $removed_ids ) ) {
 				self::revoke_removed_assets( $product_id, $variation_id, array_values( $removed_ids ), $old_resources );
 			}
-		} else {
+		} elseif ( $resources_submitted ) {
 			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
@@ -819,16 +825,21 @@ class WGDP_Product_Meta {
 		global $wpdb;
 		$ent   = WGDP_Entitlements::instance();
 		$table = $wpdb->prefix . 'wgdp_entitlements';
-		$drive = WGDP_Google_Drive::instance();
 
-		// Find all non-revoked entitlements for these assets on this product/variation.
+		// Find all non-revoked entitlements for these assets. Parent product
+		// removals also affect variation rows that inherit parent resources.
 		$placeholders = implode( ',', array_fill( 0, count( $removed_ids ), '%s' ) );
-		$args         = array_merge( array( $product_id, $variation_id ), $removed_ids );
+		if ( $variation_id ) {
+			$where = "product_id = %d AND variation_id = %d AND cloud_asset_id IN ({$placeholders})";
+			$args  = array_merge( array( $product_id, $variation_id ), $removed_ids );
+		} else {
+			$where = "product_id = %d AND cloud_asset_id IN ({$placeholders})";
+			$args  = array_merge( array( $product_id ), $removed_ids );
+		}
 
 		$rows = $wpdb->get_results( $wpdb->prepare(
 			"SELECT * FROM {$table}
-			 WHERE product_id = %d AND variation_id = %d
-			   AND cloud_asset_id IN ({$placeholders})
+			 WHERE {$where}
 			   AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			$args
 		), ARRAY_A );
@@ -840,13 +851,14 @@ class WGDP_Product_Meta {
 		// Group by recipient: email => [ 'rows' => [...], 'file_names' => [...] ].
 		$by_recipient = array();
 		foreach ( $rows as $row ) {
-			// Try to remove Drive permission.
-			if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
-				if ( ! $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
-					$drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
-				}
+			if ( ! self::removed_asset_row_applies( (int) $variation_id, (int) ( $row['variation_id'] ?? 0 ) ) ) {
+				continue;
 			}
-			$ent->mark_revoked( $row['id'] );
+
+			$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
+			if ( is_wp_error( $result ) ) {
+				continue;
+			}
 
 			if ( ! empty( $row['recipient_email'] ) ) {
 				$email = $row['recipient_email'];
@@ -872,6 +884,36 @@ class WGDP_Product_Meta {
 		}
 
 		delete_transient( 'wgdp_permission_counts' );
+	}
+
+	/**
+	 * Check whether a removed product/variation asset applies to an entitlement row.
+	 */
+	private static function removed_asset_row_applies( $removed_variation_id, $row_variation_id ) {
+		if ( $removed_variation_id ) {
+			return $row_variation_id === $removed_variation_id;
+		}
+
+		if ( ! $row_variation_id ) {
+			return true;
+		}
+
+		return ! self::variation_has_own_resources( $row_variation_id );
+	}
+
+	/**
+	 * Check whether a variation defines its own resource set instead of inheriting.
+	 */
+	public static function variation_has_own_resources( $variation_id ) {
+		$json = get_post_meta( $variation_id, '_wgdp_drive_resources', true );
+		if ( ! empty( $json ) ) {
+			$resources = json_decode( $json, true );
+			if ( is_array( $resources ) && ! empty( $resources ) ) {
+				return true;
+			}
+		}
+
+		return (bool) get_post_meta( $variation_id, '_wgdp_drive_resource_id', true );
 	}
 
 	/**
@@ -966,7 +1008,7 @@ class WGDP_Product_Meta {
 	public function ajax_get_file_info() {
 		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
 
-		if ( ! current_user_can( 'edit_products' ) ) {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
 			wp_send_json_error( 'Permission denied.' );
 		}
 
@@ -997,7 +1039,7 @@ class WGDP_Product_Meta {
 	public function ajax_browse_drive_files() {
 		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
 
-		if ( ! current_user_can( 'edit_products' ) ) {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
 			wp_send_json_error( 'Permission denied.' );
 		}
 
@@ -1044,12 +1086,14 @@ class WGDP_Product_Meta {
 			WGDP_VERSION,
 			true
 		);
+		$can_manage_settings = WGDP_Google_Auth::current_user_can_manage_credentials();
 		wp_localize_script( 'wgdp-admin', 'wgdp', array(
 			'ajax_url'             => admin_url( 'admin-ajax.php' ),
 			'nonce'                => wp_create_nonce( 'wgdp_admin_nonce' ),
-			'oauth_client_id'      => get_option( 'wgdp_oauth_client_id', '' ),
-			'picker_api_key'       => get_option( 'wgdp_picker_api_key', '' ),
-			'cloud_project_number' => get_option( 'wgdp_cloud_project_number', '' ),
+			'oauth_client_id'      => $can_manage_settings ? get_option( 'wgdp_oauth_client_id', '' ) : '',
+			'picker_api_key'       => $can_manage_settings ? get_option( 'wgdp_picker_api_key', '' ) : '',
+			'cloud_project_number' => $can_manage_settings ? get_option( 'wgdp_cloud_project_number', '' ) : '',
+			'can_manage_settings'  => $can_manage_settings,
 		) );
 	}
 }

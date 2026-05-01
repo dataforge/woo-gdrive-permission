@@ -50,7 +50,7 @@ class WGDP_Notification_Email {
 
 		$html = self::get_html_wrapper( $content, $site_name );
 
-		self::send( $email, $subject, $html );
+		return self::send( $email, $subject, $html );
 	}
 
 	/**
@@ -72,7 +72,7 @@ class WGDP_Notification_Email {
 
 		$html = self::get_html_wrapper( $content, $site_name );
 
-		self::send( $email, $subject, $html );
+		return self::send( $email, $subject, $html );
 	}
 
 	/**
@@ -101,7 +101,7 @@ class WGDP_Notification_Email {
 		$content .= '</ul>';
 
 		$html = self::get_html_wrapper( $content, $site_name );
-		self::send( $email, $subject, $html );
+		return self::send( $email, $subject, $html );
 	}
 
 	/**
@@ -110,13 +110,17 @@ class WGDP_Notification_Email {
 	 * @param string $email        Recipient email.
 	 * @param array  $file_links   Array of ['name' => string, 'link' => string].
 	 * @param string $product_name Product name.
+	 * @param int    $order_id     Order ID.
 	 */
-	public static function send_new_files_added( $email, $file_links, $product_name ) {
+	public static function send_new_files_added( $email, $file_links, $product_name, $order_id = 0 ) {
 		$site_name = get_bloginfo( 'name' );
-		$subject   = sprintf( 'New files added to %s', $product_name );
+		$subject   = $order_id
+			? sprintf( 'New files added to %s for order #%d', $product_name, $order_id )
+			: sprintf( 'New files added to %s', $product_name );
 
 		$content = '<h2 style="color:#333;margin:0 0 16px;">New Files Added</h2>'
 			. '<p style="color:#555;font-size:15px;line-height:1.6;">New files have been added to <strong>' . esc_html( $product_name ) . '</strong> and shared with your account (<strong>' . esc_html( $email ) . '</strong>).</p>'
+			. ( $order_id ? '<p style="color:#555;font-size:15px;line-height:1.6;">Order: <strong>#' . esc_html( $order_id ) . '</strong></p>' : '' )
 			. '<p style="color:#555;font-size:15px;line-height:1.6;">Make sure you are signed in to Google with this email address. Your new files:</p>'
 			. '<ul style="margin:16px 0;padding:0 0 0 20px;">';
 
@@ -130,7 +134,7 @@ class WGDP_Notification_Email {
 		$content .= '</ul>';
 
 		$html = self::get_html_wrapper( $content, $site_name );
-		self::send( $email, $subject, $html );
+		return self::send( $email, $subject, $html );
 	}
 
 	/**
@@ -148,7 +152,7 @@ class WGDP_Notification_Email {
 
 		$html = self::get_html_wrapper( $content, $site_name );
 
-		self::send( $email, $subject, $html );
+		return self::send( $email, $subject, $html );
 	}
 
 	/**
@@ -173,7 +177,7 @@ class WGDP_Notification_Email {
 
 		$html = self::get_html_wrapper( $content, $site_name );
 
-		self::send( $email, $subject, $html );
+		return self::send( $email, $subject, $html );
 	}
 
 	/**
@@ -229,10 +233,16 @@ class WGDP_Notification_Email {
 	private static function send( $to, $subject, $html ) {
 		add_filter( 'wp_mail_content_type', array( __CLASS__, 'html_content_type' ) );
 		try {
-			wp_mail( $to, $subject, $html );
+			$sent = wp_mail( $to, $subject, $html );
 		} finally {
 			remove_filter( 'wp_mail_content_type', array( __CLASS__, 'html_content_type' ) );
 		}
+
+		if ( ! $sent ) {
+			return new WP_Error( 'wgdp_mail_failed', 'WordPress could not send the email.' );
+		}
+
+		return true;
 	}
 
 	/**

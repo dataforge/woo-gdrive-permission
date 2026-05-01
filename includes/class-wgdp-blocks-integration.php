@@ -89,10 +89,13 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 			$recipients = array();
 		}
 
+		$cart_key_queue = $this->get_cart_key_queue_by_product();
+
 		foreach ( $order->get_items() as $item ) {
 			$product_id   = $item->get_product_id();
 			$variation_id = $item->get_variation_id();
-			$key          = $product_id . '_' . ( $variation_id ?: 0 );
+			$legacy_key   = $product_id . '_' . ( $variation_id ?: 0 );
+			$cart_key     = '';
 
 			// Check if this item qualifies for digital entitlement.
 			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
@@ -100,7 +103,16 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 			}
 
 			$qty        = $item->get_quantity();
-			$raw_emails = ( isset( $recipients[ $key ] ) && is_array( $recipients[ $key ] ) ) ? $recipients[ $key ] : array();
+			if ( ! empty( $cart_key_queue[ $legacy_key ] ) ) {
+				$cart_key = array_shift( $cart_key_queue[ $legacy_key ] );
+			}
+			$raw_emails = ( $cart_key && isset( $recipients[ $cart_key ] ) && is_array( $recipients[ $cart_key ] ) )
+				? $recipients[ $cart_key ]
+				: array();
+
+			if ( empty( $raw_emails ) && isset( $recipients[ $legacy_key ] ) && is_array( $recipients[ $legacy_key ] ) ) {
+				$raw_emails = $recipients[ $legacy_key ];
+			}
 
 			// Skip items with no recipients — emails are optional (matches classic checkout behavior).
 			if ( empty( $raw_emails ) ) {
@@ -109,13 +121,24 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 
 			// Validate each email format, skipping blanks.
 			$emails = array();
-			foreach ( $raw_emails as $raw_email ) {
+			foreach ( $raw_emails as $index => $raw_email ) {
 				$raw_email = trim( $raw_email );
 				if ( '' === $raw_email ) {
 					continue;
 				}
 
-				$email = sanitize_email( $raw_email );
+				if ( (int) $index >= (int) $qty ) {
+					throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException(
+						'wgdp_too_many_recipients',
+						sprintf(
+							'Too many recipient emails were submitted for "%s". Please refresh checkout and try again.',
+							$item->get_name()
+						),
+						400
+					);
+				}
+
+					$email = strtolower( sanitize_email( $raw_email ) );
 				if ( ! is_email( $email ) ) {
 					throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException(
 						'wgdp_invalid_email',
@@ -149,6 +172,32 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 			$item->update_meta_data( '_wgdp_recipients', wp_json_encode( $emails ) );
 			$item->save();
 		}
+	}
+
+	/**
+	 * Build a FIFO queue of Woo cart item keys grouped by product/variation.
+	 *
+	 * Store API checkout creates order items from the current cart, and the order
+	 * update hook runs while that cart is still available. The queue lets us map
+	 * duplicate product/variation lines back to their distinct cart-line payloads.
+	 */
+	private function get_cart_key_queue_by_product() {
+		if ( ! function_exists( 'WC' ) || ! WC()->cart ) {
+			return array();
+		}
+
+		$queue = array();
+		foreach ( WC()->cart->get_cart() as $cart_key => $cart_item ) {
+			$product_id   = (int) ( $cart_item['product_id'] ?? 0 );
+			$variation_id = (int) ( $cart_item['variation_id'] ?? 0 );
+			$key          = $product_id . '_' . ( $variation_id ?: 0 );
+			if ( ! isset( $queue[ $key ] ) ) {
+				$queue[ $key ] = array();
+			}
+			$queue[ $key ][] = $cart_key;
+		}
+
+		return $queue;
 	}
 
 	/**

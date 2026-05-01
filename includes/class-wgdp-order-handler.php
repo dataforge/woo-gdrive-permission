@@ -28,6 +28,14 @@ class WGDP_Order_Handler {
 		add_action( 'woocommerce_order_status_processing', array( $this, 'update_sales_counter' ), 20 );
 		add_action( 'woocommerce_order_status_completed', array( $this, 'update_sales_counter' ), 20 );
 
+		// Optional integration with Woo Conditional Preorders.
+		add_action( 'wcpr_order_charge_succeeded', array( $this, 'handle_preorder_charge_succeeded' ), 10, 2 );
+		add_action( 'wcpr_reservation_cancelled_campaign_failed', array( $this, 'handle_preorder_reservation_cancelled' ), 20, 2 );
+		add_action( 'wcpr_reservation_cancelled_admin', array( $this, 'handle_preorder_reservation_cancelled' ), 20, 2 );
+		add_action( 'wcpr_reservation_cancelled_customer', array( $this, 'handle_preorder_reservation_cancelled' ), 20, 2 );
+		add_action( 'woocommerce_order_status_wcpr-cancelled', array( $this, 'handle_preorder_terminal_status' ), 20, 2 );
+		add_action( 'woocommerce_order_status_wcpr-campaign-failed', array( $this, 'handle_preorder_terminal_status' ), 20, 2 );
+
 		// Admin meta box.
 		add_action( 'add_meta_boxes', array( $this, 'register_meta_box' ) );
 
@@ -45,6 +53,111 @@ class WGDP_Order_Handler {
 		// Orders list column (HPOS).
 		add_filter( 'manage_woocommerce_page_wc-orders_columns', array( $this, 'add_orders_column' ) );
 		add_action( 'manage_woocommerce_page_wc-orders_custom_column', array( $this, 'render_orders_column' ), 10, 2 );
+
+		// Orders list column (legacy posts storage).
+		add_filter( 'manage_edit-shop_order_columns', array( $this, 'add_orders_column' ) );
+		add_action( 'manage_shop_order_posts_custom_column', array( $this, 'render_legacy_orders_column' ), 10, 2 );
+	}
+
+	/**
+	 * Detect Conditional Preorder reservation orders without requiring that plugin.
+	 */
+	private function is_preorder_order( $order ) {
+		return $order instanceof WC_Order && (bool) $order->get_meta( '_wcpr_campaign_product_id' );
+	}
+
+	/**
+	 * True only after the preorder plugin has captured the campaign charge.
+	 */
+	private function preorder_charge_succeeded( WC_Order $order ) {
+		return 'yes' === $order->get_meta( '_wcpr_charge_succeeded' );
+	}
+
+	/**
+	 * Initial preorder reservation/authorization events are not paid delivery events.
+	 */
+	private function should_defer_preorder_order( WC_Order $order ) {
+		return $this->is_preorder_order( $order ) && ! $this->preorder_charge_succeeded( $order );
+	}
+
+	private function order_has_active_entitlements_or_counted_items( WC_Order $order ) {
+		$counted_json = $order->get_meta( '_wgdp_qty_counted_items' );
+		$counted_ids  = ! empty( $counted_json ) ? json_decode( $counted_json, true ) : array();
+		if ( is_array( $counted_ids ) && ! empty( $counted_ids ) ) {
+			return true;
+		}
+
+		$rows = WGDP_Entitlements::instance()->get_by_order( $order->get_id() );
+		foreach ( $rows as $row ) {
+			if ( 'revoked' !== $row['grant_status'] ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private function decode_order_json_meta( WC_Order $order, $key ) {
+		$json = $order->get_meta( $key );
+		$data = ! empty( $json ) ? json_decode( $json, true ) : array();
+		return is_array( $data ) ? $data : array();
+	}
+
+	private function get_counted_item_ids( WC_Order $order ) {
+		return array_map( 'absint', $this->decode_order_json_meta( $order, '_wgdp_qty_counted_items' ) );
+	}
+
+	private function get_counted_quantities( WC_Order $order ) {
+		return array_map( 'absint', $this->decode_order_json_meta( $order, '_wgdp_qty_counted_quantities' ) );
+	}
+
+	private function get_refund_decremented_quantities( WC_Order $order ) {
+		return array_map( 'absint', $this->decode_order_json_meta( $order, '_wgdp_qty_refund_decremented_quantities' ) );
+	}
+
+	private function get_refund_baseline_quantities( WC_Order $order ) {
+		return array_map( 'absint', $this->decode_order_json_meta( $order, '_wgdp_qty_refund_baseline_quantities' ) );
+	}
+
+	private function get_effective_item_quantity( WC_Order $order, $item ) {
+		$quantity     = (int) $item->get_quantity();
+		$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
+		return max( 0, $quantity - $qty_refunded );
+	}
+
+	private function get_counted_quantity_for_item( WC_Order $order, $item, $counted_quantities ) {
+		$item_id = (int) $item->get_id();
+		if ( isset( $counted_quantities[ $item_id ] ) ) {
+			return (int) $counted_quantities[ $item_id ];
+		}
+		if ( isset( $counted_quantities[ (string) $item_id ] ) ) {
+			return (int) $counted_quantities[ (string) $item_id ];
+		}
+		return (int) $item->get_quantity();
+	}
+
+	private function add_counter_delta( &$product_deltas, &$variation_deltas, $product_id, $variation_id, $qty ) {
+		$qty = (int) $qty;
+		if ( $qty <= 0 ) {
+			return;
+		}
+
+		if ( WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 ) ) {
+			if ( ! isset( $product_deltas[ $product_id ] ) ) {
+				$product_deltas[ $product_id ] = 0;
+			}
+			$product_deltas[ $product_id ] += $qty;
+		}
+
+		if ( $variation_id ) {
+			$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
+			if ( 'min_sales_qty' === $var_mode ) {
+				if ( ! isset( $variation_deltas[ $variation_id ] ) ) {
+					$variation_deltas[ $variation_id ] = array( 'product_id' => $product_id, 'qty' => 0 );
+				}
+				$variation_deltas[ $variation_id ]['qty'] += $qty;
+			}
+		}
 	}
 
 	/**
@@ -55,15 +168,19 @@ class WGDP_Order_Handler {
 	 * On completed, also processes on_payment items as fallback for orders
 	 * that skip processing.
 	 */
-	public function create_entitlements( $order_id ) {
+	public function create_entitlements( $order_id, $forced_event = '' ) {
 		$order = wc_get_order( $order_id );
 		if ( ! $order ) {
 			return;
 		}
 
+		if ( $this->should_defer_preorder_order( $order ) ) {
+			return;
+		}
+
 		// Detect trigger event from current action.
-		$current = current_action();
-		if ( 'woocommerce_order_status_completed' === $current ) {
+		$current = $forced_event ?: current_action();
+		if ( 'woocommerce_order_status_completed' === $current || 'on_completion' === $current ) {
 			$current_event = 'on_completion';
 		} else {
 			$current_event = 'on_payment';
@@ -80,13 +197,7 @@ class WGDP_Order_Handler {
 			$variation_id = $item->get_variation_id();
 			$order_item_id = $item->get_id();
 
-			// Skip if entitlements already exist for this item.
-			$existing_for_item = $ent->get_by_order_item( $order_item_id );
-			if ( ! empty( $existing_for_item ) ) {
-				continue;
-			}
-
-			// Get recipients from item meta.
+				// Get recipients from item meta.
 			$recipients_json = $item->get_meta( '_wgdp_recipients' );
 			if ( empty( $recipients_json ) ) {
 				continue;
@@ -95,6 +206,11 @@ class WGDP_Order_Handler {
 			if ( ! is_array( $recipients ) || empty( $recipients ) ) {
 				continue;
 			}
+			$effective_qty = $this->get_effective_item_quantity( $order, $item );
+			if ( $effective_qty <= 0 ) {
+				continue;
+			}
+			$recipients = array_slice( $recipients, 0, $effective_qty );
 
 			// Check if this item qualifies for digital entitlement.
 			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
@@ -132,7 +248,7 @@ class WGDP_Order_Handler {
 			$has_drive_items = true;
 
 			foreach ( $recipients as $index => $email ) {
-				$email = sanitize_email( $email );
+					$email = WGDP_Entitlements::normalize_email( $email );
 				if ( ! is_email( $email ) ) {
 					continue;
 				}
@@ -149,21 +265,30 @@ class WGDP_Order_Handler {
 					'reuse_revoked'   => false,
 				) );
 
-				if ( is_wp_error( $result ) ) {
-					continue;
+					if ( is_wp_error( $result ) || ! empty( $result['already_exists'] ) ) {
+						continue;
+					}
+
+					$mail_result = WGDP_Notification_Email::send_otp( $email, $result['tokens']['otp'], $result['tokens']['claim_token'], $order, $item );
+
+					if ( is_wp_error( $mail_result ) ) {
+						$order->add_order_note( sprintf(
+							'WGDP: Entitlements created for %s on "%s", but verification email failed — %s',
+							$email,
+							$item->get_name(),
+							$mail_result->get_error_message()
+						) );
+					} else {
+						$order->add_order_note( sprintf(
+							'WGDP: Verification email sent to %s for "%s" (%d file(s), primary entitlement #%d)',
+							$email,
+							$item->get_name(),
+							$result['file_count'],
+							$result['primary_id']
+						) );
+					}
+					$created_any = true;
 				}
-
-				WGDP_Notification_Email::send_otp( $email, $result['tokens']['otp'], $result['tokens']['claim_token'], $order, $item );
-
-				$order->add_order_note( sprintf(
-					'WGDP: Verification email sent to %s for "%s" (%d file(s), primary entitlement #%d)',
-					$email,
-					$item->get_name(),
-					$result['file_count'],
-					$result['primary_id']
-				) );
-				$created_any = true;
-			}
 		}
 
 		if ( $has_drive_items && ! $order->get_meta( '_wgdp_has_drive_items' ) ) {
@@ -177,6 +302,69 @@ class WGDP_Order_Handler {
 	}
 
 	/**
+	 * Process GDrive delivery after a conditional preorder campaign charge succeeds.
+	 *
+	 * The preorder plugin sets _wcpr_charge_succeeded before changing the order to
+	 * processing, so the normal WooCommerce status hooks may already have handled
+	 * this order. Treat the custom hook as an on-payment fallback; on-completion
+	 * products still wait for the WooCommerce completed status.
+	 */
+	public function handle_preorder_charge_succeeded( $order, $product_id = 0 ) {
+		if ( is_numeric( $order ) ) {
+			$order = wc_get_order( absint( $order ) );
+		}
+
+		if ( ! $order instanceof WC_Order || ! $this->is_preorder_order( $order ) ) {
+			return;
+		}
+
+		if ( ! $this->preorder_charge_succeeded( $order ) ) {
+			return;
+		}
+
+		$this->create_entitlements( $order->get_id(), 'on_payment' );
+		$this->update_sales_counter( $order->get_id(), 'on_payment' );
+	}
+
+	/**
+	 * Revoke GDrive access when a conditional preorder reservation is cancelled.
+	 */
+	public function handle_preorder_reservation_cancelled( $order, $product_id = 0 ) {
+		if ( is_numeric( $order ) ) {
+			$order = wc_get_order( absint( $order ) );
+		}
+
+		if ( ! $order instanceof WC_Order || ! $this->is_preorder_order( $order ) ) {
+			return;
+		}
+
+		if ( ! $this->order_has_active_entitlements_or_counted_items( $order ) ) {
+			return;
+		}
+
+		$this->revoke_all_entitlements( $order->get_id() );
+	}
+
+	/**
+	 * Revoke GDrive access if a preorder is moved directly into a terminal custom status.
+	 */
+	public function handle_preorder_terminal_status( $order_id, $order = null ) {
+		if ( ! $order instanceof WC_Order ) {
+			$order = wc_get_order( absint( $order_id ) );
+		}
+
+		if ( ! $order instanceof WC_Order || ! $this->is_preorder_order( $order ) ) {
+			return;
+		}
+
+		if ( ! $this->order_has_active_entitlements_or_counted_items( $order ) ) {
+			return;
+		}
+
+		$this->revoke_all_entitlements( $order->get_id() );
+	}
+
+	/**
 	 * Revoke all entitlements for an order (full refund/cancel).
 	 */
 	public function revoke_all_entitlements( $order_id ) {
@@ -185,110 +373,109 @@ class WGDP_Order_Handler {
 			return;
 		}
 
-		$ent   = WGDP_Entitlements::instance();
-		$drive = WGDP_Google_Drive::instance();
-		$rows  = $ent->get_by_order( $order_id );
-
-		$drive_failures  = 0;
-		$notified_emails = array(); // Track recipients to send one email each.
-
-		foreach ( $rows as $row ) {
-			if ( 'revoked' === $row['grant_status'] ) {
-				continue;
+		$result = $this->with_sales_counter_lock( $order_id, function () use ( $order_id ) {
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) {
+				return;
 			}
 
-			// If granted, revoke on Drive — but only if no other active entitlement shares this permission.
-			if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
-				if ( $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
+			$ent  = WGDP_Entitlements::instance();
+			$rows = $ent->get_by_order( $order_id );
+			$counted_ids            = $this->get_counted_item_ids( $order );
+			$counted_quantities     = $this->get_counted_quantities( $order );
+			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
+
+			$has_active_rows = false;
+			foreach ( $rows as $row ) {
+				if ( 'revoked' !== $row['grant_status'] ) {
+					$has_active_rows = true;
+					break;
+				}
+			}
+
+			if ( ! $has_active_rows && empty( $counted_ids ) ) {
+				return;
+			}
+
+			$drive_failures  = 0;
+			$notified_emails = array(); // Track recipients to send one email each.
+
+			foreach ( $rows as $row ) {
+				if ( 'revoked' === $row['grant_status'] ) {
+					continue;
+				}
+
+				$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_ORDER_INELIGIBLE );
+				if ( is_wp_error( $result ) ) {
+					$drive_failures++;
 					$order->add_order_note( sprintf(
-						'WGDP: Skipped Drive permission delete for %s — permission shared with another active entitlement.',
-						$row['recipient_email']
+						'WGDP: Failed to revoke Drive access for %s — %s',
+						$row['recipient_email'],
+						$result->get_error_message()
 					) );
-				} else {
-					$result = $drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
-					if ( is_wp_error( $result ) ) {
-						$drive_failures++;
-						$order->add_order_note( sprintf(
-							'WGDP: Failed to revoke Drive access for %s — %s',
-							$row['recipient_email'],
-							$result->get_error_message()
-						) );
-					}
-				}
-			}
-
-			// Queue one notification per recipient.
-			if ( ! isset( $notified_emails[ $row['recipient_email'] ] ) ) {
-				$notified_emails[ $row['recipient_email'] ] = $row;
-			}
-
-			$ent->mark_revoked( $row['id'] );
-		}
-
-		// Send one revocation email per recipient.
-		foreach ( $notified_emails as $email => $row ) {
-			WGDP_Notification_Email::send_access_revoked( $email, WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
-		}
-
-		if ( $drive_failures > 0 ) {
-			$order->add_order_note( sprintf( 'WGDP: All entitlements revoked (%d Drive permission removal(s) failed).', $drive_failures ) );
-		} else {
-			$order->add_order_note( 'WGDP: All entitlements revoked.' );
-		}
-
-		// Decrement sales counter for previously counted items.
-		$counted_json = $order->get_meta( '_wgdp_qty_counted_items' );
-		$counted_ids  = ! empty( $counted_json ) ? json_decode( $counted_json, true ) : array();
-		if ( ! is_array( $counted_ids ) ) {
-			$counted_ids = array();
-		}
-
-		if ( ! empty( $counted_ids ) ) {
-			$product_deltas   = array();
-			$variation_deltas = array();
-			foreach ( $order->get_items() as $item ) {
-				$product_id    = $item->get_product_id();
-				$variation_id  = $item->get_variation_id();
-				$order_item_id = $item->get_id();
-
-				if ( ! in_array( $order_item_id, $counted_ids, true ) ) {
 					continue;
 				}
 
-				if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-					continue;
+				// Queue one notification per recipient.
+				if ( ! isset( $notified_emails[ $row['recipient_email'] ] ) ) {
+					$notified_emails[ $row['recipient_email'] ] = $row;
 				}
+			}
 
-				$qty = $item->get_quantity();
+			// Send one revocation email per recipient.
+			foreach ( $notified_emails as $email => $row ) {
+				WGDP_Notification_Email::send_access_revoked( $email, WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
+			}
 
-				if ( WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 ) ) {
-					if ( ! isset( $product_deltas[ $product_id ] ) ) {
-						$product_deltas[ $product_id ] = 0;
+			if ( $drive_failures > 0 ) {
+				$order->add_order_note( sprintf( 'WGDP: All entitlements revoked (%d Drive permission removal(s) failed).', $drive_failures ) );
+			} else {
+				$order->add_order_note( 'WGDP: All entitlements revoked.' );
+			}
+
+			// Decrement sales counter for previously counted items.
+			if ( ! empty( $counted_ids ) ) {
+				$product_deltas   = array();
+				$variation_deltas = array();
+				foreach ( $order->get_items() as $item ) {
+					$product_id    = $item->get_product_id();
+					$variation_id  = $item->get_variation_id();
+					$order_item_id = $item->get_id();
+
+					if ( ! in_array( $order_item_id, $counted_ids, true ) ) {
+						continue;
 					}
-					$product_deltas[ $product_id ] += $qty;
-				}
 
-				if ( $variation_id ) {
-					$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
-					if ( 'min_sales_qty' === $var_mode ) {
-						if ( ! isset( $variation_deltas[ $variation_id ] ) ) {
-							$variation_deltas[ $variation_id ] = array( 'product_id' => $product_id, 'qty' => 0 );
-						}
-						$variation_deltas[ $variation_id ]['qty'] += $qty;
+					if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+						continue;
 					}
+
+					$counted_qty     = $this->get_counted_quantity_for_item( $order, $item, $counted_quantities );
+					$already_removed = $refund_decremented_qty[ $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 );
+					$qty             = max( 0, $counted_qty - (int) $already_removed );
+
+					$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty );
 				}
+				foreach ( $product_deltas as $pid => $qty ) {
+					WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
+				}
+				foreach ( $variation_deltas as $vid => $info ) {
+					WGDP_Release_Gate::increment_variation_paid_qty( $info['product_id'], $vid, -$info['qty'] );
+				}
+				$order->delete_meta_data( '_wgdp_qty_counted_items' );
+				$order->delete_meta_data( '_wgdp_qty_counted_quantities' );
+				$order->delete_meta_data( '_wgdp_qty_refund_decremented_quantities' );
+				$order->delete_meta_data( '_wgdp_qty_refund_baseline_quantities' );
+				$order->save();
 			}
-			foreach ( $product_deltas as $pid => $qty ) {
-				WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
-			}
-			foreach ( $variation_deltas as $vid => $info ) {
-				WGDP_Release_Gate::increment_variation_paid_qty( $info['product_id'], $vid, -$info['qty'] );
-			}
-			$order->delete_meta_data( '_wgdp_qty_counted_items' );
-			$order->save();
+
+			delete_transient( 'wgdp_permission_counts' );
+		} );
+
+		if ( is_wp_error( $result ) ) {
+			$order->add_order_note( 'WGDP: Could not lock this order for entitlement revocation. Please retry the operation.' );
+			return;
 		}
-
-		delete_transient( 'wgdp_permission_counts' );
 	}
 
 	/**
@@ -310,110 +497,149 @@ class WGDP_Order_Handler {
 		$order_total    = (float) $order->get_total();
 		$total_refunded = (float) $order->get_total_refunded();
 		if ( $order_total > 0 && $total_refunded >= $order_total ) {
+			$this->revoke_all_entitlements( $order_id );
 			return;
 		}
 
-		$ent   = WGDP_Entitlements::instance();
-		$drive = WGDP_Google_Drive::instance();
-
-		$counter_deltas = array();
-
-		foreach ( $refund->get_items() as $refund_item ) {
-			$refunded_qty = abs( $refund_item->get_quantity() );
-			if ( $refunded_qty <= 0 ) {
-				continue;
+		$result = $this->with_sales_counter_lock( $order_id, function () use ( $order_id, $refund ) {
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) {
+				return;
 			}
 
-			// Find the matching original order item.
-			$order_item_id = $refund_item->get_meta( '_refunded_item_id' );
-			if ( ! $order_item_id ) {
-				continue;
-			}
+			$ent   = WGDP_Entitlements::instance();
 
-			$order_item = $order->get_item( $order_item_id );
-			if ( ! $order_item ) {
-				continue;
-			}
+			$counted_ids            = $this->get_counted_item_ids( $order );
+			$counted_quantities     = $this->get_counted_quantities( $order );
+			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
+			$refund_baseline_qty    = $this->get_refund_baseline_quantities( $order );
+			$product_deltas         = array();
+			$variation_deltas       = array();
 
-			// Decrement sales counter for qualifying refunded items.
-			$product_id   = $order_item->get_product_id();
-			$variation_id = $order_item->get_variation_id();
-			$cj  = $order->get_meta( '_wgdp_qty_counted_items' );
-			$cis = ! empty( $cj ) ? json_decode( $cj, true ) : array();
-			$item_was_counted = is_array( $cis ) && in_array( (int) $order_item_id, $cis, true );
-			if ( $item_was_counted && WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-				// Product-level counter.
-				if ( WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 ) ) {
-					if ( ! isset( $counter_deltas[ $product_id ] ) ) {
-						$counter_deltas[ $product_id ] = 0;
-					}
-					$counter_deltas[ $product_id ] += $refunded_qty;
-				}
-				// Variation-level counter.
-				if ( $variation_id ) {
-					$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
-					if ( 'min_sales_qty' === $var_mode ) {
-						WGDP_Release_Gate::increment_variation_paid_qty( $product_id, $variation_id, -$refunded_qty );
-					}
-				}
-			}
-
-			// Calculate: remaining = original qty - total refunded qty.
-			$original_qty        = $order_item->get_quantity();
-			$qty_refunded_total  = $order->get_qty_refunded_for_item( $order_item_id );
-			$remaining           = $original_qty - abs( $qty_refunded_total );
-			$active_count        = $ent->count_active_recipients_for_item( $order_item_id );
-
-			if ( $active_count <= $remaining ) {
-				continue;
-			}
-
-			$excess = $active_count - $remaining;
-			// Get distinct recipient emails to revoke (limited to $excess recipients).
-			$emails_to_revoke = $ent->get_revocation_candidates( $order_item_id, $excess );
-
-			// Revoke all entitlements for each email.
-			foreach ( $emails_to_revoke as $revoke_email ) {
-				$sibling_rows = $ent->get_siblings( $order_item_id, $revoke_email );
-				if ( empty( $sibling_rows ) ) {
+			foreach ( $refund->get_items() as $refund_item ) {
+				$refunded_qty = abs( $refund_item->get_quantity() );
+				if ( $refunded_qty <= 0 ) {
 					continue;
 				}
-				foreach ( $sibling_rows as $row ) {
-					// If granted, revoke on Drive.
-					if ( 'granted' === $row['grant_status'] && ! empty( $row['provider_permission_id'] ) ) {
-						if ( $ent->permission_is_shared( $row['provider_permission_id'], $row['id'] ) ) {
-							$order->add_order_note( sprintf(
-								'WGDP: Skipped Drive permission delete for %s — permission shared with another active entitlement.',
-								$row['recipient_email']
-							) );
-						} else {
-							$delete_result = $drive->delete_permission( $row['cloud_asset_id'], $row['provider_permission_id'], $row['account_id'] );
-							if ( is_wp_error( $delete_result ) ) {
-								$order->add_order_note( sprintf(
-									'WGDP: Failed to revoke Drive access for %s — %s',
-									$row['recipient_email'],
-									$delete_result->get_error_message()
-								) );
-							}
-						}
-					}
-					$ent->mark_revoked( $row['id'] );
+
+				// Find the matching original order item.
+				$order_item_id = $refund_item->get_meta( '_refunded_item_id' );
+				if ( ! $order_item_id ) {
+					continue;
 				}
 
-				WGDP_Notification_Email::send_access_revoked( $revoke_email, WGDP_Entitlements::get_product_name( $sibling_rows[0] ), $row['order_id'] );
-				$order->add_order_note( sprintf(
-					'WGDP: Revoked all entitlements for %s (partial refund)',
-					$revoke_email
-				) );
+				$order_item = $order->get_item( $order_item_id );
+				if ( ! $order_item ) {
+					continue;
+				}
+
+				// Decrement sales counter for qualifying refunded items.
+				$product_id       = $order_item->get_product_id();
+				$variation_id     = $order_item->get_variation_id();
+				$item_was_counted = in_array( (int) $order_item_id, $counted_ids, true );
+				if ( $item_was_counted && WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+					$counted_qty          = $this->get_counted_quantity_for_item( $order, $order_item, $counted_quantities );
+					$total_refunded_qty   = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
+					$already_removed      = (int) ( $refund_decremented_qty[ (int) $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 ) );
+					$baseline_refunded    = (int) ( $refund_baseline_qty[ (int) $order_item_id ] ?? ( $refund_baseline_qty[ (string) $order_item_id ] ?? 0 ) );
+					$refunded_since_count = max( 0, $total_refunded_qty - $baseline_refunded );
+					$newly_removed        = max( 0, min( $counted_qty, $refunded_since_count ) - $already_removed );
+					if ( $newly_removed > 0 ) {
+						$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $newly_removed );
+						$refund_decremented_qty[ (int) $order_item_id ] = $already_removed + $newly_removed;
+					}
+				}
+
+				// Calculate: remaining = original qty - total refunded qty.
+				$remaining    = $this->get_effective_item_quantity( $order, $order_item );
+				$active_count = $ent->count_active_recipients_for_item( $order_item_id );
+
+				if ( $active_count <= $remaining ) {
+					continue;
+				}
+
+				$excess = $active_count - $remaining;
+				// Get distinct recipient emails to revoke (limited to $excess recipients).
+				$emails_to_revoke = $ent->get_revocation_candidates( $order_item_id, $excess );
+
+				// Revoke all entitlements for each email.
+				foreach ( $emails_to_revoke as $revoke_email ) {
+					$sibling_rows = $ent->get_siblings( $order_item_id, $revoke_email );
+					if ( empty( $sibling_rows ) ) {
+						continue;
+					}
+					$failed_revoke = false;
+					foreach ( $sibling_rows as $row ) {
+						$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_PARTIAL_REFUND );
+						if ( is_wp_error( $result ) ) {
+							$failed_revoke = true;
+							$order->add_order_note( sprintf(
+								'WGDP: Failed to revoke Drive access for %s — %s',
+								$row['recipient_email'],
+								$result->get_error_message()
+							) );
+						}
+					}
+
+					if ( $failed_revoke ) {
+						$order->add_order_note( sprintf(
+							'WGDP: Revocation for %s is pending retry because at least one Drive permission could not be removed.',
+							$revoke_email
+						) );
+					} else {
+						WGDP_Notification_Email::send_access_revoked( $revoke_email, WGDP_Entitlements::get_product_name( $sibling_rows[0] ), $sibling_rows[0]['order_id'] );
+						$order->add_order_note( sprintf(
+							'WGDP: Revoked all entitlements for %s (partial refund)',
+							$revoke_email
+						) );
+					}
+				}
 			}
+
+			// Apply sales counter decrements.
+			foreach ( $product_deltas as $pid => $qty ) {
+				WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
+			}
+			foreach ( $variation_deltas as $vid => $info ) {
+				WGDP_Release_Gate::increment_variation_paid_qty( $info['product_id'], $vid, -$info['qty'] );
+			}
+
+			if ( ! empty( $refund_decremented_qty ) ) {
+				$order->update_meta_data( '_wgdp_qty_refund_decremented_quantities', wp_json_encode( $refund_decremented_qty ) );
+				$order->save();
+			}
+
+			delete_transient( 'wgdp_permission_counts' );
+		} );
+
+		if ( is_wp_error( $result ) ) {
+			$order->add_order_note( 'WGDP: Could not lock this order for refund entitlement updates. Please retry the operation.' );
+			return;
+		}
+	}
+
+	/**
+	 * Execute a callback while holding a per-order sales counter lock.
+	 */
+	private function with_sales_counter_lock( $order_id, $callback ) {
+		global $wpdb;
+
+		$lock_name = 'wgdp_sales_counter_' . absint( $order_id );
+		$locked    = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $lock_name )
+		);
+
+		if ( '1' !== (string) $locked ) {
+			return new WP_Error( 'wgdp_sales_counter_lock_failed', 'Could not lock this order for sales counter update.' );
 		}
 
-		// Apply sales counter decrements.
-		foreach ( $counter_deltas as $pid => $qty ) {
-			WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
+		try {
+			return $callback();
+		} finally {
+			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
+			);
 		}
-
-		delete_transient( 'wgdp_permission_counts' );
 	}
 
 	/**
@@ -422,92 +648,96 @@ class WGDP_Order_Handler {
 	 * Uses per-item tracking via _wgdp_qty_counted_items (JSON array of item IDs)
 	 * to prevent double-counting while supporting per-item trigger timing.
 	 */
-	public function update_sales_counter( $order_id ) {
-		$order = wc_get_order( $order_id );
-		if ( ! $order ) {
-			return;
-		}
-
+	public function update_sales_counter( $order_id, $forced_event = '' ) {
 		// Detect trigger event from current action.
-		$current = current_action();
-		if ( 'woocommerce_order_status_completed' === $current ) {
+		$current = $forced_event ?: current_action();
+		if ( 'woocommerce_order_status_completed' === $current || 'on_completion' === $current ) {
 			$current_event = 'on_completion';
 		} else {
 			$current_event = 'on_payment';
 		}
 
-		// Load already-counted item IDs.
-		$counted_json = $order->get_meta( '_wgdp_qty_counted_items' );
-		$counted_ids  = ! empty( $counted_json ) ? json_decode( $counted_json, true ) : array();
-		if ( ! is_array( $counted_ids ) ) {
-			$counted_ids = array();
-		}
-
-		$product_deltas   = array(); // product_id => qty (only counting variations).
-		$variation_deltas = array(); // variation_id => ['product_id' => int, 'qty' => int].
-		$new_counted      = array();
-
-		foreach ( $order->get_items() as $item ) {
-			$product_id    = $item->get_product_id();
-			$variation_id  = $item->get_variation_id();
-			$order_item_id = $item->get_id();
-
-			// Skip if already counted.
-			if ( in_array( $order_item_id, $counted_ids, true ) ) {
-				continue;
+		$result = $this->with_sales_counter_lock( $order_id, function () use ( $order_id, $current_event ) {
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) {
+				return;
 			}
 
-			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-				continue;
+			if ( $this->should_defer_preorder_order( $order ) ) {
+				return;
 			}
 
-			// Per-item trigger check (same logic as create_entitlements).
-			$item_trigger = WGDP_Product_Meta::get_entitlement_trigger( $product_id );
-			if ( 'on_payment' === $current_event && 'on_completion' === $item_trigger ) {
-				continue;
-			}
+			// Load already-counted item IDs and net quantities.
+			$counted_ids            = $this->get_counted_item_ids( $order );
+			$counted_quantities     = $this->get_counted_quantities( $order );
+			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
+			$refund_baseline_qty    = $this->get_refund_baseline_quantities( $order );
 
-			$qty = $item->get_quantity();
+			$product_deltas   = array(); // product_id => qty (only counting variations).
+			$variation_deltas = array(); // variation_id => ['product_id' => int, 'qty' => int].
+			$new_counted      = array();
 
-			// Product-level counter: only if variation counts toward product threshold.
-			if ( WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 ) ) {
-				if ( ! isset( $product_deltas[ $product_id ] ) ) {
-					$product_deltas[ $product_id ] = 0;
+			foreach ( $order->get_items() as $item ) {
+				$product_id    = $item->get_product_id();
+				$variation_id  = $item->get_variation_id();
+				$order_item_id = $item->get_id();
+
+				// Skip if already counted.
+				if ( in_array( $order_item_id, $counted_ids, true ) ) {
+					continue;
 				}
-				$product_deltas[ $product_id ] += $qty;
-			}
 
-			// Variation-level counter: if variation has its own min_sales_qty mode.
-			if ( $variation_id ) {
-				$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
-				if ( 'min_sales_qty' === $var_mode ) {
-					if ( ! isset( $variation_deltas[ $variation_id ] ) ) {
-						$variation_deltas[ $variation_id ] = array( 'product_id' => $product_id, 'qty' => 0 );
-					}
-					$variation_deltas[ $variation_id ]['qty'] += $qty;
+				if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+					continue;
 				}
+
+				// Per-item trigger check (same logic as create_entitlements).
+				$item_trigger = WGDP_Product_Meta::get_entitlement_trigger( $product_id );
+				if ( 'on_payment' === $current_event && 'on_completion' === $item_trigger ) {
+					continue;
+				}
+
+				$qty = $this->get_effective_item_quantity( $order, $item );
+				if ( $qty <= 0 ) {
+					continue;
+				}
+
+				$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty );
+
+				$new_counted[] = $order_item_id;
+				$counted_quantities[ (int) $order_item_id ] = $qty;
+				$refund_decremented_qty[ (int) $order_item_id ] = 0;
+				$refund_baseline_qty[ (int) $order_item_id ] = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
 			}
 
-			$new_counted[] = $order_item_id;
-		}
+			if ( empty( $product_deltas ) && empty( $variation_deltas ) && empty( $new_counted ) ) {
+				return;
+			}
 
-		if ( empty( $product_deltas ) && empty( $variation_deltas ) && empty( $new_counted ) ) {
-			return;
-		}
+			// Increment product-level counters.
+			foreach ( $product_deltas as $pid => $qty ) {
+				WGDP_Release_Gate::increment_paid_qty( $pid, $qty );
+			}
 
-		// Increment product-level counters.
-		foreach ( $product_deltas as $pid => $qty ) {
-			WGDP_Release_Gate::increment_paid_qty( $pid, $qty );
-		}
+			// Increment variation-level counters.
+			foreach ( $variation_deltas as $vid => $info ) {
+				WGDP_Release_Gate::increment_variation_paid_qty( $info['product_id'], $vid, $info['qty'] );
+			}
 
-		// Increment variation-level counters.
-		foreach ( $variation_deltas as $vid => $info ) {
-			WGDP_Release_Gate::increment_variation_paid_qty( $info['product_id'], $vid, $info['qty'] );
-		}
+			$counted_ids = array_merge( $counted_ids, $new_counted );
+			$order->update_meta_data( '_wgdp_qty_counted_items', wp_json_encode( $counted_ids ) );
+			$order->update_meta_data( '_wgdp_qty_counted_quantities', wp_json_encode( $counted_quantities ) );
+			$order->update_meta_data( '_wgdp_qty_refund_decremented_quantities', wp_json_encode( $refund_decremented_qty ) );
+			$order->update_meta_data( '_wgdp_qty_refund_baseline_quantities', wp_json_encode( $refund_baseline_qty ) );
+			$order->save();
+		} );
 
-		$counted_ids = array_merge( $counted_ids, $new_counted );
-		$order->update_meta_data( '_wgdp_qty_counted_items', wp_json_encode( $counted_ids ) );
-		$order->save();
+		if ( is_wp_error( $result ) ) {
+			$order = wc_get_order( $order_id );
+			if ( $order ) {
+				$order->add_order_note( 'WGDP: Could not lock this order for sales counter update. Please retry the operation.' );
+			}
+		}
 	}
 
 	/**
@@ -519,6 +749,13 @@ class WGDP_Order_Handler {
 	public function item_needs_processing( $needs_processing, $product, $order_id ) {
 		if ( ! $product ) {
 			return $needs_processing;
+		}
+
+		if ( $order_id ) {
+			$order = wc_get_order( $order_id );
+			if ( $order instanceof WC_Order && $this->should_defer_preorder_order( $order ) ) {
+				return true;
+			}
 		}
 
 		$product_id   = $product->get_parent_id() ?: $product->get_id();
@@ -630,6 +867,15 @@ class WGDP_Order_Handler {
 			'default'
 		);
 
+		// Legacy shop_order screen.
+		add_meta_box(
+			'wgdp-recipients',
+			'GDrive Digital Recipients',
+			array( $this, 'render_meta_box' ),
+			'shop_order',
+			'normal',
+			'default'
+		);
 	}
 
 	/**
@@ -647,6 +893,11 @@ class WGDP_Order_Handler {
 	 * Render the meta box content.
 	 */
 	private function render_meta_box_content( $order ) {
+		if ( $this->should_defer_preorder_order( $order ) ) {
+			echo '<p>Digital access is deferred until this preorder campaign is successfully charged.</p>';
+			return;
+		}
+
 		$ent  = WGDP_Entitlements::instance();
 		$rows = $ent->get_by_order( $order->get_id() );
 
@@ -705,12 +956,16 @@ class WGDP_Order_Handler {
 	 * @param array $entitlements All entitlement rows for the same order_item_id + recipient_email.
 	 */
 	private function render_recipient_row( $entitlements ) {
-		$primary = $entitlements[0];
-		$file_count = count( $entitlements );
+		$active_entitlements = array_values( array_filter( $entitlements, function ( $row ) {
+			return 'revoked' !== $row['grant_status'];
+		} ) );
+		$display_entitlements = ! empty( $active_entitlements ) ? $active_entitlements : $entitlements;
+		$primary              = $display_entitlements[0];
+		$file_count           = count( $display_entitlements );
 
 		// Determine overall verification status (worst-case).
 		$v_status = 'verified';
-		foreach ( $entitlements as $e ) {
+		foreach ( $display_entitlements as $e ) {
 			if ( 'pending' === $e['verification_status'] || 'expired' === $e['verification_status'] ) {
 				$v_status = $e['verification_status'];
 				break;
@@ -718,17 +973,19 @@ class WGDP_Order_Handler {
 		}
 
 		// Determine overall grant status.
-		$g_statuses = array_unique( wp_list_pluck( $entitlements, 'grant_status' ) );
-		if ( in_array( 'error', $g_statuses, true ) ) {
+		$g_statuses = array_unique( wp_list_pluck( $display_entitlements, 'grant_status' ) );
+		if ( in_array( 'revocation_error', $g_statuses, true ) ) {
+			$g_status = 'revocation_error';
+		} elseif ( in_array( 'error', $g_statuses, true ) ) {
 			$g_status = 'error';
 		} elseif ( in_array( 'pending', $g_statuses, true ) ) {
 			$g_status = 'pending';
 		} elseif ( in_array( 'pending_release', $g_statuses, true ) ) {
 			$g_status = 'pending_release';
-		} elseif ( count( $g_statuses ) === 1 && $g_statuses[0] === 'revoked' ) {
-			$g_status = 'revoked';
-		} elseif ( count( $g_statuses ) === 1 && $g_statuses[0] === 'granted' ) {
+		} elseif ( in_array( 'granted', $g_statuses, true ) ) {
 			$g_status = 'granted';
+		} elseif ( in_array( 'revoked', $g_statuses, true ) ) {
+			$g_status = 'revoked';
 		} else {
 			$g_status = $g_statuses[0];
 		}
@@ -739,6 +996,8 @@ class WGDP_Order_Handler {
 		$grant_label = $g_status;
 		if ( 'pending_release' === $grant_label ) {
 			$grant_label = 'Pending Release';
+		} elseif ( 'revocation_error' === $grant_label ) {
+			$grant_label = 'Revocation Error';
 		} else {
 			$grant_label = ucfirst( $grant_label );
 		}
@@ -755,6 +1014,10 @@ class WGDP_Order_Handler {
 			if ( ! empty( $e['grant_error'] ) ) {
 				echo '<br><small style="color:#d63638;">' . esc_html( $e['grant_error'] ) . '</small>';
 				break; // Show first error only.
+			}
+			if ( ! empty( $e['revocation_error'] ) ) {
+				echo '<br><small style="color:#d63638;">' . esc_html( $e['revocation_error'] ) . '</small>';
+				break;
 			}
 		}
 		echo '</td>';
@@ -775,6 +1038,8 @@ class WGDP_Order_Handler {
 				echo '<button type="button" class="button button-small wgdp-resend-otp-btn" '
 					. 'data-entitlement-id="' . esc_attr( $action_id ) . '">Resend OTP</button> ';
 			}
+			echo '<button type="button" class="button button-small wgdp-am-request-new-email-btn" '
+				. 'data-entitlement-id="' . esc_attr( $primary['id'] ) . '">Remove Account</button> ';
 			if ( 'error' === $g_status ) {
 				echo '<button type="button" class="button button-small wgdp-retry-grant-btn" '
 					. 'data-entitlement-id="' . esc_attr( $primary['id'] ) . '">Retry Grant</button> ';
@@ -817,14 +1082,19 @@ class WGDP_Order_Handler {
 			wp_send_json_error( 'Cannot resend OTP — this entitlement is already verified.' );
 		}
 
-		$otp    = WGDP_OTP::instance();
-		$tokens = $otp->issue_otp_for_entitlement( $entitlement_id );
+		$tokens = $ent->issue_otp_for_recipient_group( $entitlement_id );
+		if ( is_wp_error( $tokens ) ) {
+			wp_send_json_error( $tokens->get_error_message() );
+		}
 
 		$order = wc_get_order( $row['order_id'] );
 		$item  = $order ? $order->get_item( $row['order_item_id'] ) : null;
 
 		if ( $order && $item ) {
-			WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+			$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+			if ( is_wp_error( $mail_result ) ) {
+				wp_send_json_error( 'Verification code was created, but email failed: ' . $mail_result->get_error_message() );
+			}
 		}
 
 		wp_send_json_success( 'Verification email resent.' );
@@ -875,40 +1145,41 @@ class WGDP_Order_Handler {
 			}
 		}
 
-		$drive         = WGDP_Google_Drive::instance();
 		$drive_warning = '';
+		$revoked_count = 0;
 
 		foreach ( $all_rows as $sibling ) {
 			if ( 'revoked' === $sibling['grant_status'] ) {
 				continue;
 			}
 
-			// If granted, revoke on Drive — but only if no other active entitlement shares this permission.
-			if ( 'granted' === $sibling['grant_status'] && ! empty( $sibling['provider_permission_id'] ) ) {
-				if ( ! $ent->permission_is_shared( $sibling['provider_permission_id'], $sibling['id'] ) ) {
-					$result = $drive->delete_permission(
-						$sibling['cloud_asset_id'],
-						$sibling['provider_permission_id'],
-						$sibling['account_id']
-					);
-					if ( is_wp_error( $result ) ) {
-						$drive_warning = $result->get_error_message();
-					}
-				}
+			$result = $ent->revoke_with_drive_delete( $sibling, WGDP_Entitlements::REVOCATION_REASON_MANUAL );
+			if ( is_wp_error( $result ) ) {
+				$drive_warning = $drive_warning ?: $result->get_error_message();
+				continue;
 			}
-
-			$ent->mark_revoked( $sibling['id'] );
+			$revoked_count++;
 		}
 
 		// Send one revocation email for the recipient.
-		WGDP_Notification_Email::send_access_revoked( $row['recipient_email'], WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
+		if ( ! $drive_warning ) {
+			WGDP_Notification_Email::send_access_revoked( $row['recipient_email'], WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
+		}
 		delete_transient( 'wgdp_permission_counts' );
 
-		$msg = 'Entitlement revoked.';
 		if ( $drive_warning ) {
-			$msg .= ' Note: Could not remove Drive permission (' . $drive_warning . '). You may need to remove it manually in Google Drive.';
+			wp_send_json_success( array(
+				'status'        => 'revocation_error',
+				'message'       => 'Could not remove one or more Drive permissions. The row is marked Revocation Error and will retry automatically. Error: ' . $drive_warning,
+				'revoked_count' => $revoked_count,
+			) );
 		}
-		wp_send_json_success( $msg );
+
+		wp_send_json_success( array(
+			'status'        => 'revoked',
+			'message'       => 'Entitlement revoked.',
+			'revoked_count' => $revoked_count,
+		) );
 	}
 
 	/**
@@ -943,6 +1214,13 @@ class WGDP_Order_Handler {
 	}
 
 	/**
+	 * Render Drive column on legacy shop_order list table.
+	 */
+	public function render_legacy_orders_column( $column_name, $post_id ) {
+		$this->render_orders_column( $column_name, $post_id );
+	}
+
+	/**
 	 * Output the Drive column icon.
 	 */
 	private function output_drive_column_icon( $order ) {
@@ -965,7 +1243,7 @@ class WGDP_Order_Handler {
 				continue;
 			}
 			$all_revoked = false;
-			if ( 'error' === $row['grant_status'] ) {
+			if ( in_array( $row['grant_status'], array( 'error', 'revocation_error' ), true ) ) {
 				$has_errors = true;
 			} elseif ( 'pending_release' === $row['grant_status'] ) {
 				$has_pending_release = true;

@@ -25,6 +25,13 @@ class WGDP_Google_Auth {
 	}
 
 	/**
+	 * Credential management is intentionally narrower than day-to-day Woo actions.
+	 */
+	public static function current_user_can_manage_credentials() {
+		return current_user_can( 'manage_options' ) || current_user_can( 'manage_wgdp_settings' );
+	}
+
+	/**
 	 * Check if at least one account is connected.
 	 */
 	public function has_accounts() {
@@ -348,7 +355,7 @@ class WGDP_Google_Auth {
 	public function ajax_get_picker_token() {
 		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
 
-		if ( ! current_user_can( 'edit_products' ) ) {
+		if ( ! self::current_user_can_manage_credentials() ) {
 			wp_send_json_error( 'Permission denied.' );
 		}
 
@@ -376,7 +383,7 @@ class WGDP_Google_Auth {
 	public function ajax_test_connection() {
 		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
 
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+		if ( ! self::current_user_can_manage_credentials() ) {
 			wp_send_json_error( 'Permission denied.' );
 		}
 
@@ -402,7 +409,7 @@ class WGDP_Google_Auth {
 	public function ajax_disconnect() {
 		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
 
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+		if ( ! self::current_user_can_manage_credentials() ) {
 			wp_send_json_error( 'Permission denied.' );
 		}
 
@@ -421,7 +428,7 @@ class WGDP_Google_Auth {
 	public function ajax_update_account_label() {
 		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
 
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+		if ( ! self::current_user_can_manage_credentials() ) {
 			wp_send_json_error( 'Permission denied.' );
 		}
 
@@ -534,7 +541,7 @@ class WGDP_Google_Auth {
 	 */
 	private function save_all_accounts( $accounts ) {
 		$encrypted = $this->encrypt( wp_json_encode( $accounts ) );
-		update_option( 'wgdp_accounts', $encrypted );
+		update_option( 'wgdp_accounts', $encrypted, false );
 	}
 
 	/**
@@ -546,6 +553,22 @@ class WGDP_Google_Auth {
 		}
 
 		$key = $this->get_encryption_key();
+
+		if ( function_exists( 'sodium_crypto_secretbox' ) ) {
+			$nonce     = random_bytes( SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
+			$encrypted = sodium_crypto_secretbox( $value, $nonce, $key );
+			return 'v2s::' . base64_encode( $nonce . $encrypted );
+		}
+
+		if ( in_array( 'aes-256-gcm', openssl_get_cipher_methods(), true ) ) {
+			$iv        = random_bytes( 12 );
+			$tag       = '';
+			$encrypted = openssl_encrypt( $value, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag );
+			if ( false !== $encrypted ) {
+				return 'v2g::' . base64_encode( $iv . $tag . $encrypted );
+			}
+		}
+
 		$iv  = openssl_random_pseudo_bytes( openssl_cipher_iv_length( self::CIPHER ) );
 
 		$encrypted = openssl_encrypt( $value, self::CIPHER, $key, 0, $iv );
@@ -565,6 +588,34 @@ class WGDP_Google_Auth {
 			return '';
 		}
 
+		$key = $this->get_encryption_key();
+
+		if ( 0 === strpos( $value, 'v2s::' ) ) {
+			if ( ! function_exists( 'sodium_crypto_secretbox_open' ) ) {
+				return '';
+			}
+			$raw = base64_decode( substr( $value, 5 ), true );
+			if ( false === $raw || strlen( $raw ) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES ) {
+				return '';
+			}
+			$nonce      = substr( $raw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
+			$ciphertext = substr( $raw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
+			$decrypted  = sodium_crypto_secretbox_open( $ciphertext, $nonce, $key );
+			return ( false === $decrypted ) ? '' : $decrypted;
+		}
+
+		if ( 0 === strpos( $value, 'v2g::' ) ) {
+			$raw = base64_decode( substr( $value, 5 ), true );
+			if ( false === $raw || strlen( $raw ) <= 28 ) {
+				return '';
+			}
+			$iv         = substr( $raw, 0, 12 );
+			$tag        = substr( $raw, 12, 16 );
+			$ciphertext = substr( $raw, 28 );
+			$decrypted  = openssl_decrypt( $ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag );
+			return ( false === $decrypted ) ? '' : $decrypted;
+		}
+
 		$parts = explode( '::', $value, 2 );
 		if ( count( $parts ) !== 2 ) {
 			return '';
@@ -575,7 +626,6 @@ class WGDP_Google_Auth {
 			return '';
 		}
 
-		$key = $this->get_encryption_key();
 		$decrypted = openssl_decrypt( $parts[1], self::CIPHER, $key, 0, $iv );
 
 		return ( false === $decrypted ) ? '' : $decrypted;

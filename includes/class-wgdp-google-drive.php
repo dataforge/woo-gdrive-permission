@@ -228,7 +228,7 @@ class WGDP_Google_Drive {
 		if ( $code !== 204 && $code !== 200 ) {
 			$body = json_decode( wp_remote_retrieve_body( $response ), true );
 			$msg  = $body['error']['message'] ?? 'HTTP ' . $code;
-			return new WP_Error( 'wgdp_delete_perm_error', $msg );
+			return new WP_Error( 'wgdp_delete_perm_error', $msg, array( 'status' => $code ) );
 		}
 
 		return true;

@@ -3,7 +3,7 @@ defined( 'ABSPATH' ) || exit;
 
 class WGDP_DB {
 
-	const DB_VERSION = '3.4.0';
+	const DB_VERSION = '3.4.8';
 
 	/**
 	 * Get the entitlements table name.
@@ -51,6 +51,9 @@ class WGDP_DB {
   provider_permission_id varchar(255) DEFAULT NULL,
   granted_at datetime DEFAULT NULL,
   revoked_at datetime DEFAULT NULL,
+  revocation_reason varchar(40) DEFAULT NULL,
+  revocation_error text DEFAULT NULL,
+  revocation_retries smallint unsigned NOT NULL DEFAULT 0,
   grant_error text DEFAULT NULL,
   grant_retries smallint unsigned NOT NULL DEFAULT 0,
   origin varchar(20) NOT NULL DEFAULT 'order',
@@ -62,6 +65,7 @@ class WGDP_DB {
   KEY recipient_email (recipient_email),
   KEY verification_status (verification_status),
   KEY grant_status (grant_status),
+  KEY revocation_reason (revocation_reason),
   KEY claim_token_hash (claim_token_hash)
 ) {$charset_collate};";
 
@@ -97,6 +101,47 @@ class WGDP_DB {
 		$current = get_option( 'wgdp_db_version', '' );
 		if ( $current !== self::DB_VERSION ) {
 			self::install();
+		}
+	}
+
+	/**
+	 * Atomically consume one fixed-window rate-limit token.
+	 *
+	 * Uses a short MySQL named lock around the transient read/write so parallel
+	 * public requests cannot all pass the same counter before it is incremented.
+	 *
+	 * @param string $key    Logical rate-limit key.
+	 * @param int    $limit  Maximum allowed requests during the window.
+	 * @param int    $window Window length in seconds.
+	 * @return bool True when the request is allowed.
+	 */
+	public static function consume_rate_limit( $key, $limit, $window ) {
+		global $wpdb;
+
+		$limit = max( 1, (int) $limit );
+		$window = max( 1, (int) $window );
+		$cache_key = 'wgdp_rl_' . md5( $key );
+		$lock_name = 'wgdp_rl_' . md5( $key );
+
+		$locked = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare( 'SELECT GET_LOCK(%s, 3)', $lock_name )
+		);
+
+		if ( '1' !== (string) $locked ) {
+			return false;
+		}
+
+		try {
+			$count = (int) get_transient( $cache_key );
+			if ( $count >= $limit ) {
+				return false;
+			}
+			set_transient( $cache_key, $count + 1, $window );
+			return true;
+		} finally {
+			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
+			);
 		}
 	}
 }

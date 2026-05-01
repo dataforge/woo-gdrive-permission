@@ -49,12 +49,12 @@ class WGDP_Classic_Checkout {
 		} else {
 			echo '<p>' . esc_html__( 'Enter the Google account email for each recipient to grant access right away. If you skip this now, you will receive an email after purchase with a link to provide it later.', 'woo-gdrive-permission' ) . '</p>';
 		}
-		echo '<div class="woocommerce-additional-fields__field-wrapper">';
+		echo '<div id="wgdp-classic-recipients" class="woocommerce-additional-fields__field-wrapper">';
 
 		foreach ( $items as $item ) {
 			for ( $i = 0; $i < $item['quantity']; $i++ ) {
-				$field_key = 'wgdp_recipients[' . $item['key'] . '][' . $i . ']';
-				$field_id  = 'wgdp-recipient-' . $item['key'] . '-' . $i;
+				$field_key = 'wgdp_recipients[' . $item['cart_key'] . '][' . $i . ']';
+				$field_id  = 'wgdp-recipient-' . sanitize_html_class( $item['cart_key'] ) . '-' . $i;
 
 				$label = $item['quantity'] > 1
 					? esc_html( $item['product_name'] ) . ' &mdash; ' . sprintf(
@@ -96,7 +96,7 @@ class WGDP_Classic_Checkout {
 		}
 
 		foreach ( $items as $item ) {
-			$key    = $item['key'];
+			$key    = $item['cart_key'];
 			$qty    = $item['quantity'];
 			$emails = isset( $recipients[ $key ] ) && is_array( $recipients[ $key ] ) ? $recipients[ $key ] : array();
 
@@ -110,7 +110,7 @@ class WGDP_Classic_Checkout {
 					continue;
 				}
 
-				$sanitized = sanitize_email( $raw );
+				$sanitized = strtolower( sanitize_email( $raw ) );
 				if ( ! is_email( $sanitized ) ) {
 					wc_add_notice(
 						sprintf(
@@ -125,6 +125,21 @@ class WGDP_Classic_Checkout {
 				}
 
 				$valid_emails[] = $sanitized;
+			}
+
+			for ( $i = $qty; $i < count( $emails ); $i++ ) {
+				$raw = isset( $emails[ $i ] ) ? trim( $emails[ $i ] ) : '';
+				if ( '' !== $raw ) {
+					wc_add_notice(
+						sprintf(
+							/* translators: %s: product name */
+							__( 'Too many recipient emails were submitted for "%s". Please refresh checkout and try again.', 'woo-gdrive-permission' ),
+							$item['product_name']
+						),
+						'error'
+					);
+					return;
+				}
 			}
 
 			if ( count( $valid_emails ) !== count( array_unique( $valid_emails ) ) ) {
@@ -153,7 +168,8 @@ class WGDP_Classic_Checkout {
 
 		$product_id   = $values['product_id'] ?? 0;
 		$variation_id = $values['variation_id'] ?? 0;
-		$key          = $product_id . '_' . ( $variation_id ?: 0 );
+		$key          = $cart_item_key;
+		$quantity     = max( 0, (int) ( $values['quantity'] ?? 0 ) );
 
 		if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
 			return;
@@ -164,8 +180,8 @@ class WGDP_Classic_Checkout {
 		$raw_emails = isset( $recipients[ $key ] ) && is_array( $recipients[ $key ] ) ? $recipients[ $key ] : array();
 
 		$emails = array();
-		foreach ( $raw_emails as $raw ) {
-			$email = sanitize_email( $raw );
+		foreach ( array_slice( $raw_emails, 0, $quantity ) as $raw ) {
+				$email = strtolower( sanitize_email( $raw ) );
 			if ( is_email( $email ) ) {
 				$emails[] = $email;
 			}

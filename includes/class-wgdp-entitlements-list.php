@@ -42,21 +42,25 @@ class WGDP_Entitlements_List {
 
 		$ids = array_map( 'absint', (array) ( $_POST['ids'] ?? array() ) );
 		$ent = WGDP_Entitlements::instance();
-		$otp = WGDP_OTP::instance();
 		$count = 0;
 
 		foreach ( $ids as $id ) {
 			$row = $ent->get( $id );
 			if ( $row && 'revoked' !== $row['grant_status'] && 'verified' !== $row['verification_status'] ) {
-				$tokens = $otp->issue_otp_for_entitlement( $id );
-				$order  = wc_get_order( $row['order_id'] );
-				$item   = $order ? $order->get_item( $row['order_item_id'] ) : null;
-				if ( $order && $item ) {
-					WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
-					$count++;
+				$tokens = $ent->issue_otp_for_recipient_group( $id );
+				if ( is_wp_error( $tokens ) ) {
+					continue;
+				}
+					$order  = wc_get_order( $row['order_id'] );
+					$item   = $order ? $order->get_item( $row['order_item_id'] ) : null;
+					if ( $order && $item ) {
+						$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+						if ( ! is_wp_error( $mail_result ) ) {
+							$count++;
+						}
+					}
 				}
 			}
-		}
 
 		wp_send_json_success( sprintf( 'Resent OTP to %d entitlement(s).', $count ) );
 	}
@@ -72,8 +76,6 @@ class WGDP_Entitlements_List {
 
 		$ids   = array_map( 'absint', (array) ( $_POST['ids'] ?? array() ) );
 		$ent   = WGDP_Entitlements::instance();
-		$drive = WGDP_Google_Drive::instance();
-
 		// Expand selected IDs to full recipient groups (all files per recipient per order item).
 		$groups  = array(); // keyed by "order_item_id|email"
 		$revoked = array(); // track already-processed IDs
@@ -95,25 +97,33 @@ class WGDP_Entitlements_List {
 			);
 		}
 
-		$count = 0;
+		$count  = 0;
+		$errors = 0;
 		foreach ( $groups as $group ) {
+			$group_failed = false;
 			foreach ( $group['rows'] as $sibling ) {
 				if ( 'revoked' === $sibling['grant_status'] || isset( $revoked[ $sibling['id'] ] ) ) {
 					continue;
 				}
-				if ( 'granted' === $sibling['grant_status'] && ! empty( $sibling['provider_permission_id'] ) ) {
-					if ( ! $ent->permission_is_shared( $sibling['provider_permission_id'], $sibling['id'] ) ) {
-						$drive->delete_permission( $sibling['cloud_asset_id'], $sibling['provider_permission_id'], $sibling['account_id'] );
-					}
+				$result = $ent->revoke_with_drive_delete( $sibling, WGDP_Entitlements::REVOCATION_REASON_MANUAL );
+				if ( is_wp_error( $result ) ) {
+					$errors++;
+					$group_failed = true;
+					continue;
 				}
-				$ent->mark_revoked( $sibling['id'] );
 				$revoked[ $sibling['id'] ] = true;
 				$count++;
 			}
-			WGDP_Notification_Email::send_access_revoked( $group['email'], WGDP_Entitlements::get_product_name( $group['row'] ), $group['row']['order_id'] ?? 0 );
+			if ( ! $group_failed ) {
+				WGDP_Notification_Email::send_access_revoked( $group['email'], WGDP_Entitlements::get_product_name( $group['row'] ), $group['row']['order_id'] ?? 0 );
+			}
 		}
 
 		delete_transient( 'wgdp_permission_counts' );
-		wp_send_json_success( sprintf( 'Revoked %d entitlement(s).', $count ) );
+		$msg = sprintf( 'Revoked %d entitlement(s).', $count );
+		if ( $errors ) {
+			$msg .= sprintf( ' %d entitlement(s) could not be removed from Drive and will be retried.', $errors );
+		}
+		wp_send_json_success( $msg );
 	}
 }

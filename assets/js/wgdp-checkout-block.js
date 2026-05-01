@@ -18,10 +18,10 @@
 			return null;
 		}
 
-		// Build initial state: { "10_0": ["", "", ""], "20_25": [""] }
+		// Build initial state keyed by Woo cart item key.
 		var initialState = {};
 		qualifyingItems.forEach( function ( item ) {
-			var key = item.productId + '_' + item.variationId;
+			var key = item.itemKey;
 			var arr = [];
 			for ( var i = 0; i < item.quantity; i++ ) {
 				arr.push( '' );
@@ -41,7 +41,7 @@
 			var newRecipients = Object.assign( {}, recipients );
 
 			qualifyingItems.forEach( function ( item ) {
-				var key = item.productId + '_' + item.variationId;
+				var key = item.itemKey;
 				var current = newRecipients[ key ] || [];
 				var prevQty = prev[ key ] || current.length;
 				var newQty = item.quantity;
@@ -87,7 +87,7 @@
 		}
 
 		var fieldsets = qualifyingItems.map( function ( item ) {
-			var key = item.productId + '_' + item.variationId;
+			var key = item.itemKey;
 			var emails = recipients[ key ] || [];
 
 			var inputs = emails.map( function ( email, idx ) {
@@ -105,7 +105,6 @@
 							handleChange( key, idx, e.target.value );
 						},
 						placeholder: 'name@example.com',
-						required: true,
 						style: { width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '14px' }
 					} )
 				);

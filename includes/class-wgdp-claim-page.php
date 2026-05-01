@@ -17,6 +17,24 @@ class WGDP_Claim_Page {
 		add_action( 'init', array( $this, 'maybe_create_page' ) );
 		add_action( 'template_redirect', array( $this, 'handle_post' ) );
 		add_filter( 'the_content', array( $this, 'filter_page_content' ) );
+		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_page_styles' ) );
+	}
+
+	/**
+	 * Enqueue inline styles on the claim page so text is readable on dark themes.
+	 */
+	public function enqueue_page_styles() {
+		$page_id = (int) get_option( 'wgdp_claim_page_id', 0 );
+		if ( ! $page_id || ! is_page( $page_id ) ) {
+			return;
+		}
+
+		wp_add_inline_style( 'wp-block-library', '
+			body.page-id-' . $page_id . ' .entry-title,
+			body.page-id-' . $page_id . ' .wp-block-post-title { color: #fff !important; }
+			body.page-id-' . $page_id . ' .wgdp-claim-wrap { color: #f5f7fb; }
+			body.page-id-' . $page_id . ' .wgdp-claim-wrap input[name="otp"] { background: #fff; color: #111827; }
+		' );
 	}
 
 	/**
@@ -206,10 +224,13 @@ class WGDP_Claim_Page {
 
 			$granted_links = array();
 			$had_errors    = false;
+			$had_retired   = false;
 
 			foreach ( $all_to_grant as $eg ) {
 				// Skip retired resources.
 				if ( self::is_resource_retired( (int) $eg['product_id'], (int) ( $eg['variation_id'] ?? 0 ), $eg['cloud_asset_id'] ) ) {
+					$ent->mark_revoked( $eg['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
+					$had_retired = true;
 					continue;
 				}
 
@@ -269,9 +290,15 @@ class WGDP_Claim_Page {
 
 				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $result['entitlement']['order_id'] );
 			} else {
-				$this->post_result = $this->wrap_content( $this->error_content(
-					'Your identity has been verified, but we encountered an error granting access. We will retry automatically. Please check back later.'
-				) );
+				if ( $had_retired && ! $had_errors ) {
+					$this->post_result = $this->wrap_content( $this->error_content(
+						'Your identity has been verified, but this Drive file is no longer available. Please contact the store for assistance.'
+					) );
+				} else {
+					$this->post_result = $this->wrap_content( $this->error_content(
+						'Your identity has been verified, but we encountered an error granting access. We will retry automatically. Please check back later.'
+					) );
+				}
 			}
 		} else {
 			$this->post_result = $this->wrap_content( $this->form_content( $token, $result['error'], $result['entitlement'] ) );
@@ -370,12 +397,74 @@ class WGDP_Claim_Page {
 	 */
 	public static function grant_drive_access_for_entitlement( $entitlement, $suppress_email = false ) {
 		$ent   = WGDP_Entitlements::instance();
-		$drive = WGDP_Google_Drive::instance();
+		return $ent->with_entitlement_lock( (int) $entitlement['id'], function () use ( $ent, $entitlement, $suppress_email ) {
+			$entitlement = $ent->get( (int) $entitlement['id'] );
+			if ( ! $entitlement ) {
+				return new WP_Error( 'wgdp_entitlement_not_found', 'Entitlement not found.' );
+			}
+			if ( 'revoked' === $entitlement['grant_status'] ) {
+				return new WP_Error( 'wgdp_entitlement_revoked', 'This access has been revoked.' );
+			}
+			if ( 'granted' === $entitlement['grant_status'] && ! empty( $entitlement['provider_permission_id'] ) ) {
+				return true;
+			}
 
-		// Dedup check: see if another entitlement for the same email+asset already has a permission.
-		$existing = $ent->get_by_email_and_asset( $entitlement['recipient_email'], $entitlement['cloud_asset_id'] );
-		if ( $existing && ! empty( $existing['provider_permission_id'] ) && (int) $existing['id'] !== (int) $entitlement['id'] ) {
-			$ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
+			$drive = WGDP_Google_Drive::instance();
+
+			// Dedup check: see if another entitlement for the same email+asset+account already has a permission.
+			$existing = $ent->get_by_email_and_asset(
+				$entitlement['recipient_email'],
+				$entitlement['cloud_asset_id'],
+				$entitlement['account_id']
+			);
+			if ( $existing && ! empty( $existing['provider_permission_id'] ) && (int) $existing['id'] !== (int) $entitlement['id'] ) {
+				$existing_permission = $drive->get_permission(
+					$entitlement['cloud_asset_id'],
+					$existing['provider_permission_id'],
+					$entitlement['account_id']
+				);
+
+				if ( is_wp_error( $existing_permission ) ) {
+					if ( 'wgdp_permission_not_found' !== $existing_permission->get_error_code() ) {
+						return $existing_permission;
+					}
+					$ent->mark_error( $existing['id'], 'Permission no longer exists on Google Drive.' );
+				} else {
+					$permission_email = strtolower( trim( $existing_permission['emailAddress'] ?? '' ) );
+					$recipient_email  = strtolower( trim( $entitlement['recipient_email'] ) );
+					if ( '' === $permission_email || $permission_email === $recipient_email ) {
+						$ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
+
+						if ( ! $suppress_email ) {
+							$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
+							$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
+							$product_name  = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
+							WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
+							$billing = WGDP_Notification_Email::get_billing_email_if_different( $entitlement['order_id'], $entitlement['recipient_email'] );
+							if ( $billing ) {
+								WGDP_Notification_Email::send_access_granted( $billing, $drive_link, $product_name, $resource_type );
+							}
+						}
+
+						return true;
+					}
+				}
+			}
+
+			// Create permission on Drive.
+			$result = $drive->create_permission(
+				$entitlement['cloud_asset_id'],
+				$entitlement['recipient_email'],
+				null,
+				$entitlement['account_id']
+			);
+
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+
+			$permission_id = $result['id'] ?? '';
+			$ent->mark_granted( $entitlement['id'], $permission_id );
 
 			if ( ! $suppress_email ) {
 				$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
@@ -389,35 +478,7 @@ class WGDP_Claim_Page {
 			}
 
 			return true;
-		}
-
-		// Create permission on Drive.
-		$result = $drive->create_permission(
-			$entitlement['cloud_asset_id'],
-			$entitlement['recipient_email'],
-			null,
-			$entitlement['account_id']
-		);
-
-		if ( is_wp_error( $result ) ) {
-			return $result;
-		}
-
-		$permission_id = $result['id'] ?? '';
-		$ent->mark_granted( $entitlement['id'], $permission_id );
-
-		if ( ! $suppress_email ) {
-			$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
-			$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
-			$product_name  = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
-			WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
-			$billing = WGDP_Notification_Email::get_billing_email_if_different( $entitlement['order_id'], $entitlement['recipient_email'] );
-			if ( $billing ) {
-				WGDP_Notification_Email::send_access_granted( $billing, $drive_link, $product_name, $resource_type );
-			}
-		}
-
-		return true;
+		} );
 	}
 
 	/**
@@ -433,13 +494,38 @@ class WGDP_Claim_Page {
 			return;
 		}
 
-		$tokens = $otp_service->issue_otp_for_entitlement( $entitlement['id'] );
-
-		$order = wc_get_order( $entitlement['order_id'] );
-		$item  = $order ? $order->get_item( $entitlement['order_item_id'] ) : null;
-		if ( $order && $item ) {
-			WGDP_Notification_Email::send_otp( $entitlement['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+		if ( ! $this->consume_rate_limit( 'wgdp_claim_resend_' . (int) $entitlement['id'], 3, HOUR_IN_SECONDS ) ) {
+			$this->post_result = $this->wrap_content( $this->form_content(
+				$token,
+				'Too many code requests. Please wait before requesting another code.',
+				$entitlement
+			) );
+			return;
 		}
+
+		$tokens = $ent->issue_otp_for_recipient_group( $entitlement['id'] );
+		if ( is_wp_error( $tokens ) ) {
+			$this->post_result = $this->wrap_content( $this->form_content(
+				$token,
+				$tokens->get_error_message(),
+				$entitlement
+			) );
+			return;
+		}
+
+			$order = wc_get_order( $entitlement['order_id'] );
+			$item  = $order ? $order->get_item( $entitlement['order_item_id'] ) : null;
+			if ( $order && $item ) {
+				$mail_result = WGDP_Notification_Email::send_otp( $entitlement['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+				if ( is_wp_error( $mail_result ) ) {
+					$this->post_result = $this->wrap_content( $this->form_content(
+						$token,
+						'Could not send a new verification code. Please contact the store for assistance.',
+						$entitlement
+					) );
+					return;
+				}
+			}
 
 		$refreshed = $ent->get( $entitlement['id'] );
 		$this->post_result = $this->wrap_content( $this->form_content(
@@ -457,7 +543,7 @@ class WGDP_Claim_Page {
 		return '<div style="text-align:center;">'
 			. '<div style="font-size:48px;margin-bottom:12px;">&#9989;</div>'
 			. '<h2 style="color:#2271b1;margin:0 0 12px;">Verified!</h2>'
-			. '<p style="color:#555;font-size:15px;">Digital access is not yet available. You\'ll receive an email when it\'s ready.</p>'
+			. '<p style="color:#f5f7fb;font-size:15px;">Digital access is not yet available. You\'ll receive an email when it\'s ready.</p>'
 			. '</div>';
 	}
 
@@ -479,7 +565,7 @@ class WGDP_Claim_Page {
 			$max_attempts = true;
 		}
 
-		$html = '<h2 style="color:#333;margin:0 0 8px;text-align:center;">Verify Your Access</h2>';
+			$html = '<h2 style="color:#fff;margin:0 0 8px;text-align:center;">Verify Your Access</h2>';
 
 		// Show order and product details.
 		if ( $entitlement ) {
@@ -528,7 +614,7 @@ class WGDP_Claim_Page {
 				. '<input type="hidden" name="t" value="' . esc_attr( $token ) . '" />'
 				. '<input type="hidden" name="wgdp_resend" value="1" />'
 				. wp_nonce_field( 'wgdp_claim_verify', '_wpnonce', true, false )
-				. '<p style="font-size:14px;color:#555;text-align:center;">'
+					. '<p style="font-size:14px;color:#e5e7eb;text-align:center;">'
 				. esc_html( $otp_expired ? 'Your verification code has expired.' : 'Too many attempts.' )
 				. ' Click below to receive a new code.</p>'
 				. '<div style="text-align:center;margin-top:20px;">'
@@ -541,7 +627,7 @@ class WGDP_Claim_Page {
 		$html .= '<form method="POST" action="">'
 			. '<input type="hidden" name="t" value="' . esc_attr( $token ) . '" />'
 			. wp_nonce_field( 'wgdp_claim_verify', '_wpnonce', true, false )
-			. '<p style="margin-bottom:8px;font-size:14px;color:#555;">Enter the 6-digit verification code from your email:</p>'
+				. '<p style="margin-bottom:8px;font-size:14px;color:#f5f7fb;">Enter the 6-digit verification code from your email:</p>'
 			. '<div style="text-align:center;margin:16px 0;">'
 			. '<input type="text" name="otp" maxlength="6" pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" required '
 			. 'style="font-size:28px;letter-spacing:8px;text-align:center;width:200px;padding:12px;border:2px solid #ddd;border-radius:8px;" '
@@ -565,11 +651,11 @@ class WGDP_Claim_Page {
 		$html = '<div style="text-align:center;">'
 			. '<div style="font-size:48px;margin-bottom:12px;">&#10003;</div>'
 			. '<h2 style="color:#00a32a;margin:0 0 12px;">Access Granted!</h2>'
-			. '<p style="color:#555;font-size:15px;">Your access to <strong>' . esc_html( $product_name ) . '</strong> has been granted.</p>'
-			. '<p style="color:#555;font-size:14px;">Sign in to Google as <strong>' . esc_html( $email ) . '</strong> to access your content.</p>'
+				. '<p style="color:#f5f7fb;font-size:15px;">Your access to <strong>' . esc_html( $product_name ) . '</strong> has been granted.</p>'
+				. '<p style="color:#e5e7eb;font-size:14px;">Sign in to Google as <strong>' . esc_html( $email ) . '</strong> to access your content.</p>'
 			. '<div style="margin:24px 0;">'
 			. '<a href="' . esc_url( $drive_link ) . '" target="_blank" rel="noopener" style="display:inline-block;background:#00a32a;color:#fff;text-decoration:none;padding:14px 40px;border-radius:4px;font-size:16px;font-weight:600;">Open in Google Drive</a>'
-			. '<br><a href="' . esc_url( $drive_link ) . '" target="_blank" rel="noopener" style="color:#1a73e8;font-size:13px;word-break:break-all;">' . esc_html( $drive_link ) . '</a>'
+				. '<br><a href="' . esc_url( $drive_link ) . '" target="_blank" rel="noopener" style="color:#93c5fd;font-size:13px;word-break:break-all;">' . esc_html( $drive_link ) . '</a>'
 			. '</div>'
 			. '</div>';
 
@@ -590,8 +676,8 @@ class WGDP_Claim_Page {
 		$html = '<div style="text-align:center;">'
 			. '<div style="font-size:48px;margin-bottom:12px;">&#10003;</div>'
 			. '<h2 style="color:#00a32a;margin:0 0 12px;">Access Granted!</h2>'
-			. '<p style="color:#555;font-size:15px;">Your access to <strong>' . esc_html( $product_name ) . '</strong> has been granted.</p>'
-			. '<p style="color:#555;font-size:14px;">Sign in to Google as <strong>' . esc_html( $email ) . '</strong> to access your content.</p>'
+				. '<p style="color:#f5f7fb;font-size:15px;">Your access to <strong>' . esc_html( $product_name ) . '</strong> has been granted.</p>'
+				. '<p style="color:#e5e7eb;font-size:14px;">Sign in to Google as <strong>' . esc_html( $email ) . '</strong> to access your content.</p>'
 			. '</div>';
 
 		if ( $had_errors ) {
@@ -603,7 +689,7 @@ class WGDP_Claim_Page {
 			$html .= '<div style="margin-bottom:12px;">'
 				. '<a href="' . esc_url( $gl['link'] ) . '" target="_blank" rel="noopener" style="display:inline-block;background:#00a32a;color:#fff;text-decoration:none;padding:10px 24px;border-radius:4px;font-size:14px;font-weight:600;">'
 				. esc_html( $gl['name'] ) . '</a>'
-				. '<br><a href="' . esc_url( $gl['link'] ) . '" target="_blank" rel="noopener" style="color:#1a73e8;font-size:13px;word-break:break-all;">' . esc_html( $gl['link'] ) . '</a>'
+				. '<br><a href="' . esc_url( $gl['link'] ) . '" target="_blank" rel="noopener" style="color:#93c5fd;font-size:13px;word-break:break-all;">' . esc_html( $gl['link'] ) . '</a>'
 				. '</div>';
 		}
 		$html .= '</div>';
@@ -616,17 +702,17 @@ class WGDP_Claim_Page {
 	 */
 	private function error_content( $message ) {
 		return '<div style="text-align:center;">'
-			. '<div style="font-size:48px;margin-bottom:12px;">&#9888;</div>'
-			. '<h2 style="color:#d63638;margin:0 0 12px;">Error</h2>'
-			. '<p style="color:#555;font-size:15px;">' . esc_html( $message ) . '</p>'
-			. '</div>';
+				. '<div style="font-size:48px;margin-bottom:12px;">&#9888;</div>'
+				. '<h2 style="color:#d63638;margin:0 0 12px;">Error</h2>'
+				. '<p style="color:#f5f7fb;font-size:15px;">' . esc_html( $message ) . '</p>'
+				. '</div>';
 	}
 
 	/**
 	 * Wrap content in a styled container.
 	 */
 	private function wrap_content( $content ) {
-		return '<div class="wgdp-claim-wrap" style="max-width:480px;margin:0 auto;padding:32px 0;">' . $content . '</div>';
+		return '<div class="wgdp-claim-wrap" style="max-width:480px;margin:0 auto;padding:32px 0;color:#f5f7fb;">' . $content . '</div>';
 	}
 
 	/**
@@ -649,6 +735,13 @@ class WGDP_Claim_Page {
 		$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
 		$mime = $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '';
 		return WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $mime );
+	}
+
+	/**
+	 * Fixed-window counter for public claim-page actions.
+	 */
+	private function consume_rate_limit( $key, $limit, $window ) {
+		return WGDP_DB::consume_rate_limit( $key, $limit, $window );
 	}
 
 }

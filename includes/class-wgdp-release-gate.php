@@ -224,25 +224,18 @@ class WGDP_Release_Gate {
 	 * Respects per-variation counts_toward_product_threshold setting.
 	 */
 	public static function recalculate_sales_counter( $product_id ) {
-		global $wpdb;
-
 		$total = 0;
+		$orders = self::get_orders_with_counted_items();
 
-		$order_ids = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			"SELECT DISTINCT om.order_id
-			 FROM {$wpdb->prefix}wc_orders_meta om
-			 INNER JOIN {$wpdb->prefix}wc_orders o ON o.id = om.order_id
-			 WHERE om.meta_key = '_wgdp_qty_counted_items'
-			   AND o.status IN ('wc-processing', 'wc-completed')"
-		);
-
-		foreach ( $order_ids as $order_id ) {
-			$order = wc_get_order( $order_id );
-			if ( ! $order ) {
+		foreach ( $orders as $order ) {
+			$counted_ids = self::get_counted_item_ids( $order );
+			if ( empty( $counted_ids ) ) {
 				continue;
 			}
-
 			foreach ( $order->get_items() as $item ) {
+				if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
+					continue;
+				}
 				if ( (int) $item->get_product_id() !== (int) $product_id ) {
 					continue;
 				}
@@ -328,29 +321,22 @@ class WGDP_Release_Gate {
 	 * Recalculate the variation-level sales counter from order data.
 	 */
 	public static function recalculate_variation_sales_counter( $product_id, $variation_id ) {
-		global $wpdb;
-
 		if ( ! $variation_id ) {
 			return;
 		}
 
 		$total = 0;
+		$orders = self::get_orders_with_counted_items();
 
-		$order_ids = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			"SELECT DISTINCT om.order_id
-			 FROM {$wpdb->prefix}wc_orders_meta om
-			 INNER JOIN {$wpdb->prefix}wc_orders o ON o.id = om.order_id
-			 WHERE om.meta_key = '_wgdp_qty_counted_items'
-			   AND o.status IN ('wc-processing', 'wc-completed')"
-		);
-
-		foreach ( $order_ids as $order_id ) {
-			$order = wc_get_order( $order_id );
-			if ( ! $order ) {
+		foreach ( $orders as $order ) {
+			$counted_ids = self::get_counted_item_ids( $order );
+			if ( empty( $counted_ids ) ) {
 				continue;
 			}
-
 			foreach ( $order->get_items() as $item ) {
+				if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
+					continue;
+				}
 				if ( (int) $item->get_product_id() !== (int) $product_id ) {
 					continue;
 				}
@@ -371,9 +357,116 @@ class WGDP_Release_Gate {
 		self::maybe_trigger_variation_release( $product_id, $variation_id );
 	}
 
+	/**
+	 * Fetch paid orders that have WGDP per-item sales counter markers.
+	 *
+	 * Using WooCommerce's order API keeps recalculation compatible with both HPOS
+	 * and legacy post-backed order storage.
+	 *
+	 * @return WC_Order[]
+	 */
+	private static function get_orders_with_counted_items() {
+		return wc_get_orders( array(
+			'status'     => array( 'processing', 'completed' ),
+			'limit'      => -1,
+			'return'     => 'objects',
+			'meta_query' => array(
+				array(
+					'key'     => '_wgdp_qty_counted_items',
+					'compare' => 'EXISTS',
+				),
+			),
+		) );
+	}
+
+	/**
+	 * Decode the order item IDs previously counted for WGDP release thresholds.
+	 *
+	 * @param WC_Order $order Order being recalculated.
+	 * @return int[]
+	 */
+	private static function get_counted_item_ids( $order ) {
+		$counted_json = $order->get_meta( '_wgdp_qty_counted_items' );
+		$counted_ids  = ! empty( $counted_json ) ? json_decode( $counted_json, true ) : array();
+		if ( ! is_array( $counted_ids ) ) {
+			return array();
+		}
+		return array_map( 'absint', $counted_ids );
+	}
+
 	/* =====================================================================
 	 * Batch grant helpers
 	 * =================================================================== */
+
+	/**
+	 * Resolve a display name for a Drive resource from product metadata.
+	 */
+	private static function get_resource_name_for_row( $row ) {
+		$resources = WGDP_Product_Meta::get_drive_resources( $row['product_id'], $row['variation_id'] ?: 0 );
+		foreach ( $resources as $resource ) {
+			if ( $resource['id'] === $row['cloud_asset_id'] ) {
+				return ! empty( $resource['name'] ) ? $resource['name'] : $resource['id'];
+			}
+		}
+		return $row['cloud_asset_id'];
+	}
+
+	/**
+	 * Check if a pending entitlement targets a resource retired in product meta.
+	 */
+	private static function is_resource_retired_for_row( $row ) {
+		$resources = WGDP_Product_Meta::get_drive_resources( $row['product_id'], $row['variation_id'] ?: 0 );
+		foreach ( $resources as $resource ) {
+			if ( $resource['id'] === $row['cloud_asset_id'] ) {
+				return ! empty( $resource['status'] ) && 'active' !== $resource['status'];
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Collect a granted entitlement into a recipient/order-item batch email group.
+	 */
+	private static function collect_granted_for_email( &$granted_by_recipient, $row ) {
+		$resource_type = WGDP_Entitlements::get_resource_type( $row );
+		$drive_link    = WGDP_Google_Drive::build_web_link( $row['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
+		$key           = $row['order_item_id'] . '|' . $row['recipient_email'];
+
+		if ( ! isset( $granted_by_recipient[ $key ] ) ) {
+			$granted_by_recipient[ $key ] = array(
+				'email'        => $row['recipient_email'],
+				'product_name' => WGDP_Entitlements::get_product_name( $row ),
+				'order_id'     => $row['order_id'],
+				'links'        => array(),
+			);
+		}
+
+		$granted_by_recipient[ $key ]['links'][] = array(
+			'name' => self::get_resource_name_for_row( $row ),
+			'link' => $drive_link,
+		);
+	}
+
+	/**
+	 * Send grouped access emails after a release batch grants one or more files.
+	 */
+	private static function send_grouped_access_emails( $granted_by_recipient ) {
+		foreach ( $granted_by_recipient as $group ) {
+			$recipients = array( $group['email'] );
+			$billing    = WGDP_Notification_Email::get_billing_email_if_different( $group['order_id'], $group['email'] );
+			if ( $billing ) {
+				$recipients[] = $billing;
+			}
+
+			foreach ( $recipients as $to ) {
+				if ( count( $group['links'] ) > 1 ) {
+					WGDP_Notification_Email::send_access_granted_batch( $to, $group['links'], $group['product_name'] );
+				} else {
+					WGDP_Notification_Email::send_access_granted( $to, $group['links'][0]['link'], $group['product_name'] );
+				}
+			}
+		}
+	}
 
 	/**
 	 * Batch grant all verified + pending_release entitlements for a product.
@@ -384,32 +477,37 @@ class WGDP_Release_Gate {
 		$ent        = WGDP_Entitlements::instance();
 		$iterations = 0;
 		$max_iterations = 50;
-		$order_ids_to_check = array();
+		$order_ids_to_check    = array();
+		$granted_by_recipient = array();
+		$after_id             = 0;
 
 		do {
-			$rows = $ent->get_pending_release_for_product( $product_id, 100 );
+			$rows = $ent->get_pending_release_for_product( $product_id, 100, $after_id );
 
-			$processed_any = false;
 			foreach ( $rows as $row ) {
+				$after_id = max( $after_id, (int) $row['id'] );
+
 				// Check per-variation release status.
 				$vid = (int) ( $row['variation_id'] ?? 0 );
 				if ( ! self::is_item_released( $product_id, $vid ) ) {
 					// Not yet released at variation level — skip but don't error.
 					continue;
 				}
+				if ( self::is_resource_retired_for_row( $row ) ) {
+					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
+					continue;
+				}
 
-				$processed_any = true;
-				$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row );
+				$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row, true );
 				if ( is_wp_error( $result ) ) {
 					$ent->mark_error( $row['id'], $result->get_error_message() );
 				} else {
 					$order_ids_to_check[ $row['order_id'] ] = true;
+					self::collect_granted_for_email( $granted_by_recipient, $row );
 				}
 			}
 
-			// If no rows could be processed (all belong to unreleased variations),
-			// stop looping to avoid re-fetching the same rows.
-			if ( ! $processed_any ) {
+			if ( empty( $rows ) ) {
 				break;
 			}
 
@@ -424,6 +522,7 @@ class WGDP_Release_Gate {
 			$handler->maybe_auto_complete_order( $oid );
 		}
 
+		self::send_grouped_access_emails( $granted_by_recipient );
 		delete_transient( 'wgdp_permission_counts' );
 	}
 
@@ -434,17 +533,25 @@ class WGDP_Release_Gate {
 		$ent        = WGDP_Entitlements::instance();
 		$iterations = 0;
 		$max_iterations = 50;
-		$order_ids_to_check = array();
+		$order_ids_to_check    = array();
+		$granted_by_recipient = array();
+		$after_id             = 0;
 
 		do {
-			$rows = $ent->get_pending_release_for_variation( $product_id, $variation_id, 100 );
+			$rows = $ent->get_pending_release_for_variation( $product_id, $variation_id, 100, $after_id );
 
 			foreach ( $rows as $row ) {
-				$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row );
+				$after_id = max( $after_id, (int) $row['id'] );
+				if ( self::is_resource_retired_for_row( $row ) ) {
+					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
+					continue;
+				}
+				$result   = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row, true );
 				if ( is_wp_error( $result ) ) {
 					$ent->mark_error( $row['id'], $result->get_error_message() );
 				} else {
 					$order_ids_to_check[ $row['order_id'] ] = true;
+					self::collect_granted_for_email( $granted_by_recipient, $row );
 				}
 			}
 
@@ -459,6 +566,7 @@ class WGDP_Release_Gate {
 			$handler->maybe_auto_complete_order( $oid );
 		}
 
+		self::send_grouped_access_emails( $granted_by_recipient );
 		delete_transient( 'wgdp_permission_counts' );
 	}
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Woo GDrive Permission
  * Description: Per-recipient entitlement system with OTP verification for granting GDrive viewer access on WooCommerce purchases.
- * Version: 3.4.7
+ * Version: 3.4.8
  * Author: DataForge
  * Requires at least: 5.8
  * Requires PHP: 7.4
@@ -13,7 +13,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WGDP_VERSION', '3.4.7' );
+define( 'WGDP_VERSION', '3.4.8' );
 define( 'WGDP_PLUGIN_FILE', __FILE__ );
 define( 'WGDP_PLUGIN_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WGDP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -86,6 +86,7 @@ add_action( 'plugins_loaded', function () {
 	WGDP_Claim_Page::instance();
 	WGDP_Self_Service::instance();
 	WGDP_Cron::instance();
+	WGDP_Cron::schedule();
 	WGDP_Entitlements_List::instance();
 	WGDP_Dashboard_Widget::instance();
 	WGDP_Shortcodes::instance();

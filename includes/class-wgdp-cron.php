@@ -90,7 +90,7 @@ class WGDP_Cron {
 
 			foreach ( $recipients as $to ) {
 				if ( 'backfill' === $group['origin'] ) {
-					WGDP_Notification_Email::send_new_files_added( $to, $group['links'], $group['product_name'] );
+					WGDP_Notification_Email::send_new_files_added( $to, $group['links'], $group['product_name'], $group['order_id'] );
 				} else {
 					if ( count( $group['links'] ) > 1 ) {
 						WGDP_Notification_Email::send_access_granted_batch( $to, $group['links'], $group['product_name'] );
@@ -114,68 +114,68 @@ class WGDP_Cron {
 
 		// Collect granted files per recipient to send batch emails.
 		$granted_by_recipient = array();
+		$revoked_by_recipient = array();
 
-		// Pick up pending_release overflow for already-released items.
-		$pending_release_rows = $ent->get_stale_pending_release( 20 );
-		foreach ( $pending_release_rows as $row ) {
-			if ( ! WGDP_Release_Gate::is_item_released( (int) $row['product_id'], (int) ( $row['variation_id'] ?? 0 ) ) ) {
-				continue;
-			}
-			if ( empty( $row['account_id'] ) || ! $auth->is_account_connected( $row['account_id'] ) ) {
-				continue;
-			}
-			// Skip retired resources.
-			if ( $this->is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
-				continue;
-			}
-			$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row, true );
-			if ( is_wp_error( $result ) ) {
-				$ent->mark_error( $row['id'], $result->get_error_message() );
-			} else {
-				$this->collect_granted( $granted_by_recipient, $row );
-				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
-			}
-		}
+		$had_candidates = false;
 
-		$rows = $ent->get_failed_verified( 20 );
-
-		if ( empty( $rows ) && empty( $pending_release_rows ) ) {
-			return;
+		// Pick up pending_release overflow for already-released items. Use cursor
+		// pagination so blocked rows do not permanently hide later grantable rows.
+		$after_id = 0;
+		for ( $page = 0; $page < 10; $page++ ) {
+			$pending_release_rows = $ent->get_stale_pending_release( 20, $after_id );
+			if ( empty( $pending_release_rows ) ) {
+				break;
+			}
+			$had_candidates = true;
+			foreach ( $pending_release_rows as $row ) {
+				$after_id = max( $after_id, (int) $row['id'] );
+				if ( ! WGDP_Release_Gate::is_item_released( (int) $row['product_id'], (int) ( $row['variation_id'] ?? 0 ) ) ) {
+					continue;
+				}
+				if ( empty( $row['account_id'] ) || ! $auth->is_account_connected( $row['account_id'] ) ) {
+					continue;
+				}
+				if ( $this->is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
+					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
+					continue;
+				}
+				$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row, true );
+				if ( is_wp_error( $result ) ) {
+					$ent->mark_error( $row['id'], $result->get_error_message() );
+				} else {
+					$this->collect_granted( $granted_by_recipient, $row );
+					WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
+				}
+			}
 		}
 
 		// Track retired asset IDs already noted per order to avoid duplicate notes.
 		$retired_noted = array();
 
-		foreach ( $rows as $row ) {
-			// Skip if item is not yet released.
-			if ( ! WGDP_Release_Gate::is_item_released( (int) $row['product_id'], (int) ( $row['variation_id'] ?? 0 ) ) ) {
-				continue;
+		$after_id = 0;
+		for ( $page = 0; $page < 10; $page++ ) {
+			$rows = $ent->get_failed_verified( 20, 50, $after_id );
+			if ( empty( $rows ) ) {
+				break;
 			}
+			$had_candidates = true;
+			foreach ( $rows as $row ) {
+				$after_id = max( $after_id, (int) $row['id'] );
+				if ( ! WGDP_Release_Gate::is_item_released( (int) $row['product_id'], (int) ( $row['variation_id'] ?? 0 ) ) ) {
+					continue;
+				}
 
-			// Skip if account is not connected.
-			if ( empty( $row['account_id'] ) || ! $auth->is_account_connected( $row['account_id'] ) ) {
-				continue;
-			}
+				if ( empty( $row['account_id'] ) || ! $auth->is_account_connected( $row['account_id'] ) ) {
+					continue;
+				}
 
-			// Skip retired resources (don't increment retry count).
-			if ( $this->is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
-				continue;
-			}
+				if ( $this->is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
+					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
+					continue;
+				}
 
-			// Dedup check.
-			$existing = $ent->get_by_email_and_asset( $row['recipient_email'], $row['cloud_asset_id'] );
-			if ( $existing && ! empty( $existing['provider_permission_id'] ) && (int) $existing['id'] !== (int) $row['id'] ) {
-				$ent->mark_granted( $row['id'], $existing['provider_permission_id'] );
-			} else {
-				$result = $drive->create_permission(
-					$row['cloud_asset_id'],
-					$row['recipient_email'],
-					null,
-					$row['account_id']
-				);
-
+				$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row, true );
 				if ( is_wp_error( $result ) ) {
-					// Auto-retire on confirmed 404.
 					if ( WGDP_Google_Drive::is_file_not_found( $result ) ) {
 						$verify = $drive->get_file( $row['cloud_asset_id'], $row['account_id'] );
 						if ( WGDP_Google_Drive::is_file_not_found( $verify ) ) {
@@ -185,7 +185,6 @@ class WGDP_Cron {
 							);
 							$ent->mark_error( $row['id'], 'File removed from Google Drive (auto-retired)' );
 
-							// One order note per asset retirement.
 							$note_key = $row['order_id'] . '|' . $row['cloud_asset_id'];
 							if ( ! isset( $retired_noted[ $note_key ] ) ) {
 								$retired_noted[ $note_key ] = true;
@@ -210,9 +209,6 @@ class WGDP_Cron {
 					continue;
 				}
 
-				$permission_id = $result['id'] ?? '';
-				$ent->mark_granted( $row['id'], $permission_id );
-
 				$order = wc_get_order( $row['order_id'] );
 				if ( $order ) {
 					$product_name = WGDP_Entitlements::get_product_name( $row );
@@ -223,14 +219,56 @@ class WGDP_Cron {
 						$row['id']
 					) );
 				}
-			}
 
-			$this->collect_granted( $granted_by_recipient, $row );
-			WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
+				$this->collect_granted( $granted_by_recipient, $row );
+				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
+			}
+		}
+
+		$after_id = 0;
+		for ( $page = 0; $page < 10; $page++ ) {
+			$revocation_rows = $ent->get_failed_revocations( 20, 50, $after_id );
+			if ( empty( $revocation_rows ) ) {
+				break;
+			}
+			$had_candidates = true;
+			foreach ( $revocation_rows as $row ) {
+				$after_id = max( $after_id, (int) $row['id'] );
+				$reason = ! empty( $row['revocation_reason'] ) ? $row['revocation_reason'] : WGDP_Entitlements::REVOCATION_REASON_MANUAL;
+				$result = $ent->revoke_with_drive_delete( $row, $reason );
+				if ( is_wp_error( $result ) ) {
+					continue;
+				}
+
+				$key = $row['order_item_id'] . '|' . $row['recipient_email'] . '|' . $reason;
+				if ( ! isset( $revoked_by_recipient[ $key ] ) ) {
+					$revoked_by_recipient[ $key ] = array(
+						'email'        => $row['recipient_email'],
+						'product_name' => WGDP_Entitlements::get_product_name( $row ),
+						'order_id'     => $row['order_id'],
+					);
+				}
+
+				$order = wc_get_order( $row['order_id'] );
+				if ( $order ) {
+					$order->add_order_note( sprintf(
+						'WGDP: Revocation retry successful — removed Drive access for %s (entitlement #%d)',
+						$row['recipient_email'],
+						$row['id']
+					) );
+				}
+			}
+		}
+
+		if ( ! $had_candidates ) {
+			return;
 		}
 
 		// Send emails grouped by origin.
 		$this->send_grouped_emails( $granted_by_recipient );
+		foreach ( $revoked_by_recipient as $group ) {
+			WGDP_Notification_Email::send_access_revoked( $group['email'], $group['product_name'], $group['order_id'] );
+		}
 
 		delete_transient( 'wgdp_permission_counts' );
 	}
@@ -280,7 +318,17 @@ class WGDP_Cron {
 			(int) $job['product_id'], (int) $job['variation_id']
 		);
 
+		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
+			$wpdb->update( $table, array(
+				'status'       => 'failed',
+				'processed_at' => $now,
+				'last_error'   => 'No connected Google account is available for this product.',
+			), array( 'id' => $job['id'] ) );
+			return;
+		}
+
 		$asset_ids     = json_decode( $job['asset_ids'], true );
+		$asset_ids     = is_array( $asset_ids ) ? $asset_ids : array();
 		$resources     = array();
 		$all_resources = WGDP_Product_Meta::get_active_drive_resources(
 			(int) $job['product_id'], (int) $job['variation_id']
@@ -325,12 +373,6 @@ class WGDP_Cron {
 			) );
 		}
 
-		// Increment attempts on every batch (unconditional — tracks total work done).
-		$wpdb->query( $wpdb->prepare(
-			"UPDATE {$table} SET attempts = attempts + 1 WHERE id = %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			$job['id']
-		) );
-
 		delete_transient( 'wgdp_permission_counts' );
 	}
 
@@ -346,6 +388,8 @@ class WGDP_Cron {
 	 * Schedule cron jobs.
 	 */
 	public static function schedule() {
+		wp_clear_scheduled_hook( 'wgdp_retry_failed_permissions' );
+
 		if ( ! wp_next_scheduled( 'wgdp_retry_failed_grants' ) ) {
 			wp_schedule_event( time(), 'every_20_minutes', 'wgdp_retry_failed_grants' );
 		}
@@ -358,6 +402,7 @@ class WGDP_Cron {
 	 * Clear cron jobs.
 	 */
 	public static function unschedule() {
+		wp_clear_scheduled_hook( 'wgdp_retry_failed_permissions' );
 		wp_clear_scheduled_hook( 'wgdp_retry_failed_grants' );
 		wp_clear_scheduled_hook( 'wgdp_expire_stale_entitlements' );
 	}

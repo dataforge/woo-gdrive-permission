@@ -349,7 +349,8 @@
     color: #00a32a;
 }
 
-.wgdp-gstatus--error {
+.wgdp-gstatus--error,
+.wgdp-gstatus--revocation_error {
     background: #fcecec;
     color: #d63638;
 }

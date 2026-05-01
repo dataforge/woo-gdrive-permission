@@ -8,9 +8,6 @@
     var gapiLoaded = false;
     var gapiLoading = false;
     var gapiCallbacks = [];
-    var gisLoaded = false;
-    var gisLoading = false;
-    var gisCallbacks = [];
     var activeDriveButton = null;
     var driveBrowserState = {
         accountId: '',
@@ -59,34 +56,6 @@
         document.head.appendChild(script);
     }
 
-    function ensureGis(callback) {
-        if (gisLoaded) {
-            callback();
-            return;
-        }
-        gisCallbacks.push(callback);
-        if (gisLoading) {
-            return;
-        }
-        gisLoading = true;
-        var script = document.createElement('script');
-        script.src = 'https://accounts.google.com/gsi/client';
-        script.onload = function () {
-            gisLoaded = true;
-            gisLoading = false;
-            var cbs = gisCallbacks.splice(0);
-            for (var i = 0; i < cbs.length; i++) {
-                cbs[i]();
-            }
-        };
-        script.onerror = function () {
-            gisLoading = false;
-            gisCallbacks = [];
-            alert('Google Identity Services could not load. Check browser blockers or network access to accounts.google.com.');
-        };
-        document.head.appendChild(script);
-    }
-
     function getServerPickerToken(accountId, callback, errorCallback) {
         $.post(wgdp.ajax_url, {
             action: 'wgdp_get_picker_token',
@@ -100,29 +69,6 @@
             callback(response.data.token);
         }).fail(function () {
             errorCallback('Request failed.');
-        });
-    }
-
-    function getBrowserPickerToken(callback, errorCallback) {
-        if (!wgdp.oauth_client_id) {
-            errorCallback('OAuth Client ID is not configured. Please add it in the plugin settings.');
-            return;
-        }
-
-        ensureGis(function () {
-            var tokenClient = google.accounts.oauth2.initTokenClient({
-                client_id: wgdp.oauth_client_id,
-                scope: 'https://www.googleapis.com/auth/drive.file',
-                callback: function (response) {
-                    if (response.error) {
-                        errorCallback(response.error_description || response.error);
-                        return;
-                    }
-                    callback(response.access_token);
-                }
-            });
-
-            tokenClient.requestAccessToken({prompt: 'consent'});
         });
     }
 
@@ -175,13 +121,8 @@
             $button.prop('disabled', false).text(originalText);
             createGooglePicker(token, $button);
         }, function (message) {
-            getBrowserPickerToken(function (token) {
-                $button.prop('disabled', false).text(originalText);
-                createGooglePicker(token, $button);
-            }, function (fallbackMessage) {
-                $button.prop('disabled', false).text(originalText);
-                alert(message + '\n\nBrowser sign-in fallback also failed: ' + fallbackMessage);
-            });
+            $button.prop('disabled', false).text(originalText);
+            alert(message);
         });
     }
 
@@ -744,6 +685,53 @@
     });
 
     /* =========================================================
+     * Access Manager: Remove Account
+     * ========================================================= */
+
+    $(document).on('click', '.wgdp-am-request-new-email-btn', function () {
+        if (!confirm('Remove this Google Drive access and make the order item Awaiting Assignment? You can then use Resend Order Email to send the Provide Google Email link.')) {
+            return;
+        }
+
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Removing...');
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_am_request_new_email',
+            nonce: wgdp.nonce,
+            entitlement_id: $btn.data('entitlement-id')
+        }, function (response) {
+            if (response.success) {
+                var d = response.data || {};
+                if (d.status === 'revocation_error') {
+                    alert(d.message || 'Drive access removal is pending retry.');
+                    window.location.reload();
+                    return;
+                }
+
+                var $row = $btn.closest('tr');
+                $row.find('.wgdp-status-badge').filter(function() {
+                    return $(this).hasClass('wgdp-gstatus--pending') ||
+                        $(this).hasClass('wgdp-gstatus--granted') ||
+                        $(this).hasClass('wgdp-gstatus--error') ||
+                        $(this).hasClass('wgdp-gstatus--pending_release');
+                }).removeClass('wgdp-gstatus--pending wgdp-gstatus--granted wgdp-gstatus--error wgdp-gstatus--pending_release')
+                    .addClass('wgdp-gstatus--revoked').text('Revoked');
+
+                $btn.closest('td').find('.wgdp-resend-otp-btn, .wgdp-am-change-email-btn, .wgdp-am-request-new-email-btn, .wgdp-am-verify-btn, .wgdp-retry-grant-btn, .wgdp-revoke-entitlement-btn').remove();
+                alert(d.message || 'Google account removed.');
+                window.location.reload();
+            } else {
+                $btn.prop('disabled', false).text('Remove Account');
+                alert('Error: ' + response.data);
+            }
+        }).fail(function () {
+            $btn.prop('disabled', false).text('Remove Account');
+            alert('Request failed.');
+        });
+    });
+
+    /* =========================================================
      * Order meta box: Add entitlement
      * ========================================================= */
 
@@ -830,23 +818,38 @@
 
         $.post(wgdp.ajax_url, postData, function (response) {
             if (response.success) {
+                var d = response.data || {};
+                var status = d.status || (typeof response.data === 'string' ? 'revoked' : '');
                 // Update the row to show revoked status.
                 var $row = $btn.closest('tr');
                 if ($row.length) {
-                    $row.find('.wgdp-status-badge').filter(function() {
+                    var $grantBadge = $row.find('.wgdp-status-badge').filter(function() {
                         return $(this).hasClass('wgdp-gstatus--pending') ||
-                               $(this).hasClass('wgdp-gstatus--granted') ||
-                               $(this).hasClass('wgdp-gstatus--error');
-                    }).removeClass('wgdp-gstatus--pending wgdp-gstatus--granted wgdp-gstatus--error')
-                      .addClass('wgdp-gstatus--revoked').text('Revoked');
+                            $(this).hasClass('wgdp-gstatus--granted') ||
+                            $(this).hasClass('wgdp-gstatus--error') ||
+                            $(this).hasClass('wgdp-gstatus--pending_release') ||
+                            $(this).hasClass('wgdp-gstatus--revocation_error');
+                    });
+
+                    if (status === 'revocation_error') {
+                        $grantBadge
+                            .removeClass('wgdp-gstatus--pending wgdp-gstatus--granted wgdp-gstatus--error wgdp-gstatus--pending_release wgdp-gstatus--revocation_error')
+                            .addClass('wgdp-gstatus--revocation_error').text('Revocation Error');
+                    } else {
+                        $grantBadge
+                            .removeClass('wgdp-gstatus--pending wgdp-gstatus--granted wgdp-gstatus--error wgdp-gstatus--pending_release wgdp-gstatus--revocation_error')
+                            .addClass('wgdp-gstatus--revoked').text('Revoked');
+                    }
                 }
+
+                if (status === 'revocation_error') {
+                    alert(d.message || 'Could not remove Drive permission. The row is marked Revocation Error and will retry automatically.');
+                    window.location.reload();
+                    return;
+                }
+
                 $btn.closest('td').find('.wgdp-resend-otp-btn, .wgdp-am-change-email-btn, .wgdp-am-verify-btn, .wgdp-retry-grant-btn').remove();
                 $btn.remove();
-
-                // Show warning if Drive permission couldn't be removed.
-                if (response.data && typeof response.data === 'string' && response.data.indexOf('Note:') !== -1) {
-                    alert(response.data);
-                }
             } else {
                 $btn.prop('disabled', false).text('Revoke');
                 alert('Error: ' + response.data);

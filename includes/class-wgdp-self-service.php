@@ -6,6 +6,8 @@ class WGDP_Self_Service {
 	private static $instance = null;
 
 	const LINK_EXPIRY_DAYS = 30;
+	const TOKEN_META_KEY   = '_wgdp_self_service_tokens';
+	const MAX_ACTIVE_TOKENS = 10;
 
 	public static function instance() {
 		if ( null === self::$instance ) {
@@ -43,10 +45,12 @@ class WGDP_Self_Service {
 		if ( ! $page_id || ! is_page( $page_id ) ) {
 			return;
 		}
-		wp_add_inline_style( 'wp-block-library', '
-			body.page-id-' . $page_id . ' .entry-title,
-			body.page-id-' . $page_id . ' .wp-block-post-title { color: #333; }
-		' );
+			wp_add_inline_style( 'wp-block-library', '
+				body.page-id-' . $page_id . ' .entry-title,
+				body.page-id-' . $page_id . ' .wp-block-post-title { color: #fff !important; }
+				body.page-id-' . $page_id . ' .wgdp-provide-email-wrap { color: #f5f7fb; }
+				body.page-id-' . $page_id . ' .wgdp-provide-email-wrap input[type="email"] { background: #fff; color: #111827; }
+			' );
 	}
 
 	/**
@@ -56,11 +60,193 @@ class WGDP_Self_Service {
 	 * @return bool True if expired.
 	 */
 	private function is_link_expired( $order ) {
+		$link_resent_at = (int) $order->get_meta( '_wgdp_self_service_link_resent_at' );
+		if ( $link_resent_at > 0 ) {
+			return ( time() - $link_resent_at ) > self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS;
+		}
+
+		$preorder_charged_at = (int) $order->get_meta( '_wcpr_charge_succeeded_at' );
+		if ( $preorder_charged_at > 0 ) {
+			return ( time() - $preorder_charged_at ) > self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS;
+		}
+
 		$order_date = $order->get_date_created();
 		if ( ! $order_date ) {
 			return false;
 		}
 		return ( time() - $order_date->getTimestamp() ) > self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS;
+	}
+
+	/**
+	 * Get stored plugin-issued self-service token records for an order.
+	 */
+	private function get_token_records( $order ) {
+		$records = $order->get_meta( self::TOKEN_META_KEY );
+		if ( is_string( $records ) && '' !== $records ) {
+			$records = json_decode( $records, true );
+		}
+		return is_array( $records ) ? $records : array();
+	}
+
+	/**
+	 * Save plugin-issued self-service token records for an order.
+	 */
+	private function save_token_records( $order, $records ) {
+		$order->update_meta_data( self::TOKEN_META_KEY, wp_json_encode( array_values( $records ) ) );
+		$order->save();
+	}
+
+	/**
+	 * Remove expired plugin-issued self-service token records.
+	 */
+	private function prune_token_records( $order, $records ) {
+		$now     = time();
+		$pruned  = array();
+		$changed = false;
+
+		foreach ( $records as $record ) {
+			$expires = isset( $record['expires'] ) ? (int) $record['expires'] : 0;
+			if ( $expires > 0 && $expires >= $now && ! empty( $record['hash'] ) ) {
+				$pruned[] = $record;
+			} else {
+				$changed = true;
+			}
+		}
+
+		if ( $changed ) {
+			$this->save_token_records( $order, $pruned );
+		}
+
+		return $pruned;
+	}
+
+	/**
+	 * Issue a plugin-scoped self-service token without invalidating old tokens.
+	 */
+	private function issue_self_service_token( $order ) {
+		$token   = rtrim( strtr( base64_encode( random_bytes( 32 ) ), '+/', '-_' ), '=' );
+		$records = $this->prune_token_records( $order, $this->get_token_records( $order ) );
+
+		$records[] = array(
+			'hash'    => hash( 'sha256', $token ),
+			'expires' => time() + self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS,
+			'created' => time(),
+		);
+
+		if ( count( $records ) > self::MAX_ACTIVE_TOKENS ) {
+			$records = array_slice( $records, -self::MAX_ACTIVE_TOKENS );
+		}
+
+		$this->save_token_records( $order, $records );
+		return $token;
+	}
+
+	/**
+	 * Check a plugin-scoped self-service token against an order.
+	 */
+	private function validate_self_service_token( $order, $token ) {
+		if ( empty( $token ) ) {
+			return false;
+		}
+
+		$hash    = hash( 'sha256', $token );
+		$records = $this->prune_token_records( $order, $this->get_token_records( $order ) );
+
+		foreach ( $records as $record ) {
+			if ( ! empty( $record['hash'] ) && hash_equals( $record['hash'], $hash ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Build the current preferred self-service URL.
+	 */
+	private function build_self_service_url( $order ) {
+		return add_query_arg(
+			array(
+				'order_id' => $order->get_id(),
+				'sst'      => $this->issue_self_service_token( $order ),
+			),
+			self::get_page_url()
+		);
+	}
+
+	/**
+	 * Resolve a self-service request from either the new token or legacy order key.
+	 *
+	 * @param array $request Request source ($_GET or $_POST).
+	 * @return array|WP_Error { order, auth_type, token, order_key } or WP_Error.
+	 */
+	private function resolve_request_order( $request ) {
+		$token = '';
+		if ( isset( $request['sst'] ) ) {
+			$token = sanitize_text_field( wp_unslash( $request['sst'] ) );
+		} elseif ( isset( $request['self_service_token'] ) ) {
+			$token = sanitize_text_field( wp_unslash( $request['self_service_token'] ) );
+		}
+
+		if ( '' !== $token ) {
+			$order_id = isset( $request['order_id'] ) ? absint( $request['order_id'] ) : 0;
+			if ( ! $order_id ) {
+				return new WP_Error( 'wgdp_missing_order', 'Invalid link. Missing order information.' );
+			}
+			$order = wc_get_order( $order_id );
+			if ( ! $order || ! $this->validate_self_service_token( $order, $token ) ) {
+				return new WP_Error( 'wgdp_invalid_token', 'Invalid or expired link.' );
+			}
+			return array(
+				'order'     => $order,
+				'auth_type' => 'token',
+				'token'     => $token,
+				'order_key' => '',
+			);
+		}
+
+		$order_id  = isset( $request['order_id'] ) ? absint( $request['order_id'] ) : 0;
+		$order_key = isset( $request['key'] ) ? sanitize_text_field( wp_unslash( $request['key'] ) ) : '';
+		if ( '' === $order_key && isset( $request['order_key'] ) ) {
+			$order_key = sanitize_text_field( wp_unslash( $request['order_key'] ) );
+		}
+
+		if ( ! $order_id || empty( $order_key ) ) {
+			return new WP_Error( 'wgdp_missing_order', 'Invalid link. Missing order information.' );
+		}
+
+		$order = wc_get_order( $order_id );
+		if ( ! $order || $order->get_order_key() !== $order_key ) {
+			return new WP_Error( 'wgdp_invalid_order_key', 'Invalid link. Order not found or key mismatch.' );
+		}
+
+		return array(
+			'order'     => $order,
+			'auth_type' => 'legacy',
+			'token'     => '',
+			'order_key' => $order_key,
+		);
+	}
+
+	/**
+	 * Detect Conditional Preorder reservation orders without requiring that plugin.
+	 */
+	private function should_defer_preorder_order( $order ) {
+		return $order instanceof WC_Order
+			&& (bool) $order->get_meta( '_wcpr_campaign_product_id' )
+			&& 'yes' !== $order->get_meta( '_wcpr_charge_succeeded' );
+	}
+
+	/**
+	 * Check whether customer self-service may collect an email for this item yet.
+	 */
+	private function item_trigger_allows_self_service( $order, $product_id ) {
+		$trigger = WGDP_Product_Meta::get_entitlement_trigger( $product_id );
+		if ( 'on_completion' === $trigger ) {
+			return $order instanceof WC_Order && 'completed' === $order->get_status();
+		}
+
+		return $order instanceof WC_Order && in_array( $order->get_status(), array( 'processing', 'completed' ), true );
 	}
 
 	/**
@@ -125,6 +311,10 @@ class WGDP_Self_Service {
 	 * @return array Items with unassigned slots. Each entry has 'item', 'product_name', 'slots_remaining'.
 	 */
 	private function get_unassigned_items( $order ) {
+		if ( $this->should_defer_preorder_order( $order ) ) {
+			return array();
+		}
+
 		$unassigned = array();
 		$ent = WGDP_Entitlements::instance();
 
@@ -133,6 +323,10 @@ class WGDP_Self_Service {
 			$variation_id = $item->get_variation_id();
 
 			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+				continue;
+			}
+
+			if ( ! $this->item_trigger_allows_self_service( $order, $product_id ) ) {
 				continue;
 			}
 
@@ -193,10 +387,7 @@ class WGDP_Self_Service {
 			return;
 		}
 
-		$url = add_query_arg( array(
-			'order_id' => $order->get_id(),
-			'key'      => $order->get_order_key(),
-		), self::get_page_url() );
+		$url = $this->build_self_service_url( $order );
 
 		// Determine release mode messaging.
 		$has_min_sales = false;
@@ -247,17 +438,11 @@ class WGDP_Self_Service {
 			return $content;
 		}
 
-		$order_id  = isset( $_GET['order_id'] ) ? absint( $_GET['order_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		$order_key = isset( $_GET['key'] ) ? sanitize_text_field( wp_unslash( $_GET['key'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-
-		if ( ! $order_id || empty( $order_key ) ) {
-			return $this->wrap_content( $this->error_content( 'Invalid link. Missing order information.' ) );
+		$auth = $this->resolve_request_order( $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( is_wp_error( $auth ) ) {
+			return $this->wrap_content( $this->error_content( $auth->get_error_message() ) );
 		}
-
-		$order = wc_get_order( $order_id );
-		if ( ! $order || $order->get_order_key() !== $order_key ) {
-			return $this->wrap_content( $this->error_content( 'Invalid link. Order not found or key mismatch.' ) );
-		}
+		$order = $auth['order'];
 
 		if ( ! in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
 			return $this->wrap_content( $this->error_content( 'This order is no longer eligible for digital access.' ) );
@@ -272,7 +457,7 @@ class WGDP_Self_Service {
 			return $this->wrap_content( $this->success_content( $order ) );
 		}
 
-		return $this->wrap_content( $this->form_content( $order, $unassigned ) );
+		return $this->wrap_content( $this->form_content( $order, $unassigned, $auth ) );
 	}
 
 	/**
@@ -283,17 +468,16 @@ class WGDP_Self_Service {
 			wp_send_json_error( 'Security check failed.' );
 		}
 
-		$order_id  = absint( $_POST['order_id'] ?? 0 );
-		$order_key = sanitize_text_field( wp_unslash( $_POST['order_key'] ?? '' ) );
-		$items     = isset( $_POST['items'] ) ? wp_unslash( $_POST['items'] ) : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- individual fields sanitized below.
-
-		if ( ! $order_id || empty( $order_key ) ) {
-			wp_send_json_error( 'Missing order information.' );
+		$auth = $this->resolve_request_order( $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
+		if ( is_wp_error( $auth ) ) {
+			wp_send_json_error( $auth->get_error_message() );
 		}
+		$order    = $auth['order'];
+		$order_id = $order->get_id();
+		$items    = isset( $_POST['items'] ) ? wp_unslash( $_POST['items'] ) : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- individual fields sanitized below.
 
-		$order = wc_get_order( $order_id );
-		if ( ! $order || $order->get_order_key() !== $order_key ) {
-			wp_send_json_error( 'Invalid order or key.' );
+		if ( $this->should_defer_preorder_order( $order ) ) {
+			wp_send_json_error( 'Digital access is available after the preorder campaign is successfully charged.' );
 		}
 
 		if ( ! in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
@@ -304,18 +488,25 @@ class WGDP_Self_Service {
 			wp_send_json_error( 'This link has expired. Please contact the store for assistance.' );
 		}
 
+		if ( ! $this->consume_rate_limit( 'wgdp_ss_order_' . $order_id, 10, HOUR_IN_SECONDS )
+			|| ! $this->consume_rate_limit( 'wgdp_ss_ip_' . $order_id . '_' . md5( $this->get_request_ip() ), 5, HOUR_IN_SECONDS )
+		) {
+			wp_send_json_error( 'Too many requests. Please wait before submitting again.' );
+		}
+
 		if ( ! is_array( $items ) || empty( $items ) ) {
 			wp_send_json_error( 'No items submitted.' );
 		}
 
-		$ent  = WGDP_Entitlements::instance();
-		$auth = WGDP_Google_Auth::instance();
+		$ent = WGDP_Entitlements::instance();
 
 		$created_count = 0;
+		$mail_failures = 0;
+		$cleared_items = array();
 
 		foreach ( $items as $submission ) {
 			$order_item_id = absint( $submission['order_item_id'] ?? 0 );
-			$email         = sanitize_email( $submission['email'] ?? '' );
+			$email         = WGDP_Entitlements::normalize_email( $submission['email'] ?? '' );
 
 			if ( ! $order_item_id || ! is_email( $email ) ) {
 				continue;
@@ -334,45 +525,32 @@ class WGDP_Self_Service {
 				continue;
 			}
 
-			// Revoke any previous unverified entitlements so the customer can retry with a new email.
-			$ent->revoke_unverified_for_item( $order_item_id );
-
-			// Check slot availability (account for refunded qty); count distinct confirmed recipients.
-			$quantity      = $item->get_quantity();
-			$qty_refunded  = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
-			$effective_qty = max( 0, $quantity - $qty_refunded );
-			$active_count  = $ent->count_confirmed_recipients_for_item( $order_item_id );
-			if ( $effective_qty <= 0 || $active_count >= $effective_qty ) {
+			if ( ! $this->item_trigger_allows_self_service( $order, $product_id ) ) {
 				continue;
 			}
 
-			// Resolve active resources (multi-file, excludes retired).
-			$resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
-			if ( empty( $resources ) ) {
-				continue;
-			}
-
-			// Resolve account.
-			$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
-			if ( empty( $account_id ) || ! $auth->is_account_connected( $account_id ) ) {
-				continue;
-			}
-
-			$result = $ent->create_entitlements_for_recipient( array(
-				'order_id'       => $order_id,
-				'order_item_id'  => $order_item_id,
-				'product_id'     => $product_id,
-				'variation_id'   => $variation_id ?: 0,
-				'email'          => $email,
-				'account_id'     => $account_id,
-				'resources'      => $resources,
+			$clear_unverified = empty( $cleared_items[ $order_item_id ] );
+			$result = $ent->assign_recipient_to_order_item( array(
+				'order_id'               => $order_id,
+				'order_item_id'          => $order_item_id,
+				'email'                  => $email,
+				'count_mode'             => 'active',
+				'clear_unverified'       => $clear_unverified,
+				'allowed_order_statuses' => array( 'processing', 'completed' ),
 			) );
 
 			if ( is_wp_error( $result ) ) {
 				continue;
 			}
+			$cleared_items[ $order_item_id ] = true;
+			$order = $result['order'];
+			$item  = $result['item'];
 
-			WGDP_Notification_Email::send_otp( $email, $result['tokens']['otp'], $result['tokens']['claim_token'], $order, $item );
+			if ( empty( $result['tokens'] ) ) {
+				continue;
+			}
+
+			$mail_result = WGDP_Notification_Email::send_otp( $email, $result['tokens']['otp'], $result['tokens']['claim_token'], $order, $item );
 
 			// Set drive items flag if not already set.
 			if ( ! $order->get_meta( '_wgdp_has_drive_items' ) ) {
@@ -380,14 +558,24 @@ class WGDP_Self_Service {
 				$order->save();
 			}
 
-			$order->add_order_note( sprintf(
-				'WGDP: Verification email sent to %s for "%s" (entitlement #%d) — self-service',
-				$email,
-				$item->get_name(),
-				$result['primary_id']
-			) );
-
-			$created_count++;
+			if ( is_wp_error( $mail_result ) ) {
+				$mail_failures++;
+				$order->add_order_note( sprintf(
+					'WGDP: Entitlement #%d created for %s, but self-service verification email failed for "%s" — %s',
+					$result['primary_id'],
+					$email,
+					$item->get_name(),
+					$mail_result->get_error_message()
+				) );
+			} else {
+				$order->add_order_note( sprintf(
+					'WGDP: Verification email sent to %s for "%s" (entitlement #%d) — self-service',
+					$email,
+					$item->get_name(),
+					$result['primary_id']
+				) );
+				$created_count++;
+			}
 		}
 
 		if ( $created_count > 0 ) {
@@ -400,6 +588,9 @@ class WGDP_Self_Service {
 				'detail'  => 'Check your inbox and click the verification link in the email to complete your access.',
 				'count'   => $created_count,
 			) );
+		} elseif ( $mail_failures > 0 ) {
+			delete_transient( 'wgdp_permission_counts' );
+			wp_send_json_error( 'Digital access was reserved, but the verification email could not be sent. Please contact the store for assistance.' );
 		} else {
 			wp_send_json_error( 'No entitlements were created. Slots may already be filled or emails were invalid.' );
 		}
@@ -409,18 +600,18 @@ class WGDP_Self_Service {
 	 * Wrap content in a styled container.
 	 */
 	private function wrap_content( $content ) {
-		return '<div class="wgdp-provide-email-wrap" style="max-width:560px;margin:0 auto;padding:32px 0;">' . $content . '</div>';
+		return '<div class="wgdp-provide-email-wrap" style="max-width:560px;margin:0 auto;padding:32px 0;color:#f5f7fb;">' . $content . '</div>';
 	}
 
 	/**
 	 * Render error content.
 	 */
 	private function error_content( $message ) {
-		return '<div style="text-align:center;">'
-			. '<div style="font-size:48px;margin-bottom:12px;">&#9888;</div>'
-			. '<h2 style="color:#d63638;margin:0 0 12px;">Error</h2>'
-			. '<p style="color:#555;font-size:15px;">' . esc_html( $message ) . '</p>'
-			. '</div>';
+			return '<div style="text-align:center;">'
+				. '<div style="font-size:48px;margin-bottom:12px;">&#9888;</div>'
+				. '<h2 style="color:#d63638;margin:0 0 12px;">Error</h2>'
+				. '<p style="color:#f5f7fb;font-size:15px;">' . esc_html( $message ) . '</p>'
+				. '</div>';
 	}
 
 	/**
@@ -432,11 +623,11 @@ class WGDP_Self_Service {
 		$ent  = WGDP_Entitlements::instance();
 		$rows = $ent->get_by_order( $order->get_id() );
 
-		$html = '<div style="text-align:center;">'
-			. '<div style="font-size:48px;margin-bottom:12px;">&#10003;</div>'
-			. '<h2 style="color:#00a32a;margin:0 0 12px;">All Set</h2>'
-			. '<p style="color:#555;font-size:15px;">All digital access slots are already assigned.</p>'
-			. '</div>';
+			$html = '<div style="text-align:center;">'
+				. '<div style="font-size:48px;margin-bottom:12px;">&#10003;</div>'
+				. '<h2 style="color:#00a32a;margin:0 0 12px;">All Set</h2>'
+				. '<p style="color:#f5f7fb;font-size:15px;">All digital access slots are already assigned.</p>'
+				. '</div>';
 
 		// Build list of assigned emails grouped by product.
 		$assigned = array();
@@ -453,9 +644,9 @@ class WGDP_Self_Service {
 			);
 		}
 
-		if ( ! empty( $assigned ) ) {
-			$html .= '<div style="margin-top:24px;text-align:left;border-top:1px solid #eee;padding-top:20px;">'
-				. '<p style="color:#666;font-size:13px;font-weight:600;margin:0 0 12px;text-transform:uppercase;letter-spacing:0.5px;">Assigned Access</p>';
+			if ( ! empty( $assigned ) ) {
+				$html .= '<div style="margin-top:24px;text-align:left;border-top:1px solid rgba(255,255,255,0.24);padding-top:20px;">'
+					. '<p style="color:#cbd5e1;font-size:13px;font-weight:600;margin:0 0 12px;text-transform:uppercase;letter-spacing:0.5px;">Assigned Access</p>';
 			foreach ( $assigned as $a ) {
 				$status_label = '';
 				if ( 'granted' === $a['status'] ) {
@@ -463,10 +654,10 @@ class WGDP_Self_Service {
 				} elseif ( 'pending' === $a['status'] || 'pending_release' === $a['status'] ) {
 					$status_label = '<span style="color:#dba617;font-size:12px;"> &#9679; Pending</span>';
 				}
-				$html .= '<div style="padding:8px 0;border-bottom:1px solid #f4f4f4;">'
-					. '<div style="font-size:14px;font-weight:600;color:#333;">' . esc_html( $a['product'] ) . $status_label . '</div>'
-					. '<div style="font-size:14px;color:#666;font-family:monospace;">' . esc_html( self::mask_email( $a['email'] ) ) . '</div>'
-					. '</div>';
+					$html .= '<div style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.16);">'
+						. '<div style="font-size:14px;font-weight:600;color:#f5f7fb;">' . esc_html( $a['product'] ) . $status_label . '</div>'
+						. '<div style="font-size:14px;color:#cbd5e1;font-family:monospace;">' . esc_html( self::mask_email( $a['email'] ) ) . '</div>'
+						. '</div>';
 			}
 			$html .= '</div>';
 		}
@@ -518,13 +709,28 @@ class WGDP_Self_Service {
 	}
 
 	/**
+	 * Fixed-window counter for public self-service actions.
+	 */
+	private function consume_rate_limit( $key, $limit, $window ) {
+		return WGDP_DB::consume_rate_limit( $key, $limit, $window );
+	}
+
+	/**
+	 * Best-effort client IP for coarse mail-abuse throttling.
+	 */
+	private function get_request_ip() {
+		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
+		return $ip ?: 'unknown';
+	}
+
+	/**
 	 * Render the self-service form.
 	 *
 	 * @param WC_Order $order      The order.
 	 * @param array    $unassigned Unassigned item data from get_unassigned_items().
 	 * @return string HTML content.
 	 */
-	private function form_content( $order, $unassigned ) {
+	private function form_content( $order, $unassigned, $auth = array() ) {
 		$nonce = wp_create_nonce( 'wgdp_self_service' );
 
 		// Determine release mode messaging.
@@ -539,22 +745,26 @@ class WGDP_Self_Service {
 			}
 		}
 
-		$html = '<h2 style="color:#333;margin:0 0 8px;text-align:center;">Provide Your Google Email</h2>'
-			. '<p style="color:#666;text-align:center;margin-bottom:4px;">Order #' . esc_html( $order->get_order_number() ) . '</p>';
+			$html = '<h2 style="color:#fff;margin:0 0 8px;text-align:center;">Provide Your Google Email</h2>'
+				. '<p style="color:#e5e7eb;text-align:center;margin-bottom:4px;">Order #' . esc_html( $order->get_order_number() ) . '</p>';
 
-		if ( $has_min_sales ) {
-			$html .= '<p style="color:#666;text-align:center;margin-bottom:24px;font-size:14px;">Access will be granted once the product reaches its minimum sales goal.</p>';
-		} elseif ( $has_manual ) {
-			$html .= '<p style="color:#666;text-align:center;margin-bottom:24px;font-size:14px;">Access will be granted once it becomes available.</p>';
-		} else {
-			$html .= '<p style="color:#666;text-align:center;margin-bottom:24px;font-size:14px;">Enter the Google account email for each item to receive digital access.</p>';
-		}
+			if ( $has_min_sales ) {
+				$html .= '<p style="color:#e5e7eb;text-align:center;margin-bottom:24px;font-size:14px;">Access will be granted once the product reaches its minimum sales goal.</p>';
+			} elseif ( $has_manual ) {
+				$html .= '<p style="color:#e5e7eb;text-align:center;margin-bottom:24px;font-size:14px;">Access will be granted once it becomes available.</p>';
+			} else {
+				$html .= '<p style="color:#e5e7eb;text-align:center;margin-bottom:24px;font-size:14px;">Enter the Google account email for each item to receive digital access.</p>';
+			}
 
 		$html .= '<div id="wgdp-ss-message" style="display:none;border-radius:4px;padding:10px 16px;margin-bottom:16px;font-size:14px;"></div>';
 
 		$html .= '<form id="wgdp-ss-form">';
 		$html .= '<input type="hidden" name="order_id" value="' . esc_attr( $order->get_id() ) . '" />';
-		$html .= '<input type="hidden" name="order_key" value="' . esc_attr( $order->get_order_key() ) . '" />';
+		if ( isset( $auth['auth_type'] ) && 'token' === $auth['auth_type'] && ! empty( $auth['token'] ) ) {
+			$html .= '<input type="hidden" name="self_service_token" value="' . esc_attr( $auth['token'] ) . '" />';
+		} else {
+			$html .= '<input type="hidden" name="order_key" value="' . esc_attr( $order->get_order_key() ) . '" />';
+		}
 		$html .= '<input type="hidden" name="nonce" value="' . esc_attr( $nonce ) . '" />';
 
 		$field_index = 0;
@@ -569,17 +779,17 @@ class WGDP_Self_Service {
 				$pending_email = isset( $pending[ $i ] ) ? $pending[ $i ] : '';
 
 				$html .= '<div style="margin-bottom:16px;">';
-				$html .= '<label style="display:block;font-weight:600;margin-bottom:4px;font-size:14px;color:#333;">' . $label . '</label>';
+					$html .= '<label style="display:block;font-weight:600;margin-bottom:4px;font-size:14px;color:#fff;">' . $label . '</label>';
 
 				if ( $pending_email ) {
 					// Show pending email with unverified status and option to change.
-					$html .= '<div class="wgdp-ss-pending-wrap" style="border:1px solid #dba617;border-radius:4px;padding:10px 12px;background:#fef9e7;">';
+						$html .= '<div class="wgdp-ss-pending-wrap" style="border:1px solid #dba617;border-radius:4px;padding:10px 12px;background:rgba(219,166,23,0.14);">';
 					$html .= '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">';
 					$html .= '<div>';
-					$html .= '<span style="font-size:15px;color:#333;">' . esc_html( $pending_email ) . '</span> ';
+						$html .= '<span style="font-size:15px;color:#f5f7fb;">' . esc_html( $pending_email ) . '</span> ';
 					$html .= '<span style="display:inline-block;background:#dba617;color:#fff;font-size:11px;font-weight:600;padding:2px 8px;border-radius:3px;vertical-align:middle;">Unverified</span>';
 					$html .= '</div>';
-					$html .= '<a href="#" class="wgdp-ss-change-email" style="font-size:13px;color:#2271b1;text-decoration:none;font-weight:600;white-space:nowrap;">Use a different email</a>';
+						$html .= '<a href="#" class="wgdp-ss-change-email" style="font-size:13px;color:#93c5fd;text-decoration:none;font-weight:600;white-space:nowrap;">Use a different email</a>';
 					$html .= '</div>';
 					$html .= '</div>';
 					// Hidden email input pre-filled; revealed when "Use a different email" is clicked.
@@ -659,11 +869,18 @@ class WGDP_Self_Service {
 		btn.textContent = "Submitting...";
 		msg.style.display = "none";
 
-		var fd = new FormData();
-		fd.append("action", "wgdp_self_service_email");
-		fd.append("order_id", form.querySelector("input[name=order_id]").value);
-		fd.append("order_key", form.querySelector("input[name=order_key]").value);
-		fd.append("nonce", form.querySelector("input[name=nonce]").value);
+			var fd = new FormData();
+			fd.append("action", "wgdp_self_service_email");
+			fd.append("order_id", form.querySelector("input[name=order_id]").value);
+			var orderKeyField = form.querySelector("input[name=order_key]");
+			var tokenField = form.querySelector("input[name=self_service_token]");
+			if (orderKeyField) {
+				fd.append("order_key", orderKeyField.value);
+			}
+			if (tokenField) {
+				fd.append("self_service_token", tokenField.value);
+			}
+			fd.append("nonce", form.querySelector("input[name=nonce]").value);
 		for (var j = 0; j < items.length; j++) {
 			fd.append("items[" + j + "][order_item_id]", items[j].order_item_id);
 			fd.append("items[" + j + "][email]", items[j].email);
