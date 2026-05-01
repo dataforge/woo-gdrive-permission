@@ -41,6 +41,152 @@
     color: #a00;
 }
 
+.wgdp-drive-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* Keep Google Picker above the WooCommerce product editor overlays. */
+.picker-dialog-bg {
+    z-index: 100000 !important;
+}
+
+.picker-dialog {
+    z-index: 100001 !important;
+}
+
+.wgdp-drive-browser {
+    display: none;
+}
+
+.wgdp-drive-browser.is-open {
+    display: block;
+}
+
+.wgdp-drive-browser__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100000;
+    background: rgba(0, 0, 0, 0.35);
+}
+
+.wgdp-drive-browser__dialog {
+    position: fixed;
+    top: 8vh;
+    left: 50%;
+    z-index: 100001;
+    width: min(720px, calc(100vw - 32px));
+    max-height: 84vh;
+    transform: translateX(-50%);
+    overflow: auto;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+}
+
+.wgdp-drive-browser__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid #dcdcde;
+}
+
+.wgdp-drive-browser__header h2 {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.3;
+}
+
+.wgdp-drive-browser__close {
+    font-size: 28px;
+    line-height: 1;
+    text-decoration: none;
+}
+
+.wgdp-drive-browser__search,
+.wgdp-drive-browser__paste {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px 0;
+}
+
+.wgdp-drive-browser__search input,
+.wgdp-drive-browser__paste input {
+    flex: 1;
+    max-width: none;
+}
+
+.wgdp-drive-browser__status {
+    min-height: 20px;
+    padding: 10px 16px 0;
+    color: #50575e;
+}
+
+.wgdp-drive-browser__path {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 16px 0;
+    color: #50575e;
+}
+
+.wgdp-drive-browser__path .button-link {
+    text-decoration: none;
+}
+
+.wgdp-drive-browser__path-sep {
+    color: #8c8f94;
+}
+
+.wgdp-drive-browser__status.is-error {
+    color: #b32d2e;
+}
+
+.wgdp-drive-browser__list {
+    padding: 12px 16px 4px;
+}
+
+.wgdp-drive-browser__file {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 0;
+    border-top: 1px solid #f0f0f1;
+}
+
+.wgdp-drive-browser__file:first-child {
+    border-top: 0;
+}
+
+.wgdp-drive-browser__file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wgdp-drive-browser__file--folder .wgdp-drive-browser__file-name {
+    font-weight: 600;
+}
+
+.wgdp-drive-browser__file--folder .wgdp-drive-browser__file-name::before {
+    content: "Folder: ";
+    font-weight: 400;
+    color: #646970;
+}
+
+.wgdp-drive-browser__empty {
+    padding: 20px 0;
+    color: #646970;
+}
+
+.wgdp-drive-browser__footer {
+    padding: 0 16px 16px;
+}
+
 /* Retired resource rows */
 .wgdp-resource-row--retired {
     border-style: dashed;

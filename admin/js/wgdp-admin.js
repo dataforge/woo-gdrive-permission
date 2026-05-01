@@ -8,10 +8,25 @@
     var gapiLoaded = false;
     var gapiLoading = false;
     var gapiCallbacks = [];
+    var gisLoaded = false;
+    var gisLoading = false;
+    var gisCallbacks = [];
+    var activeDriveButton = null;
+    var driveBrowserState = {
+        accountId: '',
+        search: '',
+        nextPageToken: '',
+        folderId: 'root',
+        folderStack: []
+    };
 
     function getAccountId($button) {
         var $container = $button.closest('.options_group, .wgdp-variation-fields');
         return $container.find('.wgdp-account-select').val() || '';
+    }
+
+    function getPickerOrigin() {
+        return window.location.protocol + '//' + window.location.host;
     }
 
     function ensureGapi(callback) {
@@ -36,10 +51,108 @@
                 }
             });
         };
+        script.onerror = function () {
+            gapiLoading = false;
+            gapiCallbacks = [];
+            alert('Google Picker could not load. Check browser blockers or network access to apis.google.com.');
+        };
         document.head.appendChild(script);
     }
 
+    function ensureGis(callback) {
+        if (gisLoaded) {
+            callback();
+            return;
+        }
+        gisCallbacks.push(callback);
+        if (gisLoading) {
+            return;
+        }
+        gisLoading = true;
+        var script = document.createElement('script');
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.onload = function () {
+            gisLoaded = true;
+            gisLoading = false;
+            var cbs = gisCallbacks.splice(0);
+            for (var i = 0; i < cbs.length; i++) {
+                cbs[i]();
+            }
+        };
+        script.onerror = function () {
+            gisLoading = false;
+            gisCallbacks = [];
+            alert('Google Identity Services could not load. Check browser blockers or network access to accounts.google.com.');
+        };
+        document.head.appendChild(script);
+    }
+
+    function getServerPickerToken(accountId, callback, errorCallback) {
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_get_picker_token',
+            nonce: wgdp.nonce,
+            account_id: accountId
+        }, function (response) {
+            if (!response.success) {
+                errorCallback('Error getting token: ' + response.data);
+                return;
+            }
+            callback(response.data.token);
+        }).fail(function () {
+            errorCallback('Request failed.');
+        });
+    }
+
+    function getBrowserPickerToken(callback, errorCallback) {
+        if (!wgdp.oauth_client_id) {
+            errorCallback('OAuth Client ID is not configured. Please add it in the plugin settings.');
+            return;
+        }
+
+        ensureGis(function () {
+            var tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: wgdp.oauth_client_id,
+                scope: 'https://www.googleapis.com/auth/drive.file',
+                callback: function (response) {
+                    if (response.error) {
+                        errorCallback(response.error_description || response.error);
+                        return;
+                    }
+                    callback(response.access_token);
+                }
+            });
+
+            tokenClient.requestAccessToken({prompt: 'consent'});
+        });
+    }
+
+    function createGooglePicker(token, $button) {
+        ensureGapi(function () {
+            var docsView = new google.picker.DocsView()
+                .setIncludeFolders(true)
+                .setSelectFolderEnabled(false)
+                .setParent('root')
+                .setMode(google.picker.DocsViewMode.LIST);
+
+            var builder = new google.picker.PickerBuilder()
+                .addView(docsView)
+                .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+                .setTitle('Select Drive files')
+                .setSize(1051, 650)
+                .setOAuthToken(token)
+                .setDeveloperKey(wgdp.picker_api_key)
+                .setAppId(wgdp.cloud_project_number)
+                .setOrigin(getPickerOrigin())
+                .setCallback(function (data) {
+                    pickerCallback(data, $button);
+                });
+
+            builder.build().setVisible(true);
+        });
+    }
+
     function openPicker($button) {
+        var originalText = $button.text();
         var accountId = getAccountId($button);
         if (!accountId) {
             alert('Please select a Google Account first.');
@@ -51,49 +164,24 @@
             return;
         }
 
+        if (!wgdp.cloud_project_number) {
+            alert('Cloud Project Number is not configured. Please add it in the plugin settings.');
+            return;
+        }
+
         $button.prop('disabled', true).text('Loading...');
 
-        // Get the access token for this account.
-        $.post(wgdp.ajax_url, {
-            action: 'wgdp_get_picker_token',
-            nonce: wgdp.nonce,
-            account_id: accountId
-        }, function (response) {
-            if (!response.success) {
-                $button.prop('disabled', false).text('Browse GDrive');
-                alert('Error getting token: ' + response.data);
-                return;
-            }
-
-            var token = response.data.token;
-
-            ensureGapi(function () {
-                $button.prop('disabled', false).text('Browse GDrive');
-
-                var docsView = new google.picker.DocsView()
-                    .setIncludeFolders(true)
-                    .setSelectFolderEnabled(false)
-                    .setParent('root')
-                    .setMode(google.picker.DocsViewMode.LIST);
-
-                var builder = new google.picker.PickerBuilder()
-                    .addView(docsView)
-                    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
-                    .setOAuthToken(token)
-                    .setDeveloperKey(wgdp.picker_api_key)
-                    .setCallback(function (data) {
-                        pickerCallback(data, $button);
-                    });
-
-                if (wgdp.cloud_project_number) {
-                    builder.setAppId(wgdp.cloud_project_number);
-                }
-
-                builder.build().setVisible(true);
+        getServerPickerToken(accountId, function (token) {
+            $button.prop('disabled', false).text(originalText);
+            createGooglePicker(token, $button);
+        }, function (message) {
+            getBrowserPickerToken(function (token) {
+                $button.prop('disabled', false).text(originalText);
+                createGooglePicker(token, $button);
+            }, function (fallbackMessage) {
+                $button.prop('disabled', false).text(originalText);
+                alert(message + '\n\nBrowser sign-in fallback also failed: ' + fallbackMessage);
             });
-        }).fail(function () {
-            $button.prop('disabled', false).text('Browse GDrive');
-            alert('Request failed.');
         });
     }
 
@@ -200,9 +288,293 @@
         });
     }
 
+    function getDriveBrowser() {
+        var $modal = $('#wgdp-drive-browser');
+        if ($modal.length) {
+            return $modal;
+        }
+
+        $modal = $(
+            '<div id="wgdp-drive-browser" class="wgdp-drive-browser" aria-hidden="true">' +
+                '<div class="wgdp-drive-browser__backdrop"></div>' +
+                '<div class="wgdp-drive-browser__dialog" role="dialog" aria-modal="true" aria-labelledby="wgdp-drive-browser-title">' +
+                    '<div class="wgdp-drive-browser__header">' +
+                        '<h2 id="wgdp-drive-browser-title">Browse GDrive</h2>' +
+                        '<button type="button" class="button-link wgdp-drive-browser__close" aria-label="Close">&times;</button>' +
+                    '</div>' +
+                    '<form class="wgdp-drive-browser__search">' +
+                        '<input type="search" class="regular-text wgdp-drive-browser__search-input" placeholder="Search this folder" />' +
+                        '<button type="submit" class="button">Search</button>' +
+                    '</form>' +
+                    '<form class="wgdp-drive-browser__paste">' +
+                        '<input type="text" class="regular-text wgdp-drive-browser__url-input" placeholder="Paste a Google Drive file URL or ID" />' +
+                        '<button type="submit" class="button">Add URL</button>' +
+                    '</form>' +
+                    '<div class="wgdp-drive-browser__path"></div>' +
+                    '<div class="wgdp-drive-browser__status"></div>' +
+                    '<div class="wgdp-drive-browser__list"></div>' +
+                    '<div class="wgdp-drive-browser__footer">' +
+                        '<button type="button" class="button wgdp-drive-browser__load-more" style="display:none;">Load More</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
+        $('body').append($modal);
+        return $modal;
+    }
+
+    function closeDriveBrowser() {
+        var $modal = getDriveBrowser();
+        $modal.removeClass('is-open').attr('aria-hidden', 'true');
+        activeDriveButton = null;
+    }
+
+    function getActiveResourceList() {
+        if (!activeDriveButton || !activeDriveButton.length) {
+            return $();
+        }
+        return activeDriveButton.closest('.options_group, .wgdp-variation-fields').find('.wgdp-resources-list');
+    }
+
+    function setDriveBrowserStatus(message, isError) {
+        var $status = getDriveBrowser().find('.wgdp-drive-browser__status');
+        $status.toggleClass('is-error', !!isError).text(message || '');
+    }
+
+    function isDriveFolder(file) {
+        return file.mimeType === 'application/vnd.google-apps.folder';
+    }
+
+    function renderDriveBrowserPath() {
+        var $path = getDriveBrowser().find('.wgdp-drive-browser__path');
+        var html = '<button type="button" class="button-link wgdp-drive-browser__path-root">My Drive</button>';
+
+        for (var i = 0; i < driveBrowserState.folderStack.length; i++) {
+            html += '<span class="wgdp-drive-browser__path-sep">/</span>' +
+                '<button type="button" class="button-link wgdp-drive-browser__path-folder" data-index="' + i + '"></button>';
+        }
+
+        $path.html(html);
+        $path.find('.wgdp-drive-browser__path-folder').each(function () {
+            var index = parseInt($(this).data('index'), 10);
+            $(this).text(driveBrowserState.folderStack[index].name);
+        });
+    }
+
+    function renderDriveBrowserFiles(files, append) {
+        var $modal = getDriveBrowser();
+        var $list = $modal.find('.wgdp-drive-browser__list');
+
+        if (!append) {
+            $list.empty();
+        }
+
+        if (!files.length && !append) {
+            $list.html('<div class="wgdp-drive-browser__empty">No accessible files found in this folder. Paste a Drive file URL above to add it directly.</div>');
+            return;
+        }
+
+        for (var i = 0; i < files.length; i++) {
+            var file = files[i];
+            var isFolder = isDriveFolder(file);
+            var $row = $(
+                '<div class="wgdp-drive-browser__file' + (isFolder ? ' wgdp-drive-browser__file--folder' : '') + '">' +
+                    '<div class="wgdp-drive-browser__file-name"></div>' +
+                    '<button type="button" class="button button-small wgdp-drive-browser__open-folder">Open</button>' +
+                    '<button type="button" class="button button-small wgdp-drive-browser__add-file">Add</button>' +
+                '</div>'
+            );
+            $row.find('.wgdp-drive-browser__file-name').text(file.name || file.id);
+            $row.find('.wgdp-drive-browser__open-folder').data('folder', {
+                id: file.id,
+                name: file.name || file.id
+            }).toggle(isFolder);
+            $row.find('.wgdp-drive-browser__add-file').data('file', {
+                id: file.id,
+                name: file.name || file.id,
+                type: 'file'
+            }).toggle(!isFolder);
+            $list.append($row);
+        }
+    }
+
+    function loadDriveBrowserFiles(append) {
+        var $modal = getDriveBrowser();
+        setDriveBrowserStatus('Loading files...', false);
+        $modal.find('.wgdp-drive-browser__load-more').hide();
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_browse_drive_files',
+            nonce: wgdp.nonce,
+            account_id: driveBrowserState.accountId,
+            search: driveBrowserState.search,
+            page_token: append ? driveBrowserState.nextPageToken : '',
+            folder_id: driveBrowserState.folderId
+        }, function (response) {
+            if (!response.success) {
+                setDriveBrowserStatus('Error: ' + response.data, true);
+                return;
+            }
+
+            var files = response.data.files || [];
+            driveBrowserState.nextPageToken = response.data.nextPageToken || '';
+            renderDriveBrowserFiles(files, append);
+            setDriveBrowserStatus('', false);
+
+            if (driveBrowserState.nextPageToken) {
+                $modal.find('.wgdp-drive-browser__load-more').show();
+            }
+        }).fail(function () {
+            setDriveBrowserStatus('Request failed.', true);
+        });
+    }
+
+    function openDriveBrowser($button) {
+        var accountId = getAccountId($button);
+        if (!accountId) {
+            alert('Please select a Google Account first.');
+            return;
+        }
+
+        $('.picker-dialog, .picker-dialog-bg').hide();
+
+        activeDriveButton = $button;
+        driveBrowserState.accountId = accountId;
+        driveBrowserState.search = '';
+        driveBrowserState.nextPageToken = '';
+        driveBrowserState.folderId = 'root';
+        driveBrowserState.folderStack = [];
+
+        var $modal = getDriveBrowser();
+        $modal.find('.wgdp-drive-browser__search-input, .wgdp-drive-browser__url-input').val('');
+        $modal.find('.wgdp-drive-browser__list').empty();
+        $modal.addClass('is-open').attr('aria-hidden', 'false');
+        renderDriveBrowserPath();
+        loadDriveBrowserFiles(false);
+    }
+
     // Browse button click.
-    $(document).on('click', '.wgdp-browse-drive', function () {
+    $(document).on('click', '.wgdp-browse-drive', function (e) {
+        e.preventDefault();
+        openDriveBrowser($(this));
+    });
+
+    $(document).on('click', '.wgdp-google-picker-drive', function (e) {
+        e.preventDefault();
         openPicker($(this));
+    });
+
+    $(document).on('click', '.wgdp-drive-browser__close, .wgdp-drive-browser__backdrop', function () {
+        closeDriveBrowser();
+    });
+
+    $(document).on('submit', '.wgdp-drive-browser__search', function (e) {
+        e.preventDefault();
+        driveBrowserState.search = $(this).find('.wgdp-drive-browser__search-input').val().trim();
+        driveBrowserState.nextPageToken = '';
+        loadDriveBrowserFiles(false);
+    });
+
+    $(document).on('click', '.wgdp-drive-browser__load-more', function () {
+        loadDriveBrowserFiles(true);
+    });
+
+    $(document).on('click', '.wgdp-drive-browser__open-folder', function () {
+        var folder = $(this).data('folder');
+        if (!folder || !folder.id) {
+            return;
+        }
+
+        driveBrowserState.folderStack.push(folder);
+        driveBrowserState.folderId = folder.id;
+        driveBrowserState.search = '';
+        driveBrowserState.nextPageToken = '';
+        getDriveBrowser().find('.wgdp-drive-browser__search-input').val('');
+        renderDriveBrowserPath();
+        loadDriveBrowserFiles(false);
+    });
+
+    $(document).on('click', '.wgdp-drive-browser__path-root', function () {
+        driveBrowserState.folderId = 'root';
+        driveBrowserState.folderStack = [];
+        driveBrowserState.search = '';
+        driveBrowserState.nextPageToken = '';
+        getDriveBrowser().find('.wgdp-drive-browser__search-input').val('');
+        renderDriveBrowserPath();
+        loadDriveBrowserFiles(false);
+    });
+
+    $(document).on('click', '.wgdp-drive-browser__path-folder', function () {
+        var index = parseInt($(this).data('index'), 10);
+        if (isNaN(index) || !driveBrowserState.folderStack[index]) {
+            return;
+        }
+
+        driveBrowserState.folderStack = driveBrowserState.folderStack.slice(0, index + 1);
+        driveBrowserState.folderId = driveBrowserState.folderStack[index].id;
+        driveBrowserState.search = '';
+        driveBrowserState.nextPageToken = '';
+        getDriveBrowser().find('.wgdp-drive-browser__search-input').val('');
+        renderDriveBrowserPath();
+        loadDriveBrowserFiles(false);
+    });
+
+    $(document).on('click', '.wgdp-drive-browser__add-file', function () {
+        var file = $(this).data('file');
+        var $list = getActiveResourceList();
+        if (!$list.length || !file || !file.id) {
+            return;
+        }
+        addResourceRow(file, $list);
+        notifyVariationChanged($list);
+        $(this).prop('disabled', true).text('Added');
+    });
+
+    $(document).on('submit', '.wgdp-drive-browser__paste', function (e) {
+        e.preventDefault();
+
+        var $form = $(this);
+        var $input = $form.find('.wgdp-drive-browser__url-input');
+        var val = $input.val().trim();
+        var $list = getActiveResourceList();
+
+        if (!val || !$list.length) {
+            return;
+        }
+
+        setDriveBrowserStatus('Checking file...', false);
+        $form.find('button').prop('disabled', true);
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_get_file_info',
+            nonce: wgdp.nonce,
+            file_id: val,
+            account_id: driveBrowserState.accountId
+        }, function (response) {
+            $form.find('button').prop('disabled', false);
+            if (!response.success) {
+                setDriveBrowserStatus('Error: ' + response.data, true);
+                return;
+            }
+
+            var file = response.data;
+            if (file.resourceType === 'folder') {
+                setDriveBrowserStatus('Folders cannot be linked. Please use individual file URLs.', true);
+                return;
+            }
+
+            addResourceRow({
+                id: file.id,
+                name: file.name,
+                type: 'file'
+            }, $list);
+            notifyVariationChanged($list);
+            $input.val('');
+            setDriveBrowserStatus('File added.', false);
+        }).fail(function () {
+            $form.find('button').prop('disabled', false);
+            setDriveBrowserStatus('Request failed.', true);
+        });
     });
 
     // Remove resource row: active → retire (keep in DOM), already retired → remove from DOM.

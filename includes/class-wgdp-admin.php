@@ -183,6 +183,7 @@ class WGDP_Admin {
 		$has_accounts = $auth->has_accounts();
 		$client_id  = get_option( 'wgdp_oauth_client_id', '' );
 		$has_creds  = ! empty( $client_id );
+		$admin_origin = untrailingslashit( home_url() );
 
 		// Handle OAuth callback.
 		if ( isset( $_GET['code'] ) && ! empty( $_GET['code'] ) ) {
@@ -288,7 +289,9 @@ class WGDP_Admin {
 					<li>Click <strong>"Create client"</strong>.</li>
 					<li>Application type: <strong>Web application</strong>.</li>
 					<li>Name: anything (e.g. <em>Woo GDrive Permission</em>).</li>
-					<li>Leave <strong>Authorized JavaScript origins</strong> blank.</li>
+					<li>Under <strong>Authorized JavaScript origins</strong>, click <strong>"+ Add URI"</strong> and enter exactly:<br>
+						<code style="display:inline-block;margin:6px 0;padding:4px 8px;background:#f0f6fc;border:1px solid #c3c4c7;border-radius:3px;user-select:all;"><?php echo esc_html( $admin_origin ); ?></code>
+					</li>
 					<li>Under <strong>Authorized redirect URIs</strong>, click <strong>"+ Add URI"</strong> and enter exactly:<br>
 						<code style="display:inline-block;margin:6px 0;padding:4px 8px;background:#f0f6fc;border:1px solid #c3c4c7;border-radius:3px;user-select:all;"><?php echo esc_html( $auth->get_redirect_uri() ); ?></code>
 					</li>
@@ -308,7 +311,7 @@ class WGDP_Admin {
 					<li>A panel will open where you can configure the key before creating it:
 						<ul style="margin-top:6px;">
 							<li>Under <strong>Application restrictions</strong>, select <strong>"Websites"</strong></li>
-							<li>Click <strong>"+ Add"</strong> and enter your admin domain: <code style="display:inline-block;padding:2px 6px;background:#f0f6fc;border:1px solid #c3c4c7;border-radius:3px;"><?php echo esc_html( wp_parse_url( admin_url(), PHP_URL_HOST ) ); ?>/*</code></li>
+							<li>Click <strong>"+ Add"</strong> and enter your site referrer: <code style="display:inline-block;padding:2px 6px;background:#f0f6fc;border:1px solid #c3c4c7;border-radius:3px;"><?php echo esc_html( $admin_origin ); ?>/*</code></li>
 							<li>Under <strong>API restrictions</strong>, select <strong>"Restrict key"</strong> and choose <strong>Google Picker API</strong></li>
 						</ul>
 					</li>
@@ -341,7 +344,7 @@ class WGDP_Admin {
 				</summary>
 				<ol style="margin-left:20px;">
 					<li>Edit any WooCommerce product and click the <strong>"GDrive"</strong> tab in the Product Data section.</li>
-					<li>Select which <strong>Google account</strong> owns the file, then click <strong>"Browse GDrive"</strong> to open Google Picker and choose a file or folder. You can also paste a Google Drive URL directly.</li>
+					<li>Select which <strong>Google account</strong> owns the file, then click <strong>"Google Picker"</strong> to use Google's file picker or <strong>"Browse GDrive"</strong> to use the plugin fallback browser. You can also paste a Google Drive URL directly.</li>
 					<li>For <strong>variable products</strong> (e.g. Digital vs DVD vs Blu-ray), you can set a different Drive resource on each variation.</li>
 					<li>Save the product. That's it!</li>
 				</ol>
@@ -868,6 +871,7 @@ class WGDP_Admin {
 			'ajax_url'              => admin_url( 'admin-ajax.php' ),
 			'nonce'                 => wp_create_nonce( 'wgdp_admin_nonce' ),
 			'product_search_nonce'  => wp_create_nonce( 'search-products' ),
+			'oauth_client_id'       => get_option( 'wgdp_oauth_client_id', '' ),
 			'picker_api_key'        => get_option( 'wgdp_picker_api_key', '' ),
 			'cloud_project_number'  => get_option( 'wgdp_cloud_project_number', '' ),
 		) );

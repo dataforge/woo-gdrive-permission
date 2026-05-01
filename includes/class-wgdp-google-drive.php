@@ -24,6 +24,7 @@ class WGDP_Google_Drive {
 	 * are blocked to prevent accidental or malicious file modification.
 	 */
 	private const ALLOWED_ENDPOINTS = array(
+		'#^/files\?#'                                      => array( 'GET' ),
 		'#^/files/[^/]+\?#'                                 => array( 'GET' ),
 		'#^/files/[^/]+/permissions\?#'                     => array( 'GET', 'POST' ),
 		'#^/files/[^/]+/permissions/[^/]+\?#'               => array( 'GET', 'DELETE' ),
@@ -121,6 +122,51 @@ class WGDP_Google_Drive {
 		}
 
 		return $body;
+	}
+
+	/**
+	 * List accessible Drive files for the product editor browser.
+	 */
+	public function list_files( $account_id = '', $search = '', $page_token = '', $folder_id = 'root' ) {
+		$folder_id = '' === trim( $folder_id ) ? 'root' : trim( $folder_id );
+		$escaped_folder_id = str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), $folder_id );
+		$q = "trashed = false and '" . $escaped_folder_id . "' in parents";
+
+		if ( '' !== trim( $search ) ) {
+			$escaped = str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), trim( $search ) );
+			$q      .= " and name contains '" . $escaped . "'";
+		}
+
+		$params = array(
+			'fields'                    => 'nextPageToken,files(id,name,mimeType,webViewLink)',
+			'pageSize'                  => 25,
+			'orderBy'                   => 'folder,name_natural',
+			'q'                         => $q,
+			'supportsAllDrives'         => 'true',
+			'includeItemsFromAllDrives' => 'true',
+		);
+		if ( '' !== $page_token ) {
+			$params['pageToken'] = $page_token;
+		}
+
+		$response = $this->request( '/files?' . http_build_query( $params ), array(), $account_id );
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+
+		if ( $code !== 200 ) {
+			$msg = $body['error']['message'] ?? 'HTTP ' . $code;
+			return new WP_Error( 'wgdp_list_error', $msg, array( 'status' => $code ) );
+		}
+
+		return array(
+			'files'          => $body['files'] ?? array(),
+			'nextPageToken'  => $body['nextPageToken'] ?? '',
+		);
 	}
 
 	/**

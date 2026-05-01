@@ -24,6 +24,7 @@ class WGDP_Product_Meta {
 
 		// AJAX endpoints.
 		add_action( 'wp_ajax_wgdp_get_file_info', array( $this, 'ajax_get_file_info' ) );
+		add_action( 'wp_ajax_wgdp_browse_drive_files', array( $this, 'ajax_browse_drive_files' ) );
 
 		// Enqueue assets.
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
@@ -282,7 +283,10 @@ class WGDP_Product_Meta {
 			</p>
 			<p class="form-field">
 				<label>&nbsp;</label>
-				<button type="button" class="button wgdp-browse-drive"><?php esc_html_e( 'Browse GDrive', 'woo-gdrive-permission' ); ?></button>
+				<span class="wgdp-drive-actions">
+					<button type="button" class="button wgdp-browse-drive"><?php esc_html_e( 'Browse GDrive', 'woo-gdrive-permission' ); ?></button>
+					<button type="button" class="button wgdp-google-picker-drive"><?php esc_html_e( 'Google Picker', 'woo-gdrive-permission' ); ?></button>
+				</span>
 			</p>
 		</div>
 		<?php
@@ -988,6 +992,33 @@ class WGDP_Product_Meta {
 	}
 
 	/**
+	 * AJAX: List accessible Drive files for the product editor browser.
+	 */
+	public function ajax_browse_drive_files() {
+		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
+
+		if ( ! current_user_can( 'edit_products' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$account_id = isset( $_POST['account_id'] ) ? sanitize_text_field( wp_unslash( $_POST['account_id'] ) ) : '';
+		$search     = isset( $_POST['search'] ) ? sanitize_text_field( wp_unslash( $_POST['search'] ) ) : '';
+		$page_token = isset( $_POST['page_token'] ) ? sanitize_text_field( wp_unslash( $_POST['page_token'] ) ) : '';
+		$folder_id  = isset( $_POST['folder_id'] ) ? sanitize_text_field( wp_unslash( $_POST['folder_id'] ) ) : 'root';
+
+		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
+			wp_send_json_error( 'Please select a connected Google account.' );
+		}
+
+		$result = WGDP_Google_Drive::instance()->list_files( $account_id, $search, $page_token, $folder_id );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( $result->get_error_message() );
+		}
+
+		wp_send_json_success( $result );
+	}
+
+	/**
 	 * Enqueue assets on product edit screens.
 	 */
 	public function enqueue_assets( $hook ) {
@@ -1016,6 +1047,7 @@ class WGDP_Product_Meta {
 		wp_localize_script( 'wgdp-admin', 'wgdp', array(
 			'ajax_url'             => admin_url( 'admin-ajax.php' ),
 			'nonce'                => wp_create_nonce( 'wgdp_admin_nonce' ),
+			'oauth_client_id'      => get_option( 'wgdp_oauth_client_id', '' ),
 			'picker_api_key'       => get_option( 'wgdp_picker_api_key', '' ),
 			'cloud_project_number' => get_option( 'wgdp_cloud_project_number', '' ),
 		) );
