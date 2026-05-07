@@ -324,7 +324,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		$status = $item['grant_status'];
 		$class  = 'wgdp-gstatus--' . esc_attr( $status );
 		if ( 'pending_release' === $status ) {
-			$label = 'Pending Release';
+			$label = $this->is_pending_release_item_released( $item ) ? 'Queued for Grant' : 'Pending Release';
 		} elseif ( 'revocation_error' === $status ) {
 			$label = 'Revocation Error';
 		} else {
@@ -339,6 +339,16 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		}
 
 		return $html;
+	}
+
+	/**
+	 * Check if a pending_release row is waiting on cron rather than release.
+	 */
+	private function is_pending_release_item_released( $item ) {
+		return WGDP_Release_Gate::is_item_released(
+			(int) ( $item['product_id'] ?? 0 ),
+			(int) ( $item['variation_id'] ?? 0 )
+		);
 	}
 
 	/**

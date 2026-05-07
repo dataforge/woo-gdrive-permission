@@ -995,7 +995,7 @@ class WGDP_Order_Handler {
 
 		$grant_label = $g_status;
 		if ( 'pending_release' === $grant_label ) {
-			$grant_label = 'Pending Release';
+			$grant_label = $this->are_pending_release_rows_released( $display_entitlements ) ? 'Queued for Grant' : 'Pending Release';
 		} elseif ( 'revocation_error' === $grant_label ) {
 			$grant_label = 'Revocation Error';
 		} else {
@@ -1051,6 +1051,29 @@ class WGDP_Order_Handler {
 
 		echo '</td>';
 		echo '</tr>';
+	}
+
+	/**
+	 * True when every pending_release row in a recipient group has an open release gate.
+	 */
+	private function are_pending_release_rows_released( $entitlements ) {
+		$found_pending_release = false;
+
+		foreach ( $entitlements as $row ) {
+			if ( 'pending_release' !== ( $row['grant_status'] ?? '' ) ) {
+				continue;
+			}
+
+			$found_pending_release = true;
+			if ( ! WGDP_Release_Gate::is_item_released(
+				(int) ( $row['product_id'] ?? 0 ),
+				(int) ( $row['variation_id'] ?? 0 )
+			) ) {
+				return false;
+			}
+		}
+
+		return $found_pending_release;
 	}
 
 	/**
@@ -1235,6 +1258,7 @@ class WGDP_Order_Handler {
 		$has_errors          = false;
 		$has_pending         = false;
 		$has_pending_release = false;
+		$has_queued_grant    = false;
 		$has_granted         = false;
 		$all_revoked         = true;
 
@@ -1246,7 +1270,11 @@ class WGDP_Order_Handler {
 			if ( in_array( $row['grant_status'], array( 'error', 'revocation_error' ), true ) ) {
 				$has_errors = true;
 			} elseif ( 'pending_release' === $row['grant_status'] ) {
-				$has_pending_release = true;
+				if ( WGDP_Release_Gate::is_item_released( (int) $row['product_id'], (int) ( $row['variation_id'] ?? 0 ) ) ) {
+					$has_queued_grant = true;
+				} else {
+					$has_pending_release = true;
+				}
 			} elseif ( 'granted' === $row['grant_status'] ) {
 				$has_granted = true;
 			} else {
@@ -1262,6 +1290,8 @@ class WGDP_Order_Handler {
 			echo '<span class="wgdp-column-icon wgdp-column-icon--pending" title="Pending verification">&#9679;</span>';
 		} elseif ( $has_pending_release ) {
 			echo '<span class="wgdp-column-icon wgdp-column-icon--pending" title="Pending release">&#9679;</span>';
+		} elseif ( $has_queued_grant ) {
+			echo '<span class="wgdp-column-icon wgdp-column-icon--pending" title="Queued for Grant">&#9679;</span>';
 		} else {
 			echo '<span class="wgdp-column-icon wgdp-column-icon--ok" title="All granted">&#10003;</span>';
 		}
