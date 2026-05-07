@@ -605,6 +605,26 @@ class WGDP_Admin {
 			</table>
 			<p class="description" style="margin-top:10px;">All <code>wgdp_sold_count</code> parameters can be combined: <code>[wgdp_sold_count id="123" additional="10" subtract="2"]</code></p>
 		</div>
+
+		<div class="card" style="margin-top:2em;">
+			<h2>Plugin Updates</h2>
+			<p>
+				Current version: <strong>v<?php echo esc_html( WGDP_VERSION ); ?></strong>
+				<?php if ( isset( $_GET['update_check'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+					<?php if ( WGDP_Updater::is_update_available() ) : ?>
+						&mdash; <span style="color:#b32d2e;">Update available!</span>
+						<a href="<?php echo esc_url( admin_url( 'update-core.php' ) ); ?>">Go to Updates</a>
+					<?php else : ?>
+						&mdash; <span style="color:#00a32a;">Up to date</span>
+					<?php endif; ?>
+				<?php endif; ?>
+			</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline;">
+				<input type="hidden" name="action" value="wgdp_check_updates" />
+				<?php wp_nonce_field( 'wgdp_check_updates' ); ?>
+				<button type="submit" class="button">Check for Updates</button>
+			</form>
+		</div>
 		<?php
 	}
 

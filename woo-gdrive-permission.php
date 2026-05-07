@@ -1,6 +1,7 @@
 <?php
 /**
  * Plugin Name: Woo GDrive Permission
+ * Plugin URI:  https://github.com/dataforge/woo-gdrive-permission
  * Description: Per-recipient entitlement system with OTP verification for granting GDrive viewer access on WooCommerce purchases.
  * Version: 3.4.8
  * Author: DataForge
@@ -9,14 +10,19 @@
  * WC requires at least: 7.0
  * WC tested up to: 9.6
  * License: GPL-2.0-or-later
+ * Update URI:  https://github.com/dataforge/woo-gdrive-permission
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WGDP_VERSION', '3.4.8' );
-define( 'WGDP_PLUGIN_FILE', __FILE__ );
-define( 'WGDP_PLUGIN_PATH', plugin_dir_path( __FILE__ ) );
-define( 'WGDP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+define( 'WGDP_VERSION',          '3.4.8' );
+define( 'WGDP_PLUGIN_FILE',      __FILE__ );
+define( 'WGDP_PLUGIN_BASENAME',  plugin_basename( __FILE__ ) );
+define( 'WGDP_PLUGIN_PATH',      plugin_dir_path( __FILE__ ) );
+define( 'WGDP_PLUGIN_URL',       plugin_dir_url( __FILE__ ) );
+
+require_once WGDP_PLUGIN_PATH . 'includes/class-wgdp-updater.php';
+WGDP_Updater::init();
 
 /**
  * Declare HPOS compatibility.
