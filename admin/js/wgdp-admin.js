@@ -1,6 +1,75 @@
 (function ($) {
     'use strict';
 
+    function refreshOrderRecipientsBox(orderId) {
+        var $box = $('.wgdp-order-recipients-content[data-order-id="' + orderId + '"]');
+        if (!$box.length || !orderId) {
+            return;
+        }
+
+        $box.addClass('is-loading');
+
+        $.post(wgdp.ajax_url, {
+            action: 'wgdp_refresh_order_recipients',
+            nonce: wgdp.nonce,
+            order_id: orderId
+        }, function (response) {
+            if (response.success && response.data && typeof response.data.html !== 'undefined') {
+                $box.html(response.data.html);
+            }
+        }).always(function () {
+            $box.removeClass('is-loading');
+        });
+    }
+
+    function currentOrderRecipientsOrderId() {
+        var $box = $('.wgdp-order-recipients-content').first();
+        return $box.length ? $box.data('order-id') : 0;
+    }
+
+    function ajaxRequestHasAction(data, action) {
+        if (!data) {
+            return false;
+        }
+        if (typeof data === 'string') {
+            return data.indexOf('action=' + action) !== -1;
+        }
+        return data.action === action;
+    }
+
+    function ajaxRequestIsWgdp(data) {
+        if (!data) {
+            return false;
+        }
+        if (typeof data === 'string') {
+            return data.indexOf('action=wgdp_') !== -1;
+        }
+        return typeof data.action === 'string' && data.action.indexOf('wgdp_') === 0;
+    }
+
+    $(document).on('click', '.wgdp-refresh-order-recipients-btn', function () {
+        refreshOrderRecipientsBox($(this).data('order-id') || currentOrderRecipientsOrderId());
+    });
+
+    $(document).ajaxComplete(function (event, xhr, settings) {
+        var data = settings && settings.data ? settings.data : '';
+        if (!data || ajaxRequestIsWgdp(data)) {
+            return;
+        }
+
+        if (
+            ajaxRequestHasAction(data, 'woocommerce_add_order_item') ||
+            ajaxRequestHasAction(data, 'woocommerce_add_order_items') ||
+            ajaxRequestHasAction(data, 'woocommerce_save_order_items') ||
+            ajaxRequestHasAction(data, 'woocommerce_remove_order_item') ||
+            ajaxRequestHasAction(data, 'woocommerce_remove_order_items')
+        ) {
+            window.setTimeout(function () {
+                refreshOrderRecipientsBox(currentOrderRecipientsOrderId());
+            }, 300);
+        }
+    });
+
     /* =========================================================
      * Product page: Google Picker integration (multi-file)
      * ========================================================= */

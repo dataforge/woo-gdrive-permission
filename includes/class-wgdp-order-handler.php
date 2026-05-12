@@ -43,6 +43,7 @@ class WGDP_Order_Handler {
 		add_action( 'wp_ajax_wgdp_resend_otp', array( $this, 'ajax_resend_otp' ) );
 		add_action( 'wp_ajax_wgdp_revoke_entitlement', array( $this, 'ajax_revoke_entitlement' ) );
 		add_action( 'wp_ajax_wgdp_add_entitlement', array( $this, 'ajax_add_entitlement' ) );
+		add_action( 'wp_ajax_wgdp_refresh_order_recipients', array( $this, 'ajax_refresh_order_recipients' ) );
 
 		// Tell WooCommerce that digital-only items don't need processing.
 		add_filter( 'woocommerce_order_item_needs_processing', array( $this, 'item_needs_processing' ), 10, 3 );
@@ -886,7 +887,9 @@ class WGDP_Order_Handler {
 		if ( ! $order ) {
 			return;
 		}
+		echo '<div class="wgdp-order-recipients-content" data-order-id="' . esc_attr( $order->get_id() ) . '">';
 		$this->render_meta_box_content( $order );
+		echo '</div>';
 	}
 
 	/**
@@ -946,8 +949,39 @@ class WGDP_Order_Handler {
 		}
 
 		if ( ! $has_qualifying_items ) {
-			echo '<p>No items in this order qualify for digital access.</p>';
+			echo '<p>No saved items in this order qualify for digital access.</p>';
+			echo '<p class="description">If you just added a SKU to a manual order, save/update the order items or refresh this box after WooCommerce finishes adding the item.</p>';
+			echo '<p><button type="button" class="button button-small wgdp-refresh-order-recipients-btn" data-order-id="' . esc_attr( $order->get_id() ) . '">Refresh Digital Recipients</button></p>';
 		}
+	}
+
+	/**
+	 * AJAX: Re-render the order recipients meta box after WooCommerce order-item updates.
+	 */
+	public function ajax_refresh_order_recipients() {
+		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
+
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$order_id = absint( $_POST['order_id'] ?? 0 );
+		if ( ! $order_id ) {
+			wp_send_json_error( 'Missing order ID.' );
+		}
+
+		$order = wc_get_order( $order_id );
+		if ( ! $order ) {
+			wp_send_json_error( 'Order not found.' );
+		}
+
+		ob_start();
+		$this->render_meta_box_content( $order );
+		$html = ob_get_clean();
+
+		wp_send_json_success( array(
+			'html' => $html,
+		) );
 	}
 
 	/**
