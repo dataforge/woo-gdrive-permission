@@ -1,25 +1,50 @@
 (function ($) {
     'use strict';
 
+    var orderRecipientsRefreshTimer = null;
+    var orderRecipientsRefreshSeq = 0;
+
     function refreshOrderRecipientsBox(orderId) {
         var $box = $('.wgdp-order-recipients-content[data-order-id="' + orderId + '"]');
         if (!$box.length || !orderId) {
             return;
         }
 
+        var seq = ++orderRecipientsRefreshSeq;
+        var $buttons = $box.find('.wgdp-refresh-order-recipients-btn');
+
         $box.addClass('is-loading');
+        $buttons.each(function () {
+            var $button = $(this);
+            $button.data('wgdp-original-text', $button.text());
+            $button.prop('disabled', true).text('Refreshing...');
+        });
 
         $.post(wgdp.ajax_url, {
             action: 'wgdp_refresh_order_recipients',
             nonce: wgdp.nonce,
             order_id: orderId
         }, function (response) {
-            if (response.success && response.data && typeof response.data.html !== 'undefined') {
+            if (seq === orderRecipientsRefreshSeq && response.success && response.data && typeof response.data.html !== 'undefined') {
                 $box.html(response.data.html);
             }
         }).always(function () {
+            $buttons.each(function () {
+                var $button = $(this);
+                $button.prop('disabled', false).text($button.data('wgdp-original-text') || 'Refresh Digital Recipients');
+            });
             $box.removeClass('is-loading');
         });
+    }
+
+    function scheduleOrderRecipientsRefresh(orderId) {
+        if (!orderId) {
+            return;
+        }
+        window.clearTimeout(orderRecipientsRefreshTimer);
+        orderRecipientsRefreshTimer = window.setTimeout(function () {
+            refreshOrderRecipientsBox(orderId);
+        }, 300);
     }
 
     function currentOrderRecipientsOrderId() {
@@ -64,9 +89,7 @@
             ajaxRequestHasAction(data, 'woocommerce_remove_order_item') ||
             ajaxRequestHasAction(data, 'woocommerce_remove_order_items')
         ) {
-            window.setTimeout(function () {
-                refreshOrderRecipientsBox(currentOrderRecipientsOrderId());
-            }, 300);
+            scheduleOrderRecipientsRefresh(currentOrderRecipientsOrderId());
         }
     });
 

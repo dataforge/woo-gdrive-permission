@@ -8,6 +8,7 @@ class WGDP_Entitlements {
 	const REVOCATION_REASON_ASSET_REMOVED       = 'asset_removed';
 	const REVOCATION_REASON_MANUAL              = 'manual';
 	const REVOCATION_REASON_ORDER_INELIGIBLE    = 'order_ineligible';
+	const REVOCATION_REASON_ORDER_ITEM_REMOVED  = 'order_item_removed';
 	const REVOCATION_REASON_PARTIAL_REFUND      = 'partial_refund';
 	const REVOCATION_REASON_REASSIGNMENT        = 'reassignment_requested';
 	const REVOCATION_REASON_REPROVISION         = 'reprovision';

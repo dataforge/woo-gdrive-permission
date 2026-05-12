@@ -23,6 +23,7 @@ class WGDP_Order_Handler {
 
 		// Partial refund.
 		add_action( 'woocommerce_order_refunded', array( $this, 'handle_partial_refund' ), 10, 2 );
+		add_action( 'woocommerce_before_delete_order_item', array( $this, 'revoke_entitlements_for_deleted_order_item' ) );
 
 		// Sales counter.
 		add_action( 'woocommerce_order_status_processing', array( $this, 'update_sales_counter' ), 20 );
@@ -620,6 +621,143 @@ class WGDP_Order_Handler {
 	}
 
 	/**
+	 * Revoke Drive access when an order line item is deleted in admin.
+	 *
+	 * WooCommerce deletes the item row after this hook, so entitlement rows still
+	 * have enough context to remove any granted Drive permission.
+	 *
+	 * @param int $order_item_id Order item ID being deleted.
+	 */
+	public function revoke_entitlements_for_deleted_order_item( $order_item_id ) {
+		$order_item_id = absint( $order_item_id );
+		if ( ! $order_item_id ) {
+			return;
+		}
+
+		$item     = class_exists( 'WC_Order_Factory' ) ? WC_Order_Factory::get_order_item( $order_item_id ) : null;
+		$order_id = $item && method_exists( $item, 'get_order_id' ) ? absint( $item->get_order_id() ) : 0;
+
+		$ent = WGDP_Entitlements::instance();
+		$ent->with_order_item_lock( $order_item_id, function () use ( $ent, $order_item_id, $order_id ) {
+			$rows = $ent->get_by_order_item( $order_item_id );
+			if ( empty( $rows ) ) {
+				return;
+			}
+
+			$revoked_count = 0;
+			$error_count   = 0;
+			$order_id      = (int) ( $rows[0]['order_id'] ?? 0 );
+
+			foreach ( $rows as $row ) {
+				if ( 'revoked' === ( $row['grant_status'] ?? '' ) ) {
+					continue;
+				}
+
+				$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_ORDER_ITEM_REMOVED );
+				if ( is_wp_error( $result ) ) {
+					$error_count++;
+					continue;
+				}
+
+				$revoked_count++;
+			}
+
+			delete_transient( 'wgdp_permission_counts' );
+
+			$order = $order_id ? wc_get_order( $order_id ) : null;
+			if ( $order && ( $revoked_count || $error_count ) ) {
+				$note = sprintf(
+					'WGDP: Order item #%d was deleted. Revoked %d digital entitlement(s).',
+					$order_item_id,
+					$revoked_count
+				);
+				if ( $error_count ) {
+					$note .= sprintf( ' %d entitlement(s) could not be fully removed from Drive and were marked for retry.', $error_count );
+				}
+				$order->add_order_note( $note );
+			}
+		} );
+
+		$this->decrement_sales_counter_for_deleted_order_item( $order_id, $order_item_id, $item );
+	}
+
+	/**
+	 * Remove a deleted line item from WGDP release-gate sales counters.
+	 *
+	 * @param int   $order_id      Order ID.
+	 * @param int   $order_item_id Deleted order item ID.
+	 * @param mixed $item          Order item before WooCommerce deletes it.
+	 */
+	private function decrement_sales_counter_for_deleted_order_item( $order_id, $order_item_id, $item ) {
+		if ( ! $order_id || ! $item instanceof WC_Order_Item_Product ) {
+			return;
+		}
+
+		$result = $this->with_sales_counter_lock( $order_id, function () use ( $order_id, $order_item_id, $item ) {
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) {
+				return;
+			}
+
+			$counted_ids = $this->get_counted_item_ids( $order );
+			if ( ! in_array( $order_item_id, $counted_ids, true ) ) {
+				return;
+			}
+
+			$product_id   = $item->get_product_id();
+			$variation_id = $item->get_variation_id();
+			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+				return;
+			}
+
+			$counted_quantities     = $this->get_counted_quantities( $order );
+			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
+			$refund_baseline_qty    = $this->get_refund_baseline_quantities( $order );
+			$counted_qty            = $this->get_counted_quantity_for_item( $order, $item, $counted_quantities );
+			$product_deltas         = array();
+			$variation_deltas       = array();
+
+			$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $counted_qty );
+
+			foreach ( $product_deltas as $pid => $qty ) {
+				WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
+			}
+			foreach ( $variation_deltas as $vid => $info ) {
+				WGDP_Release_Gate::increment_variation_paid_qty( $info['product_id'], $vid, -$info['qty'] );
+			}
+
+			$counted_ids = array_values( array_filter( $counted_ids, function ( $id ) use ( $order_item_id ) {
+				return (int) $id !== (int) $order_item_id;
+			} ) );
+			unset(
+				$counted_quantities[ $order_item_id ],
+				$counted_quantities[ (string) $order_item_id ],
+				$refund_decremented_qty[ $order_item_id ],
+				$refund_decremented_qty[ (string) $order_item_id ],
+				$refund_baseline_qty[ $order_item_id ],
+				$refund_baseline_qty[ (string) $order_item_id ]
+			);
+
+			$order->update_meta_data( '_wgdp_qty_counted_items', wp_json_encode( $counted_ids ) );
+			$order->update_meta_data( '_wgdp_qty_counted_quantities', wp_json_encode( $counted_quantities ) );
+			$order->update_meta_data( '_wgdp_qty_refund_decremented_quantities', wp_json_encode( $refund_decremented_qty ) );
+			$order->update_meta_data( '_wgdp_qty_refund_baseline_quantities', wp_json_encode( $refund_baseline_qty ) );
+			$order->add_order_note( sprintf(
+				'WGDP: Removed order item #%d from digital release sales counters.',
+				$order_item_id
+			) );
+			$order->save();
+		} );
+
+		if ( is_wp_error( $result ) ) {
+			$order = wc_get_order( $order_id );
+			if ( $order ) {
+				$order->add_order_note( 'WGDP: Could not lock this order to update release sales counters after an item was deleted. Please recalculate counters.' );
+			}
+		}
+	}
+
+	/**
 	 * Execute a callback while holding a per-order sales counter lock.
 	 */
 	private function with_sales_counter_lock( $order_id, $callback ) {
@@ -904,6 +1042,8 @@ class WGDP_Order_Handler {
 		$ent  = WGDP_Entitlements::instance();
 		$rows = $ent->get_by_order( $order->get_id() );
 
+		echo '<p style="margin:0 0 10px;"><button type="button" class="button button-small wgdp-refresh-order-recipients-btn" data-order-id="' . esc_attr( $order->get_id() ) . '">Refresh Digital Recipients</button></p>';
+
 		// Group existing entitlements by order_item_id, then by recipient_email.
 		$grouped = array();
 		foreach ( $rows as $row ) {
@@ -951,7 +1091,6 @@ class WGDP_Order_Handler {
 		if ( ! $has_qualifying_items ) {
 			echo '<p>No saved items in this order qualify for digital access.</p>';
 			echo '<p class="description">If you just added a SKU to a manual order, save/update the order items or refresh this box after WooCommerce finishes adding the item.</p>';
-			echo '<p><button type="button" class="button button-small wgdp-refresh-order-recipients-btn" data-order-id="' . esc_attr( $order->get_id() ) . '">Refresh Digital Recipients</button></p>';
 		}
 	}
 
