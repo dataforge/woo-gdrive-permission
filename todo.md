@@ -6,6 +6,27 @@
 
 ---
 
+## Code review findings (2026-07-02, session 2)
+
+All six items below were validated against the actual code (each confirmed by
+an independent re-read quoting exact lines) and fixed same-session; commits
+pushed to `main` as v3.4.34 through v3.4.39. Kept here only as a pointer —
+see the commit log for full descriptions of each fix, not this file.
+
+- ~~`assign_recipient_to_order_item()` slot-capacity check rejects re-assigning an already-assigned email~~ Fixed v3.4.34 (`class-wgdp-entitlements.php`).
+- ~~`refresh_access_token()` treats a `null` lock result (account deleted mid-refresh) as success~~ Fixed v3.4.35 (`class-wgdp-google-auth.php`).
+- ~~Drive API 401 retry re-serves the same rejected token instead of forcing a real refresh~~ Fixed v3.4.36 (`class-wgdp-google-auth.php` + `class-wgdp-google-drive.php`, added `force_refresh_access_token()`).
+- ~~Bulk "Resend OTP" invalidates a just-sent code when 2+ selected rows share a recipient group~~ Fixed v3.4.37 (`class-wgdp-admin.php`, dedup by `order_item_id`+`recipient_email`).
+- ~~Bulk "Retry Grant" retries against a stale/detached `cloud_asset_id` instead of reprovisioning like the single-item handler~~ Fixed v3.4.38 (`class-wgdp-admin.php`, skip + point admin at single-item Retry Grant).
+- ~~`update_sales_counter()` advances the release-gate counter for items whose account is disconnected, even though `create_entitlements()` skips creating a row for them~~ Fixed v3.4.39 (`class-wgdp-order-handler.php`, mirrors the connectivity check).
+
+### Follow-ups from this session (not fixed — lower confidence / needs product decision)
+
+- **`handle_partial_refund()` reads recipient counts without the per-order-item lock** — `class-wgdp-order-handler.php:582-625`. `create_entitlements()` explicitly holds `with_order_item_lock()` around its recipient loop specifically to prevent a concurrent trigger from acting on a stale count (see comment at line ~252); `handle_partial_refund()` only holds the order-level `with_sales_counter_lock` while it calls `count_active_recipients_for_item()` and then revokes based on that snapshot. A partial refund landing at nearly the same moment as an admin "Add Recipient" action for the same order item could compute `excess`/revocation candidates from a stale count. Narrow window, not confirmed to be reachable in practice — worth a closer look if refund/recipient-add races are ever reported.
+- **Variation with `_wgdp_counts_toward_product_threshold = no` but `_wgdp_threshold_scope = entire_product` can never auto-release via `min_sales_qty`** — `class-wgdp-release-gate.php:270-302`. If those two settings are left in this (arguably contradictory) combination, the variation's own release check compares against the product-level counter, which by design never includes that variation's sales. May be an intentional admin-configuration trap rather than a bug; consider either validating against this combination in the admin UI or documenting it. Not fixed — needs a product decision on whether to guard against it.
+
+---
+
 ## Code review findings (2026-07-02)
 
 ### MEDIUM
