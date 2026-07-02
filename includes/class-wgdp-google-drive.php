@@ -118,6 +118,12 @@ class WGDP_Google_Drive {
 
 		if ( $code !== 200 ) {
 			$msg = $body['error']['message'] ?? 'HTTP ' . $code;
+			if ( 404 === $code ) {
+				// This app only holds the restricted `drive.file` scope, so files never
+				// opened through "Browse GDrive" / "Google Picker" are invisible to it
+				// and the API reports them as not-found rather than forbidden.
+				$msg .= ' This app can only access files opened via "Browse GDrive" or "Google Picker" — pasting the URL of a file never selected that way will not work.';
+			}
 			return new WP_Error( 'wgdp_get_error', $msg, array( 'status' => $code ) );
 		}
 
