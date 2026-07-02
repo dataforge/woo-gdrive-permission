@@ -310,17 +310,17 @@
             ? 'https://drive.google.com/drive/folders/' + file.id
             : 'https://drive.google.com/file/d/' + file.id + '/view';
 
-        var $row = $('<span class="wgdp-resource-row">' +
-            '<input type="hidden" name="' + prefix + '[' + index + '][id]" value="' + $('<span>').text(file.id).html() + '" />' +
-            '<input type="hidden" name="' + prefix + '[' + index + '][type]" value="' + $('<span>').text(file.type || 'file').html() + '" />' +
-            '<input type="hidden" name="' + prefix + '[' + index + '][name]" value="' + $('<span>').text(file.name).html() + '" />' +
-            '<input type="hidden" name="' + prefix + '[' + index + '][status]" value="active" class="wgdp-resource-status" />' +
-            '<span class="wgdp-resource-row-info">' +
-                '<strong>' + $('<span>').text(file.name).html() + '</strong> ' +
-                '<a href="' + viewUrl + '" target="_blank">View</a>' +
-            '</span>' +
-            '<a href="#" class="wgdp-resource-row-remove" title="Remove">&times;</a>' +
-        '</span>');
+        // Build nodes with .attr()/.val() so values containing quotes cannot break out of attributes.
+        var $row = $('<span class="wgdp-resource-row"></span>');
+        $('<input type="hidden" />').attr('name', prefix + '[' + index + '][id]').val(file.id).appendTo($row);
+        $('<input type="hidden" />').attr('name', prefix + '[' + index + '][type]').val(file.type || 'file').appendTo($row);
+        $('<input type="hidden" />').attr('name', prefix + '[' + index + '][name]').val(file.name).appendTo($row);
+        $('<input type="hidden" class="wgdp-resource-status" />').attr('name', prefix + '[' + index + '][status]').val('active').appendTo($row);
+        var $info = $('<span class="wgdp-resource-row-info"></span>').appendTo($row);
+        $('<strong></strong>').text(file.name).appendTo($info);
+        $info.append(' ');
+        $('<a target="_blank">View</a>').attr('href', viewUrl).appendTo($info);
+        $('<a href="#" class="wgdp-resource-row-remove" title="Remove">&times;</a>').appendTo($row);
 
         $list.append($row);
     }
@@ -465,7 +465,7 @@
             folder_id: driveBrowserState.folderId
         }, function (response) {
             if (!response.success) {
-                setDriveBrowserStatus('Error: ' + response.data, true);
+                setDriveBrowserStatus('Error: ' + wgdpErrorMessage(response.data), true);
                 return;
             }
 
@@ -606,7 +606,7 @@
         }, function (response) {
             $form.find('button').prop('disabled', false);
             if (!response.success) {
-                setDriveBrowserStatus('Error: ' + response.data, true);
+                setDriveBrowserStatus('Error: ' + wgdpErrorMessage(response.data), true);
                 return;
             }
 
@@ -871,28 +871,28 @@
                 var orderItemId = $btn.data('order-item-id');
                 var $table = $btn.closest('.wgdp-add-entitlement-form').prev('table.wgdp-recipients-table[data-order-item-id="' + orderItemId + '"]');
 
-                // Build the new row.
+                // Build the new row with DOM construction / .attr() so values cannot break out of attributes.
                 var fileCount = d.file_count || 1;
-                var newRow = '<tr>' +
-                    '<td>' + $('<span>').text(d.recipient_index).html() + '</td>' +
-                    '<td>' + $('<span>').text(d.email).html() + '</td>' +
-                    '<td>' + fileCount + ' file' + (fileCount > 1 ? 's' : '') + '</td>' +
-                    '<td><span class="wgdp-status-badge wgdp-vstatus--pending">Pending</span></td>' +
-                    '<td><span class="wgdp-status-badge wgdp-gstatus--pending">Pending</span></td>' +
-                    '<td>' +
-                        '<button type="button" class="button button-small wgdp-resend-otp-btn" data-entitlement-id="' + d.id + '">Resend OTP</button> ' +
-                        '<button type="button" class="button button-small wgdp-revoke-entitlement-btn" data-entitlement-id="' + d.id + '" style="color:#b32d2e;">Revoke</button>' +
-                    '</td>' +
-                    '</tr>';
+                var $newRow = $('<tr></tr>');
+                $('<td></td>').text(d.recipient_index).appendTo($newRow);
+                $('<td></td>').text(d.email).appendTo($newRow);
+                $('<td></td>').text(fileCount + ' file' + (fileCount > 1 ? 's' : '')).appendTo($newRow);
+                $newRow.append('<td><span class="wgdp-status-badge wgdp-vstatus--pending">Pending</span></td>');
+                $newRow.append('<td><span class="wgdp-status-badge wgdp-gstatus--pending">Pending</span></td>');
+                var $actions = $('<td></td>').appendTo($newRow);
+                $('<button type="button" class="button button-small wgdp-resend-otp-btn">Resend OTP</button>').attr('data-entitlement-id', d.id).appendTo($actions);
+                $actions.append(' ');
+                $('<button type="button" class="button button-small wgdp-revoke-entitlement-btn" style="color:#b32d2e;">Revoke</button>').attr('data-entitlement-id', d.id).appendTo($actions);
 
                 if (!$table.length) {
                     // No table yet — create one before the form.
-                    var tableHtml = '<table class="widefat fixed striped wgdp-recipients-table" data-order-item-id="' + orderItemId + '" style="margin-bottom:12px;">' +
+                    var $newTable = $('<table class="widefat fixed striped wgdp-recipients-table" style="margin-bottom:12px;">' +
                         '<thead><tr><th style="width:30px;">#</th><th>Email</th><th>Files</th><th>Verification</th><th>Grant</th><th>Actions</th></tr></thead>' +
-                        '<tbody>' + newRow + '</tbody></table>';
-                    $btn.closest('.wgdp-add-entitlement-form').before(tableHtml);
+                        '<tbody></tbody></table>').attr('data-order-item-id', orderItemId);
+                    $newTable.find('tbody').append($newRow);
+                    $btn.closest('.wgdp-add-entitlement-form').before($newTable);
                 } else {
-                    $table.find('tbody').append(newRow);
+                    $table.find('tbody').append($newRow);
                 }
 
                 $input.val('');
@@ -1107,7 +1107,7 @@
                 var cssClass = 'wgdp-verify-' + d.status;
                 $result.text(d.message).addClass(cssClass);
             } else {
-                $result.text('Error: ' + response.data).addClass('wgdp-verify-error');
+                $result.text('Error: ' + wgdpErrorMessage(response.data)).addClass('wgdp-verify-error');
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Verify on Drive');

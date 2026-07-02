@@ -587,7 +587,7 @@ class WGDP_Release_Gate {
 
 		$updated = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"UPDATE {$wpdb->postmeta} SET meta_value = GREATEST(0, CAST(meta_value AS SIGNED) + %d) WHERE post_id = %d AND meta_key = %s",
+				"UPDATE {$wpdb->postmeta} SET meta_value = GREATEST(0, COALESCE(CAST(meta_value AS SIGNED), 0) + %d) WHERE post_id = %d AND meta_key = %s",
 				$delta,
 				$post_id,
 				$meta_key
@@ -599,7 +599,7 @@ class WGDP_Release_Gate {
 			if ( ! $added ) {
 				$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 					$wpdb->prepare(
-						"UPDATE {$wpdb->postmeta} SET meta_value = GREATEST(0, CAST(meta_value AS SIGNED) + %d) WHERE post_id = %d AND meta_key = %s",
+						"UPDATE {$wpdb->postmeta} SET meta_value = GREATEST(0, COALESCE(CAST(meta_value AS SIGNED), 0) + %d) WHERE post_id = %d AND meta_key = %s",
 						$delta,
 						$post_id,
 						$meta_key

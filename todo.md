@@ -22,8 +22,6 @@
 
 - **Blocks checkout enforces qty cap by array index, not count** — `class-wgdp-blocks-integration.php:130`. The `(int) $index >= (int) $qty` guard uses the raw array index; a sparse `{0:'a', 5:'b'}` payload is mishandled. Mirror `WGDP_Classic_Checkout::validate_recipient_fields`: `array_values()` first, then count-check positionally.
 
-- **XSS via `$('<span>').text(x).html()` attribute building** — `admin/js/wgdp-admin.js:313-323` (file-id/name/type hidden inputs) and `:876-886` (`data-entitlement-id`, `d.email` table cell). `.text().html()` escapes `<`, `>`, `&` but **not quotes**, so a Drive-side value containing `"` breaks out of the attribute. Build nodes with `.attr()`/DOM construction or escape quotes (`&quot;`).
-
 - **OAuth callback relies only on the nonce, no capability re-check** — OAuth callback in `class-wgdp-admin.php` (around line 213) verifies the `state` nonce but does not re-assert `current_user_can('manage_woocommerce')` (or stricter) before storing refresh tokens / completing the connect. Add an explicit capability check in the callback handler.
 
 - **`drive.file` scope may be insufficient for granting permissions on pre-existing files** — `class-wgdp-google-auth.php:10`. The plugin grants permissions on arbitrary user-selected Drive files/folders, but `drive.file` only allows app-created/app-opened files. If customers report 403s on permission creation, this scope is the likely cause; confirm Picker token wiring or widen scope as needed.
@@ -48,10 +46,6 @@
 
 - **`release-gate` cursor pagination assumes strict id-ascending order** — `class-wgdp-release-gate.php:484-518, 540-562`. `max($after_id, ...)` can jump the cursor past rows that should still be processed if the underlying query is not `ORDER BY id ASC`, silently skipping pending-release entitlements. Guarantee ordering or use the last id seen only.
 
-- **`atomic_increment_meta` can store NULL** — `class-wgdp-release-gate.php:588-609`. `GREATEST(0, CAST(NULL AS SIGNED))` returns NULL in MySQL, which then breaks every `is_item_released` threshold comparison. Use `COALESCE(CAST(meta_value AS SIGNED), 0)`.
-
-- **`extract_id_from_url` returns arbitrary input verbatim** — `class-wgdp-google-drive.php:285-306`. Non-matching input is returned unchanged and later used to build API paths / Drive `q` queries. Validate to the ID charset (`[a-zA-Z0-9_-]{10,}`) or reject.
-
 - **`list_files` hand-escapes folder id into Drive `q`** — `class-wgdp-google-drive.php:130-138`. Manual backslash/quote escaping is fragile if `$folder_id` ever originates from user/picker input; validate the ID charset before interpolation.
 
 - **Order-impact `file_count` shows old row count** — `class-wgdp-admin.php:1154`. Falls back to `count($result['all_rows'])` (pre-replacement rows) when `file_count` is absent; report the actual new count from `create_entitlements_for_recipient`.
@@ -68,15 +62,13 @@
 
 - **Dashboard widget assumes all count keys exist** — `class-wgdp-dashboard-widget.php:36-50`. `wp_parse_args` the counts against a default array to avoid PHP notices on partial/cached results.
 
-- **`ajax_bulk_resend_otp` doesn't clear counts transient** — `class-wgdp-entitlements-list.php:37-66`. Issuing OTPs can change verification status but never invalidates `wgdp_permission_counts`, so the Access Manager summary cards go stale for up to 5 minutes. Add `delete_transient('wgdp_permission_counts')` on success.
+- **`ajax_bulk_resend_otp` doesn't clear counts transient** — `class-wgdp-entitlements-list.php:37-66`. (Validated 2026-07-02: resend only operates on non-verified/non-revoked rows and does not change any row's `grant_status`/`verification_status` category, so `count_by_status` totals are unchanged and the transient is not actually stale. Effectively a no-op; low priority. Add `delete_transient('wgdp_permission_counts')` only as defensive hygiene if verification behavior later changes.)
 
 - **Classic checkout returns on first error** — `class-wgdp-classic-checkout.php:111-149`. `validate_recipient_fields` returns on the first invalid/duplicate/excess recipient, so multi-item carts surface one error at a time. Accumulate notices via `wc_add_notice` and continue.
 
 - **Classic-checkout save path trusts sparse `$_POST` array** — `class-wgdp-classic-checkout.php:189`. `array_values()` before slicing and add a duplicate-email guard for defense-in-depth.
 
 - **Blocks checkout script-data captured once at module load** — `assets/js/wgdp-checkout-block.js:13-14,70`. `qualifyingItems` is read once from `getSetting`; cart qty changes during checkout re-render blocks but never refresh script-data, so the qty-sync `useEffect` is effectively dead. Subscribe to a wc store selector for live quantities.
-
-- **`[object Object]` in three AJAX error handlers** — `admin/js/wgdp-admin.js:468, 609, 1110`. They use `'Error: ' + response.data` instead of `wgdpErrorMessage(response.data)`, so object/array error payloads render as `[object Object]`.
 
 - **`create_entitlements` ignores lock `WP_Error`** — `class-wgdp-order-handler.php:257-311`. When `with_order_item_lock` fails, recipients silently get no entitlements and no order note explains why. Add an order note on `is_wp_error($lock_outcome)`.
 

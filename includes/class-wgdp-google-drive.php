@@ -302,7 +302,9 @@ class WGDP_Google_Drive {
 			return $url_or_id;
 		}
 
-		return $url_or_id;
+		// Not a recognized URL and not a valid Drive ID — reject rather than
+		// returning arbitrary input that would later flow into API paths / `q` queries.
+		return '';
 	}
 
 	/**
