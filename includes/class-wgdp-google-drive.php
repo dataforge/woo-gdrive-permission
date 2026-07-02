@@ -129,6 +129,13 @@ class WGDP_Google_Drive {
 	 */
 	public function list_files( $account_id = '', $search = '', $page_token = '', $folder_id = 'root' ) {
 		$folder_id = '' === trim( $folder_id ) ? 'root' : trim( $folder_id );
+		// Drive file/folder IDs are limited to URL-safe base64-ish characters. The
+		// value can originate from picker/user input, so reject anything outside that
+		// charset (falling back to the drive root) rather than relying solely on
+		// quote-escaping in the interpolated `q`.
+		if ( 'root' !== $folder_id && ! preg_match( '/^[A-Za-z0-9_-]+$/', $folder_id ) ) {
+			$folder_id = 'root';
+		}
 		$escaped_folder_id = str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), $folder_id );
 		$q = "trashed = false and '" . $escaped_folder_id . "' in parents";
 

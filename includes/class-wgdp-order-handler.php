@@ -308,6 +308,15 @@ class WGDP_Order_Handler {
 
 			if ( true === $lock_outcome ) {
 				$created_any = true;
+			} elseif ( is_wp_error( $lock_outcome ) ) {
+				// Lock could not be acquired — recipients got no entitlements. Leave a
+				// trail so the shop owner knows to re-provision from the Access Manager
+				// instead of silently dropping the grant.
+				$order->add_order_note( sprintf(
+					'WGDP: Could not provision Drive access for "%s" — %s. Retry from the Access Manager.',
+					$item->get_name(),
+					$lock_outcome->get_error_message()
+				) );
 			}
 		}
 

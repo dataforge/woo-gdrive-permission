@@ -24,13 +24,7 @@
 
 - **`create_entitlements_for_recipient` mutates `recipient_index` mid-loop** — `class-wgdp-entitlements.php:1431-1473`. When a revoked row is reused, its prior `recipient_index` can overwrite the in-flight value and propagate to newly created rows for later resources, producing inconsistent seat indices across the same recipient's files.
 
-- **Seat number computed by active rank, not `recipient_index`** — `class-wgdp-access-manager-table.php:668-688`. Revoking a middle seat renumbers the remaining seats (1,2,3…) and discards the real `recipient_index` from the `MIN()`; the over-allocation check (`$seat > $qty`) is then unreachable. Label seats with the actual `min_index`.
-
 - **`release-gate` cursor pagination assumes strict id-ascending order** — `class-wgdp-release-gate.php:484-518, 540-562`. `max($after_id, ...)` can jump the cursor past rows that should still be processed if the underlying query is not `ORDER BY id ASC`, silently skipping pending-release entitlements. Guarantee ordering or use the last id seen only.
-
-- **`list_files` hand-escapes folder id into Drive `q`** — `class-wgdp-google-drive.php:130-138`. Manual backslash/quote escaping is fragile if `$folder_id` ever originates from user/picker input; validate the ID charset before interpolation.
-
-- **Order-impact `file_count` shows old row count** — `class-wgdp-admin.php:1154`. Falls back to `count($result['all_rows'])` (pre-replacement rows) when `file_count` is absent; report the actual new count from `create_entitlements_for_recipient`.
 
 ### LOW
 
@@ -46,8 +40,6 @@
 
 - **Blocks checkout script-data captured once at module load** — `assets/js/wgdp-checkout-block.js:13-14,70`. `qualifyingItems` is read once from `getSetting`; cart qty changes during checkout re-render blocks but never refresh script-data, so the qty-sync `useEffect` is effectively dead. Subscribe to a wc store selector for live quantities.
 
-- **`create_entitlements` ignores lock `WP_Error`** — `class-wgdp-order-handler.php:257-311`. When `with_order_item_lock` fails, recipients silently get no entitlements and no order note explains why. Add an order note on `is_wp_error($lock_outcome)`.
-
 - **`revoke_entitlements_for_deleted_order_item` shadows `$order_id`** — `class-wgdp-order-handler.php:649-700`. The closure reassigns `$order_id` from the entitlement row (used for the note) while the outer `$order_id` (from the WC item) is used for the counter decrement; they can diverge if the entitlement row's `order_id` disagrees with the item's order.
 
 - **`process_am_bulk_actions` only gated by `manage_woocommerce`** — `class-wgdp-admin.php:43-52, 88-99`. Shop Managers (broad role) can bulk-revoke/retry/re-provision all customer Drive access. If revocation should be admin-only, add an explicit stricter capability check inside the destructive branches.
@@ -59,6 +51,8 @@
 ---
 
 ## Validated as false positives / already mitigated (2026-07-02)
+
+- **Order-impact `file_count` shows old row count (formerly MEDIUM)** — NOT actionable. `class-wgdp-admin.php:1142` always sets `file_count` from `$replacement['file_count']`, and `create_entitlements_for_recipient` always returns `file_count` (`class-wgdp-entitlements.php:1483`). The `?? count($result['all_rows'])` fallback at line 1154 is therefore dead code — the actual new count is always reported. Removed from findings 2026-07-02.
 
 - **Direct interpolated query in `maybe_show_backfill_error_notice` (formerly MEDIUM)** — NOT actionable. `class-wgdp-admin.php:857-860` interpolates the table name (from `WGDP_DB::get_backfill_table_name()`, built off `$wpdb->prefix` with no user input). Table/identifier names cannot be bound via `$wpdb->prepare` (it only handles values), so interpolation-with-`phpcs:ignore` — already present — is the standard WP pattern. Nothing to change. Removed from findings 2026-07-02.
 

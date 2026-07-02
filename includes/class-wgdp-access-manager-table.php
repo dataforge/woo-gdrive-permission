@@ -688,7 +688,11 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 				if ( ! isset( $this->seat_position_cache[ $oi_id ] ) ) {
 					$this->seat_position_cache[ $oi_id ] = array();
 				}
-				$this->seat_position_cache[ $oi_id ][ $row['recipient_email'] ] = count( $this->seat_position_cache[ $oi_id ] ) + 1;
+				// Label the seat with the recipient's actual recipient_index (1-based),
+				// not a compacted active rank. Using the rank would renumber the
+				// remaining seats after a middle seat is revoked (hiding the gap) and
+				// make the over-allocation check ($seat > $qty) unreachable.
+				$this->seat_position_cache[ $oi_id ][ $row['recipient_email'] ] = (int) $row['min_index'];
 
 				$cache_key = $oi_id . '|' . $row['recipient_email'];
 				$this->file_count_cache[ $cache_key ] = (int) $row['file_count'];
@@ -712,15 +716,24 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		$new_rows = array();
 		foreach ( $seen_items as $oi_id => $template ) {
 			$qty          = $this->item_qty_cache[ $oi_id ] ?? 1;
-			$active_seats = isset( $this->seat_position_cache[ $oi_id ] ) ? count( $this->seat_position_cache[ $oi_id ] ) : 0;
+			$taken        = isset( $this->seat_position_cache[ $oi_id ] ) ? array_values( $this->seat_position_cache[ $oi_id ] ) : array();
+			$active_seats = count( $taken );
 
 			if ( $active_seats >= $qty ) {
 				continue;
 			}
 
-			$unassigned = $qty - $active_seats;
-			for ( $i = 0; $i < $unassigned; $i++ ) {
-				$seat_num = $active_seats + $i + 1;
+			// Seat numbers are now the recipients' real recipient_index values, so
+			// they may be non-contiguous (e.g. seat 2 revoked leaves seats 1 and 3).
+			// Fill the empty seat numbers within 1..qty rather than appending, so the
+			// unassigned rows land in the actual gaps.
+			$taken_lookup = array_flip( array_map( 'intval', $taken ) );
+			$unassigned   = $qty - $active_seats;
+			$filled       = 0;
+			for ( $seat_num = 1; $seat_num <= $qty && $filled < $unassigned; $seat_num++ ) {
+				if ( isset( $taken_lookup[ $seat_num ] ) ) {
+					continue;
+				}
 
 				$new_rows[] = array(
 					'_unassigned'         => true,
@@ -730,7 +743,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					'product_id'          => $template['product_id'],
 					'variation_id'        => $template['variation_id'] ?? 0,
 					'cloud_asset_id'      => '',
-					'recipient_email'     => '__unassigned_' . $i,
+					'recipient_email'     => '__unassigned_' . $filled,
 					'recipient_index'     => $seat_num,
 					'verification_status' => '',
 					'grant_status'        => 'unassigned',
@@ -739,6 +752,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					'provider_permission_id' => '',
 					'account_id'          => '',
 				);
+				$filled++;
 			}
 		}
 
