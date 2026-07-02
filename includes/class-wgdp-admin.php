@@ -885,7 +885,7 @@ class WGDP_Admin {
 			return;
 		}
 
-		if ( isset( $_GET['page'] ) && 'wgdp' === $_GET['page'] ) {
+		if ( isset( $_GET['page'] ) && 'wgdp' === sanitize_key( wp_unslash( $_GET['page'] ) ) ) {
 			return;
 		}
 

@@ -119,15 +119,21 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 				continue;
 			}
 
-			// Validate each email format, skipping blanks.
+			// Reindex first so a sparse/out-of-order payload (e.g. {0:'a', 5:'b'})
+			// can't slip past the positional qty cap below. Mirrors the classic
+			// checkout (WGDP_Classic_Checkout::validate_recipient_fields).
+			$raw_emails = array_values( $raw_emails );
+
+			// Validate each email format, skipping blanks. Enforce the qty cap by
+			// position (count), not by the original array key.
 			$emails = array();
-			foreach ( $raw_emails as $index => $raw_email ) {
+			foreach ( $raw_emails as $position => $raw_email ) {
 				$raw_email = trim( $raw_email );
 				if ( '' === $raw_email ) {
 					continue;
 				}
 
-				if ( (int) $index >= (int) $qty ) {
+				if ( (int) $position >= (int) $qty ) {
 					throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException(
 						'wgdp_too_many_recipients',
 						sprintf(

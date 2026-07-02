@@ -306,7 +306,13 @@ class WGDP_Cron {
 			"UPDATE {$table} SET status = 'processing', started_at = %s WHERE id = %d AND status = 'pending'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			$now, $job_id
 		) );
-		if ( ! $claimed ) {
+		if ( false === $claimed ) {
+			// DB error (not a lost race) — surface it so a stalled queue is visible.
+			error_log( 'WGDP: backfill failed to claim job ' . (int) $job_id . ' — ' . $wpdb->last_error );
+			return;
+		}
+		if ( 0 === $claimed ) {
+			// Another worker claimed this job first (lost race) — nothing to do.
 			return;
 		}
 
@@ -392,7 +398,13 @@ class WGDP_Cron {
 	 * Schedule cron jobs.
 	 */
 	public static function schedule() {
-		wp_clear_scheduled_hook( 'wgdp_retry_failed_permissions' );
+		// One-time cleanup of the legacy retry hook (renamed to wgdp_retry_failed_grants).
+		// Gated so it doesn't touch the cron option on every page load. unschedule()
+		// still clears it defensively on deactivation.
+		if ( ! get_option( 'wgdp_legacy_retry_hook_cleared' ) ) {
+			wp_clear_scheduled_hook( 'wgdp_retry_failed_permissions' );
+			update_option( 'wgdp_legacy_retry_hook_cleared', 1, true );
+		}
 
 		if ( ! wp_next_scheduled( 'wgdp_retry_failed_grants' ) ) {
 			wp_schedule_event( time(), 'every_20_minutes', 'wgdp_retry_failed_grants' );

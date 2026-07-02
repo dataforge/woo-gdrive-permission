@@ -12,13 +12,7 @@
 
 - **`mark_revoked` unlocked fallback can orphan a recipient group's claim token** — `class-wgdp-entitlements.php:228-236`. When `with_recipient_group_lock` returns a `WP_Error` (lock not acquired), the code falls through to `write_revoked_row( $id, $reason, false )` without clearing or transferring the claim token. The lock exists precisely to keep one claimable token in the group; this fallback can revoke the only row holding a live token, leaving the group with zero claimable tokens. On lock failure, clear the claim token on the row being revoked (or accept and document the orphan risk).
 
-- **`dbDelta` receives two concatenated CREATE statements and always bumps DB version** — `class-wgdp-db.php:34-95`. Two `CREATE TABLE` statements are concatenated into one string passed to `dbDelta`, which is fragile around statement splitting, and `update_option('wgdp_db_version')` runs unconditionally afterward. A partial/failed dbDelta is never retried because the stored version already matches. Pass an array of statements to `dbDelta`, verify the tables exist, and only then bump the version.
-
 - **Store API cart-key queue relies on `WC()->cart` at checkout** — `class-wgdp-blocks-integration.php:184-201`. During `woocommerce_store_api_checkout_update_order_from_request` the Store API cart may be empty/unavailable, so `$cart_key_queue` is empty and submitted recipients (keyed by cart item key from JS) never match `$recipients[ $cart_key ]`, falling through to the legacy single-line lookup. Derive cart keys from `$order` items or Store API extension data instead.
-
-- **Blocks checkout enforces qty cap by array index, not count** — `class-wgdp-blocks-integration.php:130`. The `(int) $index >= (int) $qty` guard uses the raw array index; a sparse `{0:'a', 5:'b'}` payload is mishandled. Mirror `WGDP_Classic_Checkout::validate_recipient_fields`: `array_values()` first, then count-check positionally.
-
-- **OAuth callback relies only on the nonce, no capability re-check** — OAuth callback in `class-wgdp-admin.php` (around line 213) verifies the `state` nonce but does not re-assert `current_user_can('manage_woocommerce')` (or stricter) before storing refresh tokens / completing the connect. Add an explicit capability check in the callback handler.
 
 - **`drive.file` scope may be insufficient for granting permissions on pre-existing files** — `class-wgdp-google-auth.php:10`. The plugin grants permissions on arbitrary user-selected Drive files/folders, but `drive.file` only allows app-created/app-opened files. If customers report 403s on permission creation, this scope is the likely cause; confirm Picker token wiring or widen scope as needed.
 
@@ -36,15 +30,11 @@
 
 - **Seat number computed by active rank, not `recipient_index`** — `class-wgdp-access-manager-table.php:668-688`. Revoking a middle seat renumbers the remaining seats (1,2,3…) and discards the real `recipient_index` from the `MIN()`; the over-allocation check (`$seat > $qty`) is then unreachable. Label seats with the actual `min_index`.
 
-- **Backfill atomic-claim swallows DB errors** — `class-wgdp-cron.php:297-311`. `$claimed` is `false` on DB error and `0` on lost race; both are treated as "nothing to do" and the queue can stall invisibly. Distinguish `false === $claimed` (log + return) from `0 === $claimed`.
-
 - **`release-gate` cursor pagination assumes strict id-ascending order** — `class-wgdp-release-gate.php:484-518, 540-562`. `max($after_id, ...)` can jump the cursor past rows that should still be processed if the underlying query is not `ORDER BY id ASC`, silently skipping pending-release entitlements. Guarantee ordering or use the last id seen only.
 
 - **`list_files` hand-escapes folder id into Drive `q`** — `class-wgdp-google-drive.php:130-138`. Manual backslash/quote escaping is fragile if `$folder_id` ever originates from user/picker input; validate the ID charset before interpolation.
 
 - **Order-impact `file_count` shows old row count** — `class-wgdp-admin.php:1154`. Falls back to `count($result['all_rows'])` (pre-replacement rows) when `file_count` is absent; report the actual new count from `create_entitlements_for_recipient`.
-
-- **Direct interpolated query in `maybe_show_backfill_error_notice`** — `class-wgdp-admin.php:857-860`. Table name is interpolated without `$wpdb->prepare`. Plugin-controlled today, but standardize.
 
 - **`esc_html()` applied before JSON serialization** — `class-wgdp-blocks-integration.php:147`. Error text fed to a `RouteException` is HTML-escaped server-side, so the client renders `&lt;`. Move escaping to the client render layer.
 
@@ -68,14 +58,16 @@
 
 - **`process_am_bulk_actions` only gated by `manage_woocommerce`** — `class-wgdp-admin.php:43-52, 88-99`. Shop Managers (broad role) can bulk-revoke/retry/re-provision all customer Drive access. If revocation should be admin-only, add an explicit stricter capability check inside the destructive branches.
 
-- **`schedule()` clears legacy hook on every `plugins_loaded`** — `class-wgdp-cron.php:394-403`, called from bootstrap `:95`. `wp_clear_scheduled_hook('wgdp_retry_failed_permissions')` does a DB write on every page load forever. Gate the legacy cleanup with a one-time option flag.
-
 - **`notification-email` assumes `$fl['name']` exists** — `class-wgdp-notification-email.php:94-99, 127-132`. Defensive: guard keys or fall back to `$fl['link']`.
 
-- **`$_GET['page']` / `$_GET['update_check']` compared without sanitization** — `class-wgdp-admin.php:888, 613`. Used only in strict comparisons so not exploitable, but inconsistent with the rest of the file.
+- ~~**`$_GET['page']` / `$_GET['update_check']` compared without sanitization** — `class-wgdp-admin.php:888, 613`.~~ Fixed 2026-07-02 (v3.4.17): line 888 now runs `sanitize_key( wp_unslash( ... ) )`. Line 613 is only an `isset()` existence check (no value read), so nothing to sanitize there.
 
 ---
 
 ## Validated as false positives / already mitigated (2026-07-02)
+
+- **Direct interpolated query in `maybe_show_backfill_error_notice` (formerly MEDIUM)** — NOT actionable. `class-wgdp-admin.php:857-860` interpolates the table name (from `WGDP_DB::get_backfill_table_name()`, built off `$wpdb->prefix` with no user input). Table/identifier names cannot be bound via `$wpdb->prepare` (it only handles values), so interpolation-with-`phpcs:ignore` — already present — is the standard WP pattern. Nothing to change. Removed from findings 2026-07-02.
+
+- **OAuth callback relies only on the nonce, no capability re-check (formerly HIGH)** — NOT a gap. The callback lives in `render_settings_tab()`, which is only reached via `render_page()` after the `current_user_can_manage_settings()` gate at `class-wgdp-admin.php:93` (requires `manage_options` or `manage_wgdp_settings` — stricter than `manage_woocommerce`). Additionally `render_page():59` downgrades the tab away from `settings` for users without the capability. The nonce is not the only protection. Removed from findings 2026-07-02.
 
 - **Access Manager `orderby`/`order` not allow-listed (formerly HIGH SQL-injection)** — NOT a vulnerability. Although the list-table layer (`class-wgdp-access-manager-table.php:551-553`) only runs `sanitize_text_field`, the actual ORDER BY is built in `get_items_for_list_table()` (`class-wgdp-entitlements.php:690-692`), which validates `orderby` against an explicit `$allowed_orderby` column allow-list and coerces `order` to `ASC`/`DESC` only before interpolation. No injection path exists. Removed from findings.

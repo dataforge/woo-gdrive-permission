@@ -31,7 +31,7 @@ class WGDP_DB {
 		$backfill_table  = self::get_backfill_table_name();
 		$charset_collate = $wpdb->get_charset_collate();
 
-		$sql = "CREATE TABLE {$table_name} (
+		$entitlements_sql = "CREATE TABLE {$table_name} (
   id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
   order_id bigint(20) unsigned NOT NULL,
   order_item_id bigint(20) unsigned NOT NULL,
@@ -69,7 +69,7 @@ class WGDP_DB {
   KEY claim_token_hash (claim_token_hash)
 ) {$charset_collate};";
 
-		$sql .= "CREATE TABLE {$backfill_table} (
+		$backfill_sql = "CREATE TABLE {$backfill_table} (
   id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
   product_id bigint(20) unsigned NOT NULL,
   variation_id bigint(20) unsigned NOT NULL DEFAULT 0,
@@ -89,9 +89,20 @@ class WGDP_DB {
 ) {$charset_collate};";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-		dbDelta( $sql );
 
-		update_option( 'wgdp_db_version', self::DB_VERSION );
+		// Pass each statement separately rather than concatenated — avoids relying
+		// on dbDelta's internal statement splitting.
+		dbDelta( array( $entitlements_sql, $backfill_sql ) );
+
+		// Only record the new schema version once both tables actually exist, so a
+		// partial/failed dbDelta is retried on the next maybe_upgrade() run instead
+		// of being masked by a matching stored version.
+		$entitlements_exists = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table_name ) ) );
+		$backfill_exists     = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $backfill_table ) ) );
+
+		if ( $entitlements_exists && $backfill_exists ) {
+			update_option( 'wgdp_db_version', self::DB_VERSION );
+		}
 	}
 
 	/**
