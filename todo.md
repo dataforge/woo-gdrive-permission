@@ -18,7 +18,7 @@
 
 - **`ajax_bulk_resend_otp` doesn't clear counts transient** — `class-wgdp-entitlements-list.php:37-66`. (Validated 2026-07-02: resend only operates on non-verified/non-revoked rows and does not change any row's `grant_status`/`verification_status` category, so `count_by_status` totals are unchanged and the transient is not actually stale. Effectively a no-op; low priority. Add `delete_transient('wgdp_permission_counts')` only as defensive hygiene if verification behavior later changes.)
 
-- **`process_am_bulk_actions` only gated by `manage_woocommerce`** — `class-wgdp-admin.php:43-52, 88-99, 168`. Confirmed 2026-07-02: the `revoke` bulk action (and retry/resend) is reachable by any Shop Manager, same as the rest of the Access Manager tab; there is no separate stricter gate for the destructive `revoke` branch. This is a product/policy call, not a clear bug — many stores intentionally let Shop Managers manage all order-related Drive access. Left open pending a decision on whether `revoke` specifically should require `manage_options`/`manage_wgdp_settings` instead.
+- ~~**`process_am_bulk_actions` only gated by `manage_woocommerce`**~~ Resolved 2026-07-02: confirmed as intentional. Owner decided Shop Managers should be able to revoke all Drive access, same as the rest of the Access Manager tab — no stricter capability needed for `revoke`. No change.
 
 - ~~**`$_GET['page']` / `$_GET['update_check']` compared without sanitization** — `class-wgdp-admin.php:888, 613`.~~ Fixed 2026-07-02 (v3.4.17): line 888 now runs `sanitize_key( wp_unslash( ... ) )`. Line 613 is only an `isset()` existence check (no value read), so nothing to sanitize there.
 
