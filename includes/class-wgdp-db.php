@@ -132,11 +132,28 @@ class WGDP_DB {
 		}
 
 		try {
-			$count = (int) get_transient( $cache_key );
+			// Fixed window: pin the reset time on first consume and preserve it on
+			// subsequent consumes so the transient TTL is not extended each call.
+			// Storing count + reset avoids the sliding-window behaviour where a
+			// steady stream of requests could keep the window alive indefinitely
+			// and roughly double the intended rate at window edges.
+			$now    = time();
+			$stored = get_transient( $cache_key );
+
+			if ( is_array( $stored ) && isset( $stored['reset'], $stored['count'] ) && (int) $stored['reset'] > $now ) {
+				$count = (int) $stored['count'];
+				$reset = (int) $stored['reset'];
+			} else {
+				$count = 0;
+				$reset = $now + $window;
+			}
+
 			if ( $count >= $limit ) {
 				return false;
 			}
-			set_transient( $cache_key, $count + 1, $window );
+
+			$ttl = max( 1, $reset - $now );
+			set_transient( $cache_key, array( 'count' => $count + 1, 'reset' => $reset ), $ttl );
 			return true;
 		} finally {
 			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery

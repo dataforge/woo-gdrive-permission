@@ -4,6 +4,27 @@
     var orderRecipientsRefreshTimer = null;
     var orderRecipientsRefreshSeq = 0;
 
+    // Normalize an AJAX error payload to a display string. WordPress may send
+    // response.data as a string, or as an object/array (e.g. { message: '...' }),
+    // which would otherwise render as "[object Object]".
+    function wgdpErrorMessage(data) {
+        if (data === null || typeof data === 'undefined') {
+            return 'An unknown error occurred.';
+        }
+        if (typeof data === 'string') {
+            return data;
+        }
+        if (typeof data === 'object') {
+            if (typeof data.message === 'string') {
+                return data.message;
+            }
+            if (Array.isArray(data) && typeof data[0] === 'string') {
+                return data[0];
+            }
+        }
+        return String(data);
+    }
+
     function refreshOrderRecipientsBox(orderId) {
         var $box = $('.wgdp-order-recipients-content[data-order-id="' + orderId + '"]');
         if (!$box.length || !orderId) {
@@ -155,7 +176,7 @@
             account_id: accountId
         }, function (response) {
             if (!response.success) {
-                errorCallback('Error getting token: ' + response.data);
+                errorCallback('Error getting token: ' + wgdpErrorMessage(response.data));
                 return;
             }
             callback(response.data.token);
@@ -711,7 +732,7 @@
                 }, 2000);
             } else {
                 $btn.prop('disabled', false).text('Resend OTP');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Resend OTP');
@@ -739,7 +760,7 @@
                 }, 2000);
             } else {
                 $btn.prop('disabled', false).text('Send Access Email');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Send Access Email');
@@ -767,7 +788,7 @@
                 }, 2000);
             } else {
                 $btn.prop('disabled', false).text('Resend Order Email');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Resend Order Email');
@@ -814,7 +835,7 @@
                 window.location.reload();
             } else {
                 $btn.prop('disabled', false).text('Remove Account');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Remove Account');
@@ -877,7 +898,7 @@
                 $input.val('');
                 $btn.prop('disabled', false).text('Add Recipient');
             } else {
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
                 $btn.prop('disabled', false).text('Add Recipient');
             }
         }).fail(function () {
@@ -943,7 +964,7 @@
                 $btn.remove();
             } else {
                 $btn.prop('disabled', false).text('Revoke');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Revoke');
@@ -989,7 +1010,7 @@
                 }
             } else {
                 $btn.prop('disabled', false).text('Retry Grant');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Retry Grant');
@@ -1055,7 +1076,7 @@
                 $btn.prop('disabled', false).text('Save');
             } else {
                 $btn.prop('disabled', false).text('Save');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Save');
@@ -1136,7 +1157,7 @@
                 $btn.prop('disabled', false).text('Assign');
             } else {
                 $btn.prop('disabled', false).text('Assign');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Assign');
@@ -1257,7 +1278,7 @@
                 );
             } else {
                 $btn.prop('disabled', false).text('Release Digital Now');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Release Digital Now');
@@ -1290,7 +1311,7 @@
                 );
             } else {
                 $btn.prop('disabled', false).text('Release Now');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Release Now');
@@ -1319,7 +1340,7 @@
                 }
             } else {
                 $btn.prop('disabled', false).text('Recalculate');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Recalculate');
@@ -1348,7 +1369,7 @@
                 }
             } else {
                 $btn.prop('disabled', false).text('Recalculate');
-                alert('Error: ' + response.data);
+                alert('Error: ' + wgdpErrorMessage(response.data));
             }
         }).fail(function () {
             $btn.prop('disabled', false).text('Recalculate');

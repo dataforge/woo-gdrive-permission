@@ -249,23 +249,34 @@ class WGDP_Order_Handler {
 
 			$has_drive_items = true;
 
-			foreach ( $recipients as $index => $email ) {
-					$email = WGDP_Entitlements::normalize_email( $email );
-				if ( ! is_email( $email ) ) {
-					continue;
-				}
+			// Hold the per-order-item lock across the whole recipient loop so a
+			// concurrent trigger (webhook retry racing a status transition, or the
+			// preorder-charge hook racing woocommerce_order_status_processing) cannot
+			// both pass the non-atomic existence check and insert duplicate rows.
+			// Mirrors the admin/self-service assignment paths.
+			$lock_outcome = $ent->with_order_item_lock( $order_item_id, function () use (
+				$ent, $order, $order_id, $order_item_id, $product_id, $variation_id,
+				$account_id, $resources, $recipients, $item
+			) {
+				$created_any = false;
 
-				$result = $ent->create_entitlements_for_recipient( array(
-					'order_id'        => $order_id,
-					'order_item_id'   => $order_item_id,
-					'product_id'      => $product_id,
-					'variation_id'    => $variation_id ?: 0,
-					'email'           => $email,
-					'account_id'      => $account_id,
-					'resources'       => $resources,
-					'recipient_index' => $index + 1,
-					'reuse_revoked'   => false,
-				) );
+				foreach ( $recipients as $index => $email ) {
+					$email = WGDP_Entitlements::normalize_email( $email );
+					if ( ! is_email( $email ) ) {
+						continue;
+					}
+
+					$result = $ent->create_entitlements_for_recipient( array(
+						'order_id'        => $order_id,
+						'order_item_id'   => $order_item_id,
+						'product_id'      => $product_id,
+						'variation_id'    => $variation_id ?: 0,
+						'email'           => $email,
+						'account_id'      => $account_id,
+						'resources'       => $resources,
+						'recipient_index' => $index + 1,
+						'reuse_revoked'   => false,
+					) );
 
 					if ( is_wp_error( $result ) || ! empty( $result['already_exists'] ) ) {
 						continue;
@@ -291,6 +302,13 @@ class WGDP_Order_Handler {
 					}
 					$created_any = true;
 				}
+
+				return $created_any;
+			} );
+
+			if ( true === $lock_outcome ) {
+				$created_any = true;
+			}
 		}
 
 		if ( $has_drive_items && ! $order->get_meta( '_wgdp_has_drive_items' ) ) {
