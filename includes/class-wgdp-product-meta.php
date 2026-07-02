@@ -23,7 +23,6 @@ class WGDP_Product_Meta {
 		add_action( 'woocommerce_save_product_variation', array( $this, 'save_variation_meta' ), 10, 2 );
 
 		// AJAX endpoints.
-		add_action( 'wp_ajax_wgdp_get_file_info', array( $this, 'ajax_get_file_info' ) );
 		add_action( 'wp_ajax_wgdp_browse_drive_files', array( $this, 'ajax_browse_drive_files' ) );
 
 		// Enqueue assets.
@@ -994,37 +993,6 @@ class WGDP_Product_Meta {
 			$resources[] = $res;
 		}
 		return $resources;
-	}
-
-	/**
-	 * AJAX: Get file info by ID or URL.
-	 */
-	public function ajax_get_file_info() {
-		check_ajax_referer( 'wgdp_admin_nonce', 'nonce' );
-
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
-			wp_send_json_error( 'Permission denied.' );
-		}
-
-		$file_id    = isset( $_POST['file_id'] ) ? sanitize_text_field( wp_unslash( $_POST['file_id'] ) ) : '';
-		$account_id = isset( $_POST['account_id'] ) ? sanitize_text_field( wp_unslash( $_POST['account_id'] ) ) : '';
-
-		if ( empty( $file_id ) ) {
-			wp_send_json_error( 'No file ID provided.' );
-		}
-		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
-			wp_send_json_error( 'Please select a connected Google account.' );
-		}
-
-		$file_id = WGDP_Google_Drive::extract_id_from_url( $file_id );
-		$result  = WGDP_Google_Drive::instance()->get_file( $file_id, $account_id );
-
-		if ( is_wp_error( $result ) ) {
-			wp_send_json_error( $result->get_error_message() );
-		}
-
-		$result['resourceType'] = WGDP_Google_Drive::is_folder( $result['mimeType'] ?? '' ) ? 'folder' : 'file';
-		wp_send_json_success( $result );
 	}
 
 	/**

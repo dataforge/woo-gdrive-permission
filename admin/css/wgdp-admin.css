@@ -105,15 +105,13 @@
     text-decoration: none;
 }
 
-.wgdp-drive-browser__search,
-.wgdp-drive-browser__paste {
+.wgdp-drive-browser__search {
     display: flex;
     gap: 8px;
     padding: 12px 16px 0;
 }
 
-.wgdp-drive-browser__search input,
-.wgdp-drive-browser__paste input {
+.wgdp-drive-browser__search input {
     flex: 1;
     max-width: none;
 }

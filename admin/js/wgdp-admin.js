@@ -359,10 +359,6 @@
                         '<input type="search" class="regular-text wgdp-drive-browser__search-input" placeholder="Search this folder" />' +
                         '<button type="submit" class="button">Search</button>' +
                     '</form>' +
-                    '<form class="wgdp-drive-browser__paste">' +
-                        '<input type="text" class="regular-text wgdp-drive-browser__url-input" placeholder="Paste a Google Drive file URL or ID" />' +
-                        '<button type="submit" class="button">Add URL</button>' +
-                    '</form>' +
                     '<div class="wgdp-drive-browser__path"></div>' +
                     '<div class="wgdp-drive-browser__status"></div>' +
                     '<div class="wgdp-drive-browser__list"></div>' +
@@ -499,7 +495,7 @@
         driveBrowserState.folderStack = [];
 
         var $modal = getDriveBrowser();
-        $modal.find('.wgdp-drive-browser__search-input, .wgdp-drive-browser__url-input').val('');
+        $modal.find('.wgdp-drive-browser__search-input').val('');
         $modal.find('.wgdp-drive-browser__list').empty();
         $modal.addClass('is-open').attr('aria-hidden', 'false');
         renderDriveBrowserPath();
@@ -581,53 +577,6 @@
         addResourceRow(file, $list);
         notifyVariationChanged($list);
         $(this).prop('disabled', true).text('Added');
-    });
-
-    $(document).on('submit', '.wgdp-drive-browser__paste', function (e) {
-        e.preventDefault();
-
-        var $form = $(this);
-        var $input = $form.find('.wgdp-drive-browser__url-input');
-        var val = $input.val().trim();
-        var $list = getActiveResourceList();
-
-        if (!val || !$list.length) {
-            return;
-        }
-
-        setDriveBrowserStatus('Checking file...', false);
-        $form.find('button').prop('disabled', true);
-
-        $.post(wgdp.ajax_url, {
-            action: 'wgdp_get_file_info',
-            nonce: wgdp.nonce,
-            file_id: val,
-            account_id: driveBrowserState.accountId
-        }, function (response) {
-            $form.find('button').prop('disabled', false);
-            if (!response.success) {
-                setDriveBrowserStatus('Error: ' + wgdpErrorMessage(response.data), true);
-                return;
-            }
-
-            var file = response.data;
-            if (file.resourceType === 'folder') {
-                setDriveBrowserStatus('Folders cannot be linked. Please use individual file URLs.', true);
-                return;
-            }
-
-            addResourceRow({
-                id: file.id,
-                name: file.name,
-                type: 'file'
-            }, $list);
-            notifyVariationChanged($list);
-            $input.val('');
-            setDriveBrowserStatus('File added.', false);
-        }).fail(function () {
-            $form.find('button').prop('disabled', false);
-            setDriveBrowserStatus('Request failed.', true);
-        });
     });
 
     // Remove resource row: active → retire (keep in DOM), already retired → remove from DOM.
