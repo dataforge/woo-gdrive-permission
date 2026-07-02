@@ -62,6 +62,10 @@ class WGDP_Entitlements_List {
 				}
 			}
 
+		if ( $count > 0 ) {
+			delete_transient( 'wgdp_permission_counts' );
+		}
+
 		wp_send_json_success( sprintf( 'Resent OTP to %d entitlement(s).', $count ) );
 	}
 

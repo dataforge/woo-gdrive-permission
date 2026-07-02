@@ -1323,6 +1323,7 @@ class WGDP_Order_Handler {
 			}
 		}
 
+		delete_transient( 'wgdp_permission_counts' );
 		wp_send_json_success( 'Verification email resent.' );
 	}
 
