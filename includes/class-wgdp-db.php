@@ -129,6 +129,14 @@ class WGDP_DB {
 	public static function consume_rate_limit( $key, $limit, $window ) {
 		global $wpdb;
 
+		// GET_LOCK()/RELEASE_LOCK() are session-scoped, so both calls must land on
+		// the same connection — and that connection must be the primary, or the
+		// lock provides no exclusion at all. On HyperDB-based setups (e.g. WP VIP)
+		// reads can otherwise be routed to a replica.
+		if ( method_exists( $wpdb, 'send_reads_to_masters' ) ) {
+			$wpdb->send_reads_to_masters();
+		}
+
 		$limit = max( 1, (int) $limit );
 		$window = max( 1, (int) $window );
 		$cache_key = 'wgdp_rl_' . md5( $key );

@@ -16,7 +16,7 @@
 
 ### LOW
 
-- **`consume_rate_limit` lock may run against a read replica** — `class-wgdp-db.php:118-163`. `GET_LOCK` is only effective if executed on the primary; if `$wpdb` routes the SELECT to a replica, mutual exclusion is lost. Ensure the lock runs against the primary connection.
+- ~~**`consume_rate_limit` lock may run against a read replica**~~ Fixed 2026-07-02 (v3.4.30): `class-wgdp-db.php` now calls `$wpdb->send_reads_to_masters()` (guarded with `method_exists`, so it's a no-op on vanilla WordPress) before acquiring the `GET_LOCK`, forcing subsequent reads on HyperDB-based setups (e.g. WP VIP) onto the primary connection so the lock and the transient read/write it protects can't be split across a replica.
 
 - **`ajax_bulk_resend_otp` doesn't clear counts transient** — `class-wgdp-entitlements-list.php:37-66`. (Validated 2026-07-02: resend only operates on non-verified/non-revoked rows and does not change any row's `grant_status`/`verification_status` category, so `count_by_status` totals are unchanged and the transient is not actually stale. Effectively a no-op; low priority. Add `delete_transient('wgdp_permission_counts')` only as defensive hygiene if verification behavior later changes.)
 
