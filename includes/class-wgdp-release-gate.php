@@ -70,7 +70,17 @@ class WGDP_Release_Gate {
 			$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
 			if ( 'min_sales_qty' === $var_mode ) {
 				$scope = get_post_meta( $variation_id, '_wgdp_threshold_scope', true );
-				return ! empty( $scope ) ? $scope : 'entire_product';
+				$scope = ! empty( $scope ) ? $scope : 'entire_product';
+
+				// A variation excluded from the product threshold can never satisfy
+				// an 'entire_product' scoped gate — the product-level counter never
+				// includes its own sales (see variation_counts_toward_product_threshold()).
+				// Fall back to the variation's own counter so it can still release.
+				if ( 'entire_product' === $scope && ! self::variation_counts_toward_product_threshold( $product_id, $variation_id ) ) {
+					return 'this_variation_only';
+				}
+
+				return $scope;
 			}
 		}
 		return 'entire_product';
