@@ -90,7 +90,7 @@ class WGDP_Google_Auth {
 		}
 
 		$client_id     = get_option( 'wgdp_oauth_client_id', '' );
-		$client_secret = $this->decrypt( get_option( 'wgdp_oauth_client_secret', '' ) );
+		$client_secret = $this->get_client_secret();
 
 		if ( empty( $client_id ) || empty( $client_secret ) ) {
 			return new WP_Error( 'wgdp_no_credentials', 'OAuth client credentials not configured.' );
@@ -183,7 +183,7 @@ class WGDP_Google_Auth {
 	public function handle_callback( $code ) {
 		$client_id     = get_option( 'wgdp_oauth_client_id', '' );
 		$encrypted_raw = get_option( 'wgdp_oauth_client_secret', '' );
-		$client_secret = $this->decrypt( $encrypted_raw );
+		$client_secret = $this->get_client_secret();
 
 		if ( empty( $client_id ) || empty( $client_secret ) ) {
 			$detail = '';
@@ -549,7 +549,56 @@ class WGDP_Google_Auth {
 		}
 
 		$accounts = json_decode( $decrypted, true );
-		return is_array( $accounts ) ? $accounts : array();
+		if ( ! is_array( $accounts ) ) {
+			return array();
+		}
+
+		// Migrate legacy unauthenticated ciphertext to the authenticated format
+		// on first read so tampering becomes detectable going forward.
+		if ( $this->is_legacy_encrypted( $encrypted ) ) {
+			$this->save_all_accounts( $accounts );
+		}
+
+		return $accounts;
+	}
+
+	/**
+	 * Read and decrypt the OAuth client secret, migrating legacy
+	 * unauthenticated ciphertext to the authenticated format on first read.
+	 *
+	 * @return string Decrypted client secret, or '' when unset/undecryptable.
+	 */
+	public function get_client_secret() {
+		$encrypted = get_option( 'wgdp_oauth_client_secret', '' );
+		if ( empty( $encrypted ) ) {
+			return '';
+		}
+
+		$secret = $this->decrypt( $encrypted );
+		if ( '' !== $secret && $this->is_legacy_encrypted( $encrypted ) ) {
+			update_option( 'wgdp_oauth_client_secret', $this->encrypt( $secret ), false );
+		}
+
+		return $secret;
+	}
+
+	/**
+	 * Whether a stored ciphertext uses the legacy unauthenticated CBC format
+	 * (i.e. it carries none of the authenticated version prefixes).
+	 *
+	 * @param string $value Stored ciphertext.
+	 * @return bool
+	 */
+	private function is_legacy_encrypted( $value ) {
+		if ( '' === (string) $value ) {
+			return false;
+		}
+		foreach ( array( 'v2s::', 'v2g::', 'v1c::' ) as $prefix ) {
+			if ( 0 === strpos( $value, $prefix ) ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**

@@ -7,16 +7,38 @@
 	var useRef          = wp.element.useRef;
 	var registerPlugin  = wp.plugins.registerPlugin;
 	var dispatch        = wp.data.dispatch;
+	var useSelect       = wp.data.useSelect;
 	var ExperimentalOrderMeta = wc.blocksCheckout.ExperimentalOrderMeta;
 	var getSetting      = wc.wcSettings.getSetting;
 
 	var settings = getSetting( 'wgdp-checkout_data', {} );
-	var qualifyingItems = settings.qualifyingItems || [];
+	// Static list of qualifying cart items (keys + names). Quantities here are a
+	// snapshot from module load; live quantities come from the cart store below.
+	var qualifyingItemsMeta = settings.qualifyingItems || [];
 
 	function WgdpRecipientFields() {
-		if ( ! qualifyingItems.length ) {
+		if ( ! qualifyingItemsMeta.length ) {
 			return null;
 		}
+
+		// Subscribe to live cart quantities so mid-checkout qty changes re-render
+		// this component and the qty-sync effect below actually fires.
+		var cartItems = useSelect( function ( select ) {
+			var store = select( 'wc/store/cart' );
+			var data  = store ? store.getCartData() : null;
+			return ( data && data.items ) ? data.items : [];
+		}, [] );
+
+		var liveQty = {};
+		cartItems.forEach( function ( ci ) {
+			liveQty[ ci.key ] = ci.quantity;
+		} );
+
+		// Merge live quantities onto the qualifying-item metadata.
+		var qualifyingItems = qualifyingItemsMeta.map( function ( item ) {
+			var qty = ( liveQty[ item.itemKey ] != null ) ? liveQty[ item.itemKey ] : item.quantity;
+			return Object.assign( {}, item, { quantity: qty } );
+		} );
 
 		// Build initial state keyed by Woo cart item key.
 		var initialState = {};

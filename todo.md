@@ -6,7 +6,7 @@
 
 ### CRITICAL
 
-- **Legacy CBC decrypt has no authentication (padding-oracle / tamper risk)** — `class-wgdp-google-auth.php:657-672`. The legacy `iv::ciphertext` path (base64, CBC, no HMAC) is used to decrypt `wgdp_accounts` / `wgdp_oauth_client_secret` options holding refresh tokens and client secrets. New writes use `v1c::`/`v2s::`/`v2g::` so this only fires for old data, but ciphertext tampering is undetectable. Migrate any remaining legacy values to the authenticated format on first read and drop the unauthenticated branch once none remain.
+- **Legacy CBC decrypt has no authentication (padding-oracle / tamper risk)** — `class-wgdp-google-auth.php`. PARTIALLY DONE (v3.4.23): migrate-on-read is now implemented — `get_all_accounts()` re-saves via `save_all_accounts()` and the new `get_client_secret()` re-encrypts with the authenticated format whenever `is_legacy_encrypted()` detects a value lacking the `v2s::`/`v2g::`/`v1c::` prefix. All three client-secret read sites (`class-wgdp-google-auth.php` refresh + callback, `class-wgdp-admin.php:407`) now route through `get_client_secret()`. REMAINING: the unauthenticated legacy decrypt branch (`class-wgdp-google-auth.php` ~lines 657-672) is still present because pre-existing legacy data is only migrated once it's read; drop that branch in a future release after confirming no legacy `wgdp_accounts`/`wgdp_oauth_client_secret` values remain in the wild (one tamper-detectable read happens per legacy value before migration).
 
 ### HIGH
 
@@ -25,8 +25,6 @@
 - **`consume_rate_limit` lock may run against a read replica** — `class-wgdp-db.php:118-163`. `GET_LOCK` is only effective if executed on the primary; if `$wpdb` routes the SELECT to a replica, mutual exclusion is lost. Ensure the lock runs against the primary connection.
 
 - **`ajax_bulk_resend_otp` doesn't clear counts transient** — `class-wgdp-entitlements-list.php:37-66`. (Validated 2026-07-02: resend only operates on non-verified/non-revoked rows and does not change any row's `grant_status`/`verification_status` category, so `count_by_status` totals are unchanged and the transient is not actually stale. Effectively a no-op; low priority. Add `delete_transient('wgdp_permission_counts')` only as defensive hygiene if verification behavior later changes.)
-
-- **Blocks checkout script-data captured once at module load** — `assets/js/wgdp-checkout-block.js:13-14,70`. `qualifyingItems` is read once from `getSetting`; cart qty changes during checkout re-render blocks but never refresh script-data, so the qty-sync `useEffect` is effectively dead. Subscribe to a wc store selector for live quantities.
 
 - **`process_am_bulk_actions` only gated by `manage_woocommerce`** — `class-wgdp-admin.php:43-52, 88-99`. Shop Managers (broad role) can bulk-revoke/retry/re-provision all customer Drive access. If revocation should be admin-only, add an explicit stricter capability check inside the destructive branches.
 

@@ -404,7 +404,7 @@ class WGDP_Admin {
 					<?php
 					$secret_hint = '';
 					if ( $has_creds ) {
-						$dec = $auth->decrypt( get_option( 'wgdp_oauth_client_secret', '' ) );
+						$dec = $auth->get_client_secret();
 						$secret_hint = $dec ? '••••••••' . substr( $dec, -4 ) : '';
 					}
 				?>
