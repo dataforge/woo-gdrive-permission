@@ -673,7 +673,10 @@ class WGDP_Order_Handler {
 
 			$revoked_count = 0;
 			$error_count   = 0;
-			$order_id      = (int) ( $rows[0]['order_id'] ?? 0 );
+			// Prefer the item's own order id (authoritative); fall back to the
+			// entitlement row only when the item could not be loaded. Use a
+			// distinct name so we don't shadow the captured $order_id.
+			$note_order_id = $order_id ?: (int) ( $rows[0]['order_id'] ?? 0 );
 
 			foreach ( $rows as $row ) {
 				if ( 'revoked' === ( $row['grant_status'] ?? '' ) ) {
@@ -691,7 +694,7 @@ class WGDP_Order_Handler {
 
 			delete_transient( 'wgdp_permission_counts' );
 
-			$order = $order_id ? wc_get_order( $order_id ) : null;
+			$order = $note_order_id ? wc_get_order( $note_order_id ) : null;
 			if ( $order && ( $revoked_count || $error_count ) ) {
 				$note = sprintf(
 					'WGDP: Order item #%d was deleted. Revoked %d digital entitlement(s).',

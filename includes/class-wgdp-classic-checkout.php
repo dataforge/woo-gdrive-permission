@@ -127,7 +127,9 @@ class WGDP_Classic_Checkout {
 						),
 						'error'
 					);
-					return;
+					// Surface at most one error per item, but keep validating the
+					// remaining items so multi-item carts report every problem at once.
+					continue 2;
 				}
 
 				$valid_emails[] = $sanitized;
@@ -144,7 +146,7 @@ class WGDP_Classic_Checkout {
 						),
 						'error'
 					);
-					return;
+					continue 2;
 				}
 			}
 
@@ -157,7 +159,7 @@ class WGDP_Classic_Checkout {
 					),
 					'error'
 				);
-				return;
+				continue;
 			}
 		}
 	}
@@ -185,10 +187,14 @@ class WGDP_Classic_Checkout {
 		$recipients = wp_unslash( $_POST['wgdp_recipients'] );
 		$raw_emails = isset( $recipients[ $key ] ) && is_array( $recipients[ $key ] ) ? $recipients[ $key ] : array();
 
+		// Reindex first so a sparse POST array (e.g. wgdp_recipients[KEY][999])
+		// slices positionally, matching validate_recipient_fields().
+		$raw_emails = array_values( $raw_emails );
+
 		$emails = array();
 		foreach ( array_slice( $raw_emails, 0, $quantity ) as $raw ) {
 				$email = strtolower( sanitize_email( $raw ) );
-			if ( is_email( $email ) ) {
+			if ( is_email( $email ) && ! in_array( $email, $emails, true ) ) {
 				$emails[] = $email;
 			}
 		}

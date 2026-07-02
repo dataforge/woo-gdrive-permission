@@ -28,13 +28,7 @@
 
 - **`ajax_bulk_resend_otp` doesn't clear counts transient** — `class-wgdp-entitlements-list.php:37-66`. (Validated 2026-07-02: resend only operates on non-verified/non-revoked rows and does not change any row's `grant_status`/`verification_status` category, so `count_by_status` totals are unchanged and the transient is not actually stale. Effectively a no-op; low priority. Add `delete_transient('wgdp_permission_counts')` only as defensive hygiene if verification behavior later changes.)
 
-- **Classic checkout returns on first error** — `class-wgdp-classic-checkout.php:111-149`. `validate_recipient_fields` returns on the first invalid/duplicate/excess recipient, so multi-item carts surface one error at a time. Accumulate notices via `wc_add_notice` and continue.
-
-- **Classic-checkout save path trusts sparse `$_POST` array** — `class-wgdp-classic-checkout.php:189`. `array_values()` before slicing and add a duplicate-email guard for defense-in-depth.
-
 - **Blocks checkout script-data captured once at module load** — `assets/js/wgdp-checkout-block.js:13-14,70`. `qualifyingItems` is read once from `getSetting`; cart qty changes during checkout re-render blocks but never refresh script-data, so the qty-sync `useEffect` is effectively dead. Subscribe to a wc store selector for live quantities.
-
-- **`revoke_entitlements_for_deleted_order_item` shadows `$order_id`** — `class-wgdp-order-handler.php:649-700`. The closure reassigns `$order_id` from the entitlement row (used for the note) while the outer `$order_id` (from the WC item) is used for the counter decrement; they can diverge if the entitlement row's `order_id` disagrees with the item's order.
 
 - **`process_am_bulk_actions` only gated by `manage_woocommerce`** — `class-wgdp-admin.php:43-52, 88-99`. Shop Managers (broad role) can bulk-revoke/retry/re-provision all customer Drive access. If revocation should be admin-only, add an explicit stricter capability check inside the destructive branches.
 
