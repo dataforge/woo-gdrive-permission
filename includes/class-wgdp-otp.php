@@ -144,8 +144,6 @@ class WGDP_OTP {
 		}
 
 		// Mark as verified once. A concurrent valid submit may have done this first.
-		global $wpdb;
-		$table = WGDP_DB::get_table_name();
 		$verified = (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
 				"UPDATE {$table} SET verification_status = 'verified' WHERE id = %d AND verification_status = 'pending'",

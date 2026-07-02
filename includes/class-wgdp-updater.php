@@ -80,7 +80,7 @@ class WGDP_Updater {
 
         $backup_dir = '';
         if ( $wp_filesystem->exists( $expected_dir ) ) {
-            $backup_dir = $expected_dir . '.bak-' . time();
+            $backup_dir = $expected_dir . '.bak-' . time() . '-' . wp_rand( 1000, 9999 );
             if ( ! $wp_filesystem->move( $expected_dir, $backup_dir, true ) ) {
                 return $result;
             }
@@ -121,7 +121,8 @@ class WGDP_Updater {
         $info->name          = 'Woo GDrive Permission';
         $info->slug          = self::SLUG;
         $info->version       = $remote_version;
-        $info->author        = '<a href="https://github.com/dataforge">DataForge</a>';
+        $info->author         = 'DataForge';
+        $info->author_profile = 'https://github.com/dataforge';
         $info->homepage      = 'https://github.com/' . self::GITHUB_REPO;
         $info->requires      = '5.8';
         $info->requires_php  = '7.4';
@@ -164,7 +165,7 @@ class WGDP_Updater {
     private static function get_asset_url( $release ) {
         if ( ! empty( $release->assets ) ) {
             foreach ( $release->assets as $asset ) {
-                if ( '.zip' === substr( $asset->name, -4 ) ) {
+                if ( '.zip' === strtolower( substr( $asset->name, -4 ) ) ) {
                     return $asset->browser_download_url;
                 }
             }

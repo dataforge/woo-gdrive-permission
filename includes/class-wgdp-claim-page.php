@@ -432,7 +432,7 @@ class WGDP_Claim_Page {
 				} else {
 					$permission_email = strtolower( trim( $existing_permission['emailAddress'] ?? '' ) );
 					$recipient_email  = strtolower( trim( $entitlement['recipient_email'] ) );
-					if ( '' === $permission_email || $permission_email === $recipient_email ) {
+					if ( '' !== $permission_email && $permission_email === $recipient_email ) {
 						$ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
 
 						if ( ! $suppress_email ) {

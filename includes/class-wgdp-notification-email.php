@@ -9,7 +9,7 @@ class WGDP_Notification_Email {
 	public static function send_otp( $email, $otp, $claim_token, $order, $item ) {
 		$product_name = $item->get_name();
 		$order_id     = $order->get_id();
-		$claim_url    = add_query_arg( 't', urlencode( $claim_token ), WGDP_Claim_Page::get_page_url() );
+		$claim_url    = add_query_arg( 't', $claim_token, WGDP_Claim_Page::get_page_url() );
 		$site_name    = get_bloginfo( 'name' );
 
 		// Build product label with variation attributes if applicable.
