@@ -30,12 +30,16 @@ class WGDP_Updater {
 
         $remote_version = (string) preg_replace( '/^v/', '', (string) $release->tag_name );
 
-        if ( version_compare( WGDP_VERSION, $remote_version, '>=' ) ) {
-            return $update;
-        }
-
+        // Always return release info once the GitHub fetch succeeds -- even
+        // when already current. WordPress core does its own version_compare()
+        // to file this into response[] (update available) or no_update[]
+        // (confirmed current); returning $update (false) here when current
+        // makes core skip the plugin entirely, which leaves the Plugins-screen
+        // "Enable/Disable auto-updates" link permanently blank. See
+        // https://github.com/dataforge/wp-plugin-updater-guide#why-check_update-must-always-return-release-info
         return array(
             'slug'        => self::SLUG,
+            'version'     => $remote_version,
             'new_version' => $remote_version,
             'url'         => $release->html_url,
             'package'     => self::get_asset_url( $release ),
