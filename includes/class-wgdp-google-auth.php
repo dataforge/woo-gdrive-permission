@@ -549,56 +549,16 @@ class WGDP_Google_Auth {
 		}
 
 		$accounts = json_decode( $decrypted, true );
-		if ( ! is_array( $accounts ) ) {
-			return array();
-		}
-
-		// Migrate legacy unauthenticated ciphertext to the authenticated format
-		// on first read so tampering becomes detectable going forward.
-		if ( $this->is_legacy_encrypted( $encrypted ) ) {
-			$this->save_all_accounts( $accounts );
-		}
-
-		return $accounts;
+		return is_array( $accounts ) ? $accounts : array();
 	}
 
 	/**
-	 * Read and decrypt the OAuth client secret, migrating legacy
-	 * unauthenticated ciphertext to the authenticated format on first read.
+	 * Read and decrypt the OAuth client secret.
 	 *
 	 * @return string Decrypted client secret, or '' when unset/undecryptable.
 	 */
 	public function get_client_secret() {
-		$encrypted = get_option( 'wgdp_oauth_client_secret', '' );
-		if ( empty( $encrypted ) ) {
-			return '';
-		}
-
-		$secret = $this->decrypt( $encrypted );
-		if ( '' !== $secret && $this->is_legacy_encrypted( $encrypted ) ) {
-			update_option( 'wgdp_oauth_client_secret', $this->encrypt( $secret ), false );
-		}
-
-		return $secret;
-	}
-
-	/**
-	 * Whether a stored ciphertext uses the legacy unauthenticated CBC format
-	 * (i.e. it carries none of the authenticated version prefixes).
-	 *
-	 * @param string $value Stored ciphertext.
-	 * @return bool
-	 */
-	private function is_legacy_encrypted( $value ) {
-		if ( '' === (string) $value ) {
-			return false;
-		}
-		foreach ( array( 'v2s::', 'v2g::', 'v1c::' ) as $prefix ) {
-			if ( 0 === strpos( $value, $prefix ) ) {
-				return false;
-			}
-		}
-		return true;
+		return $this->decrypt( get_option( 'wgdp_oauth_client_secret', '' ) );
 	}
 
 	/**
@@ -703,21 +663,10 @@ class WGDP_Google_Auth {
 			return ( false === $decrypted ) ? '' : $decrypted;
 		}
 
-		// Legacy unauthenticated CBC format: base64(iv)::ciphertext. Retained for
-		// reading data written before the v1c authenticated format existed.
-		$parts = explode( '::', $value, 2 );
-		if ( count( $parts ) !== 2 ) {
-			return '';
-		}
-
-		$iv = base64_decode( $parts[0] );
-		if ( false === $iv ) {
-			return '';
-		}
-
-		$decrypted = openssl_decrypt( $parts[1], self::CIPHER, $key, 0, $iv );
-
-		return ( false === $decrypted ) ? '' : $decrypted;
+		// Unknown/unrecognized format (e.g. the legacy unauthenticated
+		// base64(iv)::ciphertext scheme, dropped once all stored values were
+		// confirmed migrated to the authenticated v2s/v2g/v1c formats).
+		return '';
 	}
 
 	/**

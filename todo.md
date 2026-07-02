@@ -4,10 +4,6 @@
 
 ## Code review findings (2026-07-02)
 
-### CRITICAL
-
-- **Legacy CBC decrypt has no authentication (padding-oracle / tamper risk)** — `class-wgdp-google-auth.php`. PARTIALLY DONE (v3.4.23): migrate-on-read is now implemented — `get_all_accounts()` re-saves via `save_all_accounts()` and the new `get_client_secret()` re-encrypts with the authenticated format whenever `is_legacy_encrypted()` detects a value lacking the `v2s::`/`v2g::`/`v1c::` prefix. All three client-secret read sites (`class-wgdp-google-auth.php` refresh + callback, `class-wgdp-admin.php:407`) now route through `get_client_secret()`. REMAINING: the unauthenticated legacy decrypt branch (`class-wgdp-google-auth.php` ~lines 657-672) is still present because pre-existing legacy data is only migrated once it's read; drop that branch in a future release after confirming no legacy `wgdp_accounts`/`wgdp_oauth_client_secret` values remain in the wild (one tamper-detectable read happens per legacy value before migration).
-
 ### HIGH
 
 - **Store API cart-key queue relies on `WC()->cart` at checkout** — `class-wgdp-blocks-integration.php:184-201`. During `woocommerce_store_api_checkout_update_order_from_request` the Store API cart may be empty/unavailable, so `$cart_key_queue` is empty and submitted recipients (keyed by cart item key from JS) never match `$recipients[ $cart_key ]`, falling through to the legacy single-line lookup. Derive cart keys from `$order` items or Store API extension data instead.
