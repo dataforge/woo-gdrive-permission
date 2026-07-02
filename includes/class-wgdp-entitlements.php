@@ -1766,11 +1766,19 @@ class WGDP_Entitlements {
 	public function expire_stale() {
 		global $wpdb;
 		$table = $this->table();
-		return $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		// Rows can be created/reactivated as pending with a NULL claim_token_expires_at
+		// (the OTP that sets the expiry is issued afterward). If that OTP is never issued,
+		// such a row would otherwise never expire and would permanently hold a recipient
+		// slot — so fall back to created_at plus the full claim-token window as the cutoff.
+		$grace_hours = (int) WGDP_OTP::CLAIM_TOKEN_EXPIRY_HOURS;
+		return $wpdb->query( $wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			"UPDATE {$table} SET verification_status = 'expired'
 			 WHERE verification_status = 'pending'
-			   AND claim_token_expires_at IS NOT NULL
-			   AND claim_token_expires_at < UTC_TIMESTAMP()"
-		);
+			   AND (
+			     ( claim_token_expires_at IS NOT NULL AND claim_token_expires_at < UTC_TIMESTAMP() )
+			     OR ( claim_token_expires_at IS NULL AND created_at < ( UTC_TIMESTAMP() - INTERVAL %d HOUR ) )
+			   )",
+			$grace_hours
+		) );
 	}
 }

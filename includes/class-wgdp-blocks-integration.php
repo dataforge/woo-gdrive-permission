@@ -150,7 +150,7 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 						'wgdp_invalid_email',
 						sprintf(
 							'Invalid email address "%s" for "%s".',
-							esc_html( $raw_email ),
+							$raw_email,
 							$item->get_name()
 						),
 						400

@@ -24,10 +24,6 @@
 
 - **`create_entitlements_for_recipient` mutates `recipient_index` mid-loop** — `class-wgdp-entitlements.php:1431-1473`. When a revoked row is reused, its prior `recipient_index` can overwrite the in-flight value and propagate to newly created rows for later resources, producing inconsistent seat indices across the same recipient's files.
 
-- **`expire_stale()` skips rows with NULL `claim_token_expires_at`** — `class-wgdp-entitlements.php:1761-1770`. Pending rows with a NULL expiry never expire and permanently consume recipient slots. Confirm intent or expire by `created_at` fallback.
-
-- **Access Manager file count shows `0 / 0` for fully-unassigned rows** — `class-wgdp-access-manager-table.php:263-270`. `inject_unassigned_seats`/`inject_missing_email_items` add rows whose `prod_key` was never preloaded into `expected_files_cache`, so `column_files` always renders `0 / 0`. Seed the cache for the unassigned branch the same way the assigned branch does.
-
 - **Seat number computed by active rank, not `recipient_index`** — `class-wgdp-access-manager-table.php:668-688`. Revoking a middle seat renumbers the remaining seats (1,2,3…) and discards the real `recipient_index` from the `MIN()`; the over-allocation check (`$seat > $qty`) is then unreachable. Label seats with the actual `min_index`.
 
 - **`release-gate` cursor pagination assumes strict id-ascending order** — `class-wgdp-release-gate.php:484-518, 540-562`. `max($after_id, ...)` can jump the cursor past rows that should still be processed if the underlying query is not `ORDER BY id ASC`, silently skipping pending-release entitlements. Guarantee ordering or use the last id seen only.
@@ -35,8 +31,6 @@
 - **`list_files` hand-escapes folder id into Drive `q`** — `class-wgdp-google-drive.php:130-138`. Manual backslash/quote escaping is fragile if `$folder_id` ever originates from user/picker input; validate the ID charset before interpolation.
 
 - **Order-impact `file_count` shows old row count** — `class-wgdp-admin.php:1154`. Falls back to `count($result['all_rows'])` (pre-replacement rows) when `file_count` is absent; report the actual new count from `create_entitlements_for_recipient`.
-
-- **`esc_html()` applied before JSON serialization** — `class-wgdp-blocks-integration.php:147`. Error text fed to a `RouteException` is HTML-escaped server-side, so the client renders `&lt;`. Move escaping to the client render layer.
 
 ### LOW
 
@@ -58,7 +52,7 @@
 
 - **`process_am_bulk_actions` only gated by `manage_woocommerce`** — `class-wgdp-admin.php:43-52, 88-99`. Shop Managers (broad role) can bulk-revoke/retry/re-provision all customer Drive access. If revocation should be admin-only, add an explicit stricter capability check inside the destructive branches.
 
-- **`notification-email` assumes `$fl['name']` exists** — `class-wgdp-notification-email.php:94-99, 127-132`. Defensive: guard keys or fall back to `$fl['link']`.
+- **`notification-email` assumes `$fl['name']` exists** — `class-wgdp-notification-email.php:94-99, 127-132`. (Validated 2026-07-02: every caller builds file-link entries with a `'name'` set and a fallback — e.g. `?? $cloud_asset_id` — in release-gate, cron, claim-page, and admin, so `'name'` is never absent/null in practice. Pure defensive hygiene; low priority. Add `$fl['name'] ?? $fl['link']` only if a future caller might omit it.)
 
 - ~~**`$_GET['page']` / `$_GET['update_check']` compared without sanitization** — `class-wgdp-admin.php:888, 613`.~~ Fixed 2026-07-02 (v3.4.17): line 888 now runs `sanitize_key( wp_unslash( ... ) )`. Line 613 is only an `isset()` existence check (no value read), so nothing to sanitize there.
 

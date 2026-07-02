@@ -265,7 +265,14 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			$product_id   = (int) $item['product_id'];
 			$variation_id = (int) ( $item['variation_id'] ?? 0 );
 			$prod_key     = $product_id . '|' . $variation_id;
-			$expected     = $this->expected_files_cache[ $prod_key ] ?? 0;
+			if ( ! isset( $this->expected_files_cache[ $prod_key ] ) ) {
+				// Fully-unassigned rows are injected after preload_seat_and_file_data(),
+				// so their product may not be cached yet — compute it on demand.
+				$resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
+				$this->expected_files_cache[ $prod_key ]   = count( $resources );
+				$this->active_asset_ids_cache[ $prod_key ] = wp_list_pluck( $resources, 'id' );
+			}
+			$expected = $this->expected_files_cache[ $prod_key ];
 			return '<span style="color:#999;">0 / ' . esc_html( $expected ) . '</span>';
 		}
 
