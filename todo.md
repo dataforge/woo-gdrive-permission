@@ -10,8 +10,6 @@
 
 ### HIGH
 
-- **`mark_revoked` unlocked fallback can orphan a recipient group's claim token** — `class-wgdp-entitlements.php:228-236`. When `with_recipient_group_lock` returns a `WP_Error` (lock not acquired), the code falls through to `write_revoked_row( $id, $reason, false )` without clearing or transferring the claim token. The lock exists precisely to keep one claimable token in the group; this fallback can revoke the only row holding a live token, leaving the group with zero claimable tokens. On lock failure, clear the claim token on the row being revoked (or accept and document the orphan risk).
-
 - **Store API cart-key queue relies on `WC()->cart` at checkout** — `class-wgdp-blocks-integration.php:184-201`. During `woocommerce_store_api_checkout_update_order_from_request` the Store API cart may be empty/unavailable, so `$cart_key_queue` is empty and submitted recipients (keyed by cart item key from JS) never match `$recipients[ $cart_key ]`, falling through to the legacy single-line lookup. Derive cart keys from `$order` items or Store API extension data instead.
 
 - **`drive.file` scope may be insufficient for granting permissions on pre-existing files** — `class-wgdp-google-auth.php:10`. The plugin grants permissions on arbitrary user-selected Drive files/folders, but `drive.file` only allows app-created/app-opened files. If customers report 403s on permission creation, this scope is the likely cause; confirm Picker token wiring or widen scope as needed.
@@ -21,10 +19,6 @@
 - **`issue_otp_for_entitlement` treats `$wpdb->update` returning 0 as failure** — `class-wgdp-otp.php:77`. Zero rows affected (no column actually changed) returns a false-negative `WP_Error`. Treat only `false` as an error; on `0`, force a timestamp change or re-issue. (Note: currently benign — every issue writes fresh random `otp_hash`/`claim_token_hash`, so a matching row always changes; `0` only occurs when the id doesn't exist, where an error is correct. Low priority.)
 
 - **`get_unassigned_order_items` decrements `$total` after pagination** — `class-wgdp-entitlements.php:1155-1192`. The SQL count is already paged; the PHP `$total--` post-filtering produces inconsistent (sometimes negative) pagination totals for the Access Manager. (Validated 2026-07-02: confirmed real — `$total` comes from a separate COUNT query over all rows, and per-page `$total--` on qualification/qty filters skews it. A clean fix is non-trivial because the qualification check is PHP-side and can't be replicated in the COUNT SQL; deferred. Options: move the qualification/qty filter into SQL, or clamp `max(0, ...)` and accept approximate totals.)
-
-- **`create_entitlements_for_recipient` mutates `recipient_index` mid-loop** — `class-wgdp-entitlements.php:1431-1473`. When a revoked row is reused, its prior `recipient_index` can overwrite the in-flight value and propagate to newly created rows for later resources, producing inconsistent seat indices across the same recipient's files.
-
-- **`release-gate` cursor pagination assumes strict id-ascending order** — `class-wgdp-release-gate.php:484-518, 540-562`. `max($after_id, ...)` can jump the cursor past rows that should still be processed if the underlying query is not `ORDER BY id ASC`, silently skipping pending-release entitlements. Guarantee ordering or use the last id seen only.
 
 ### LOW
 
@@ -51,6 +45,8 @@
 ---
 
 ## Validated as false positives / already mitigated (2026-07-02)
+
+- **`release-gate` cursor pagination assumes strict id-ascending order (formerly MEDIUM)** — NOT actionable. Both underlying queries already sort correctly: `get_pending_release_for_product` and `get_pending_release_for_variation` (`class-wgdp-entitlements.php:348, 365`) both end in `... AND id > %d ORDER BY id ASC LIMIT %d`. With guaranteed ascending order, `max($after_id, (int)$row['id'])` is exactly equal to the last id seen, so no row can be skipped. Validated 2026-07-02.
 
 - **Order-impact `file_count` shows old row count (formerly MEDIUM)** — NOT actionable. `class-wgdp-admin.php:1142` always sets `file_count` from `$replacement['file_count']`, and `create_entitlements_for_recipient` always returns `file_count` (`class-wgdp-entitlements.php:1483`). The `?? count($result['all_rows'])` fallback at line 1154 is therefore dead code — the actual new count is always reported. Removed from findings 2026-07-02.
 

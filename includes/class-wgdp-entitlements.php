@@ -233,7 +233,15 @@ class WGDP_Entitlements {
 			}
 		}
 
-		return $this->write_revoked_row( $id, $reason, false );
+		// Lock could not be acquired. Revoking must not be blocked by contention,
+		// but we must not leave a live claim token orphaned on the revoked row
+		// (it would still validate while pointing at a revoked entitlement).
+		// Clear the token here; the group can obtain a fresh one via resend.
+		$clear_orphaned_claim = $row
+			&& 'pending' === $row['verification_status']
+			&& ! empty( $row['claim_token_hash'] );
+
+		return $this->write_revoked_row( $id, $reason, $clear_orphaned_claim );
 	}
 
 	/**
@@ -1357,6 +1365,7 @@ class WGDP_Entitlements {
 
 		// Resolve recipient_index.
 		$recipient_index_provided = ! empty( $args['recipient_index'] );
+		$recipient_index_locked   = $recipient_index_provided;
 		$recipient_index          = (int) ( $args['recipient_index'] ?? 0 );
 		if ( ! $recipient_index ) {
 			$existing  = $this->get_by_order_item( $order_item_id );
@@ -1387,8 +1396,13 @@ class WGDP_Entitlements {
 			if ( ! $entitlement_id && $reuse_revoked ) {
 				$revoked = $this->get_revoked_for_reuse( $order_item_id, $resource_id, $email );
 				if ( $revoked ) {
-					if ( ! $recipient_index_provided && ! empty( $revoked['recipient_index'] ) ) {
-						$recipient_index = (int) $revoked['recipient_index'];
+					// Adopt a revoked row's seat index at most once, then lock it so a
+					// later resource reusing a different revoked row cannot overwrite
+					// the in-flight index and produce inconsistent seat numbers across
+					// the same recipient's files.
+					if ( ! $recipient_index_locked && ! empty( $revoked['recipient_index'] ) ) {
+						$recipient_index        = (int) $revoked['recipient_index'];
+						$recipient_index_locked = true;
 					}
 					$entitlement_id = (int) $revoked['id'];
 					$updated        = $this->update( $entitlement_id, array(
