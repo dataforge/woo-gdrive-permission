@@ -29,7 +29,18 @@ class WGDP_Dashboard_Widget {
 	}
 
 	public function render_widget() {
-		$counts = WGDP_Entitlements_List::instance()->get_permission_counts();
+		// Guard against a stale/partial cached transient shape (from an older
+		// plugin version) that may omit keys, which would emit PHP notices below.
+		$counts = wp_parse_args(
+			(array) WGDP_Entitlements_List::instance()->get_permission_counts(),
+			array(
+				'granted'              => 0,
+				'pending_release'      => 0,
+				'error'                => 0,
+				'pending_verification' => 0,
+				'revoked'              => 0,
+			)
+		);
 
 		?>
 		<div class="wgdp-widget-counts">

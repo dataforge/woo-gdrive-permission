@@ -16,7 +16,7 @@
 
 ### MEDIUM
 
-- **`issue_otp_for_entitlement` treats `$wpdb->update` returning 0 as failure** — `class-wgdp-otp.php:77`. Zero rows affected (no column actually changed) returns a false-negative `WP_Error`. Treat only `false` as an error; on `0`, force a timestamp change or re-issue. (Note: currently benign — every issue writes fresh random `otp_hash`/`claim_token_hash`, so a matching row always changes; `0` only occurs when the id doesn't exist, where an error is correct. Low priority.)
+- ~~**`issue_otp_for_entitlement` treats `$wpdb->update` returning 0 as failure** — `class-wgdp-otp.php:77`.~~ NOT actionable (re-validated 2026-07-02): every issue writes a fresh random `otp_hash`/`claim_token_hash`, so an existing row is *always* changed and returns ≥1. A `0` return therefore only happens when the id doesn't exist, where returning a `WP_Error` is the correct behavior. Removing the `0 ===` branch would *introduce* a bug (silent success on a bad id). No change.
 
 - **`get_unassigned_order_items` decrements `$total` after pagination** — `class-wgdp-entitlements.php:1155-1192`. The SQL count is already paged; the PHP `$total--` post-filtering produces inconsistent (sometimes negative) pagination totals for the Access Manager. (Validated 2026-07-02: confirmed real — `$total` comes from a separate COUNT query over all rows, and per-page `$total--` on qualification/qty filters skews it. A clean fix is non-trivial because the qualification check is PHP-side and can't be replicated in the COUNT SQL; deferred. Options: move the qualification/qty filter into SQL, or clamp `max(0, ...)` and accept approximate totals.)
 
@@ -24,15 +24,11 @@
 
 - **`consume_rate_limit` lock may run against a read replica** — `class-wgdp-db.php:118-163`. `GET_LOCK` is only effective if executed on the primary; if `$wpdb` routes the SELECT to a replica, mutual exclusion is lost. Ensure the lock runs against the primary connection.
 
-- **Dashboard widget assumes all count keys exist** — `class-wgdp-dashboard-widget.php:36-50`. `wp_parse_args` the counts against a default array to avoid PHP notices on partial/cached results. (Validated 2026-07-02: benign in practice — the source `count_by_status()` always returns the full key set, so notices only occur if an old/partial transient shape is cached. Pure defensive hygiene; low priority.)
-
 - **`ajax_bulk_resend_otp` doesn't clear counts transient** — `class-wgdp-entitlements-list.php:37-66`. (Validated 2026-07-02: resend only operates on non-verified/non-revoked rows and does not change any row's `grant_status`/`verification_status` category, so `count_by_status` totals are unchanged and the transient is not actually stale. Effectively a no-op; low priority. Add `delete_transient('wgdp_permission_counts')` only as defensive hygiene if verification behavior later changes.)
 
 - **Blocks checkout script-data captured once at module load** — `assets/js/wgdp-checkout-block.js:13-14,70`. `qualifyingItems` is read once from `getSetting`; cart qty changes during checkout re-render blocks but never refresh script-data, so the qty-sync `useEffect` is effectively dead. Subscribe to a wc store selector for live quantities.
 
 - **`process_am_bulk_actions` only gated by `manage_woocommerce`** — `class-wgdp-admin.php:43-52, 88-99`. Shop Managers (broad role) can bulk-revoke/retry/re-provision all customer Drive access. If revocation should be admin-only, add an explicit stricter capability check inside the destructive branches.
-
-- **`notification-email` assumes `$fl['name']` exists** — `class-wgdp-notification-email.php:94-99, 127-132`. (Validated 2026-07-02: every caller builds file-link entries with a `'name'` set and a fallback — e.g. `?? $cloud_asset_id` — in release-gate, cron, claim-page, and admin, so `'name'` is never absent/null in practice. Pure defensive hygiene; low priority. Add `$fl['name'] ?? $fl['link']` only if a future caller might omit it.)
 
 - ~~**`$_GET['page']` / `$_GET['update_check']` compared without sanitization** — `class-wgdp-admin.php:888, 613`.~~ Fixed 2026-07-02 (v3.4.17): line 888 now runs `sanitize_key( wp_unslash( ... ) )`. Line 613 is only an `isset()` existence check (no value read), so nothing to sanitize there.
 

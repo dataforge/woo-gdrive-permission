@@ -92,8 +92,9 @@ class WGDP_Notification_Email {
 			. '<ul style="margin:16px 0;padding:0 0 0 20px;">';
 
 		foreach ( $file_links as $fl ) {
+			$name    = ( isset( $fl['name'] ) && '' !== $fl['name'] ) ? $fl['name'] : $fl['link'];
 			$content .= '<li style="margin-bottom:8px;font-size:15px;">'
-				. '<a href="' . esc_url( $fl['link'] ) . '" style="color:#2271b1;">' . esc_html( $fl['name'] ) . '</a>'
+				. '<a href="' . esc_url( $fl['link'] ) . '" style="color:#2271b1;">' . esc_html( $name ) . '</a>'
 				. '<br><span style="color:#888;font-size:14px;">' . esc_html( $fl['link'] ) . '</span>'
 				. '</li>';
 		}
@@ -125,8 +126,9 @@ class WGDP_Notification_Email {
 			. '<ul style="margin:16px 0;padding:0 0 0 20px;">';
 
 		foreach ( $file_links as $fl ) {
+			$name    = ( isset( $fl['name'] ) && '' !== $fl['name'] ) ? $fl['name'] : $fl['link'];
 			$content .= '<li style="margin-bottom:8px;font-size:15px;">'
-				. '<a href="' . esc_url( $fl['link'] ) . '" style="color:#2271b1;">' . esc_html( $fl['name'] ) . '</a>'
+				. '<a href="' . esc_url( $fl['link'] ) . '" style="color:#2271b1;">' . esc_html( $name ) . '</a>'
 				. '<br><span style="color:#888;font-size:14px;">' . esc_html( $fl['link'] ) . '</span>'
 				. '</li>';
 		}
