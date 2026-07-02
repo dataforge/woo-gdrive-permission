@@ -1,24 +1,4 @@
-## ✅ Fixed (committed a802c2f)
-
-- Block checkout recipient persistence (`wgdp-checkout-block.js`) — now uses `wc/store/checkout` + 3-arg `setExtensionData`.
-- Auto-updater key (`class-wgdp-updater.php`) — returns `new_version`.
-- Admin JS: real Drive file name via `.val(file.name)`; success span built with `.text()` (`wgdp-admin.js`).
-
-## ✅ Fixed (v3.4.12)
-
-- **#3** `get_active_recipients_for_product()` — active-order filter (`wc-processing`/`wc-completed`) now applies to both branches, so a still-`granted` entitlement on a cancelled/refunded order is no longer treated as active during backfill (`class-wgdp-entitlements.php`).
-- **#4** Backfill cron inch-walk to failure — stale-reclaim threshold raised 10→30 min (above worst-case single-batch time) and `attempts` reset to 0 whenever a batch advances its cursor, so only a genuinely stuck job reaches max attempts (`class-wgdp-cron.php`).
-- **#5** Revoked sibling re-verification — sibling verify now uses a conditional update (`WHERE verification_status = 'pending' AND grant_status != 'revoked'`) so a concurrently-revoked sibling isn't marked verified (`class-wgdp-otp.php`).
-
-**Follow-up:** cut a GitHub release for v3.4.12 so the auto-updater ships these to installed sites.
-
-## ✅ Fixed (v3.4.13)
-
-- **#8** Self-service rate-limit counters were consumed before input validation — empty/malformed submissions burned quota (self-DoS). Validation (`is_array($items)`) now runs before `consume_rate_limit()` (`class-wgdp-self-service.php`).
-- **#9** OAuth callback stored an account with an empty `refresh_token` when consent was cached, leaving it permanently "not connected" with no error. `handle_callback()` now detects the empty refresh token and returns a `WP_Error` telling the user to revoke access at Google and re-authorize (`class-wgdp-google-auth.php`).
-- **#10** `get_revocation_candidates()` had `ORDER BY ... LIMIT` inside a derived table (MySQL may ignore it, breaking unverified-first prioritization on partial refund). Moved `ORDER BY ... LIMIT` to the outer query (`class-wgdp-entitlements.php`).
-
-**Follow-up:** cut a GitHub release for v3.4.13 so the auto-updater ships these to installed sites.
+**Follow-up:** cut a GitHub release for v3.4.13 so the auto-updater ships the latest fixes to installed sites.
 
 ------
 
