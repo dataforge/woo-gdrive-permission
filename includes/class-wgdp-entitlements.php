@@ -679,10 +679,15 @@ class WGDP_Entitlements {
 			}
 
 		if ( ! empty( $args['search'] ) ) {
-			$like     = '%' . $wpdb->esc_like( $args['search'] ) . '%';
-			$where[]  = '(recipient_email LIKE %s OR order_id = %d)';
-			$values[] = $like;
-			$values[] = absint( $args['search'] );
+			$like = '%' . $wpdb->esc_like( $args['search'] ) . '%';
+			if ( is_numeric( $args['search'] ) ) {
+				$where[]  = '(recipient_email LIKE %s OR order_id = %d)';
+				$values[] = $like;
+				$values[] = absint( $args['search'] );
+			} else {
+				$where[]  = 'recipient_email LIKE %s';
+				$values[] = $like;
+			}
 		}
 
 		$where_sql = implode( ' AND ', $where );

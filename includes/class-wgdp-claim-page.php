@@ -240,7 +240,12 @@ class WGDP_Claim_Page {
 					$ent->mark_error( $eg['id'], $grant_result->get_error_message() );
 					$had_errors = true;
 				} else {
+					// $refreshed can be false if the entitlement was deleted between
+					// mark_granted and this re-read; fall back to the pre-grant row.
 					$refreshed = $ent->get( $eg['id'] );
+					if ( ! $refreshed ) {
+						$refreshed = $eg;
+					}
 					$granted_links[] = array(
 						'name' => $refreshed['cloud_asset_id'],
 						'link' => $this->get_drive_link( $refreshed ),

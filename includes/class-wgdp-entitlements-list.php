@@ -100,7 +100,7 @@ class WGDP_Entitlements_List {
 		$count  = 0;
 		$errors = 0;
 		foreach ( $groups as $group ) {
-			$group_failed = false;
+			$group_revoked_any = false;
 			foreach ( $group['rows'] as $sibling ) {
 				if ( 'revoked' === $sibling['grant_status'] || isset( $revoked[ $sibling['id'] ] ) ) {
 					continue;
@@ -108,13 +108,15 @@ class WGDP_Entitlements_List {
 				$result = $ent->revoke_with_drive_delete( $sibling, WGDP_Entitlements::REVOCATION_REASON_MANUAL );
 				if ( is_wp_error( $result ) ) {
 					$errors++;
-					$group_failed = true;
 					continue;
 				}
 				$revoked[ $sibling['id'] ] = true;
+				$group_revoked_any = true;
 				$count++;
 			}
-			if ( ! $group_failed ) {
+			// Notify the customer whenever at least one sibling was actually revoked,
+			// even if others failed — the customer has genuinely lost access.
+			if ( $group_revoked_any ) {
 				WGDP_Notification_Email::send_access_revoked( $group['email'], WGDP_Entitlements::get_product_name( $group['row'] ), $group['row']['order_id'] ?? 0 );
 			}
 		}
