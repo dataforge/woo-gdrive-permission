@@ -275,10 +275,9 @@
                 $existing.find('.wgdp-resource-row-restore').remove();
             }
             // Update name in case the file was renamed on Drive.
-            var safeName = $('<span>').text(file.name).html();
             $existing.find('input[type="hidden"]').filter(function () {
                 return $(this).attr('name') && $(this).attr('name').indexOf('[name]') !== -1;
-            }).val(safeName);
+            }).val(file.name);
             $existing.find('.wgdp-resource-row-info strong').text(file.name);
             notifyVariationChanged($existing);
             return;
@@ -979,7 +978,7 @@
                     // Remove error message text.
                     if (d.status === 'granted') {
                         $row.find('small[style*="color:#d63638"]').remove();
-                        $btn.replaceWith('<span style="color:#00a32a;font-weight:600;">' + d.message + '</span>');
+                        $btn.replaceWith($('<span style="color:#00a32a;font-weight:600;">').text(d.message));
                     } else {
                         $btn.prop('disabled', false).text('Retry Grant');
                         alert(d.message);

@@ -35,10 +35,10 @@ class WGDP_Updater {
         }
 
         return array(
-            'slug'    => self::SLUG,
-            'version' => $remote_version,
-            'url'     => $release->html_url,
-            'package' => self::get_asset_url( $release ),
+            'slug'        => self::SLUG,
+            'new_version' => $remote_version,
+            'url'         => $release->html_url,
+            'package'     => self::get_asset_url( $release ),
         );
     }
 

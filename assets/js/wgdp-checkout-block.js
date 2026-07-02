@@ -71,9 +71,7 @@
 
 		// Sync state to Store API on every change.
 		useEffect( function () {
-			dispatch( 'wc/checkout' ).__internalSetExtensionData( 'wgdp', {
-				recipients: recipients,
-			} );
+			dispatch( 'wc/store/checkout' ).setExtensionData( 'wgdp', 'recipients', recipients );
 		}, [ JSON.stringify( recipients ) ] );
 
 		function handleChange( key, index, value ) {
