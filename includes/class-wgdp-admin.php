@@ -155,11 +155,24 @@ class WGDP_Admin {
 			delete_transient( 'wgdp_permission_counts' );
 			echo '<div class="notice notice-success"><p>' . esc_html( sprintf( 'Resent OTP to %d entitlement(s).', $count ) ) . '</p></div>';
 		} elseif ( 'retry_grant' === $action ) {
-			$count   = 0;
-			$errors  = 0;
+			$count         = 0;
+			$errors        = 0;
+			$skipped_stale = 0;
 			foreach ( $ids as $id ) {
 				$row = $ent->get( $id );
 				if ( $row && 'error' === $row['grant_status'] && 'verified' === $row['verification_status'] ) {
+					// Unlike the single-item AJAX handler, bulk retry can't safely
+					// reprovision, so it must not blindly retry against a
+					// cloud_asset_id that's no longer part of the product's current
+					// Drive resources — that would grant access to a detached file.
+					$current_asset_ids = wp_list_pluck(
+						WGDP_Product_Meta::get_active_drive_resources( (int) $row['product_id'], (int) $row['variation_id'] ?: 0 ),
+						'id'
+					);
+					if ( ! in_array( $row['cloud_asset_id'], $current_asset_ids, true ) ) {
+						$skipped_stale++;
+						continue;
+					}
 					$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row, false );
 					if ( is_wp_error( $result ) ) {
 						$ent->mark_error( $id, $result->get_error_message() );
@@ -174,7 +187,10 @@ class WGDP_Admin {
 			if ( $errors ) {
 				$msg .= sprintf( ', %d still failing', $errors );
 			}
-			echo '<div class="notice notice-' . ( $errors ? 'warning' : 'success' ) . '"><p>' . esc_html( $msg ) . '.</p></div>';
+			if ( $skipped_stale ) {
+				$msg .= sprintf( ', %d skipped (Drive file changed — use the single-item Retry Grant button to reprovision)', $skipped_stale );
+			}
+			echo '<div class="notice notice-' . ( $errors || $skipped_stale ? 'warning' : 'success' ) . '"><p>' . esc_html( $msg ) . '.</p></div>';
 		} elseif ( 'revoke' === $action ) {
 			$count = 0;
 			$errors = 0;
