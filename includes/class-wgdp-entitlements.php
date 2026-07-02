@@ -1199,9 +1199,12 @@ class WGDP_Entitlements {
 			$items[] = $row;
 		}
 
+		// $total is a page-local approximation: the COUNT query can't replicate the
+		// PHP-side qualification/refund checks above, so each page nudges it down by
+		// however many of its own rows got filtered. Clamp so it never goes negative.
 		return array(
 			'items' => $items,
-			'total' => $total,
+			'total' => max( 0, $total ),
 		);
 	}
 
