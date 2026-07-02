@@ -171,9 +171,14 @@ class WGDP_OTP {
 		$siblings = $entitlements->get_siblings( $entitlement['order_item_id'], $entitlement['recipient_email'], $entitlement['id'] );
 		foreach ( $siblings as $sibling ) {
 			if ( 'pending' === $sibling['verification_status'] ) {
-				$entitlements->update( $sibling['id'], array(
-					'verification_status' => 'verified',
-				) );
+				// Conditional update mirroring the primary path: skip siblings that
+				// were concurrently revoked or already verified in the same window.
+				$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+					$wpdb->prepare(
+						"UPDATE {$table} SET verification_status = 'verified' WHERE id = %d AND verification_status = 'pending' AND grant_status != 'revoked'",
+						$sibling['id']
+					)
+				);
 			}
 		}
 

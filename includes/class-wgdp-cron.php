@@ -281,10 +281,12 @@ class WGDP_Cron {
 		$table = WGDP_DB::get_backfill_table_name();
 		$now   = current_time( 'mysql', true );
 
-		// Reclaim stale processing jobs (worker died).
+		// Reclaim stale processing jobs (worker died). The threshold must exceed the
+		// worst-case time for a single 200-recipient batch, otherwise a legitimately
+		// slow-but-alive batch is reclaimed before it can commit and never progresses.
 		$wpdb->query( $wpdb->prepare(
 			"UPDATE {$table} SET status = 'pending', started_at = NULL, attempts = attempts + 1 WHERE status = 'processing' AND started_at < %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			gmdate( 'Y-m-d H:i:s', time() - 600 )
+			gmdate( 'Y-m-d H:i:s', time() - 1800 )
 		) );
 
 		// Mark permanently failed.
@@ -361,8 +363,10 @@ class WGDP_Cron {
 		// to 'pending' while this batch was running, we must not overwrite that
 		// cursor reset — the next tick will re-claim and re-scan from the start.
 		if ( $result['has_more'] ) {
+			// Progress was made this batch, so reset the stale-reclaim counter — only a
+			// job that repeatedly stalls without advancing should reach max attempts.
 			$wpdb->query( $wpdb->prepare(
-				"UPDATE {$table} SET cursor_item_id = %d, cursor_email = %s, total_created = %d, status = 'pending', started_at = NULL WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"UPDATE {$table} SET cursor_item_id = %d, cursor_email = %s, total_created = %d, status = 'pending', started_at = NULL, attempts = 0 WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				$result['last_item_id'], $result['last_email'], $new_total, $job['id']
 			) );
 			wp_schedule_single_event( time() + 5, 'wgdp_process_backfill' );

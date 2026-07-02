@@ -1574,12 +1574,12 @@ class WGDP_Entitlements {
 		$order_status_col = $order_storage['status_col'];
 
 		$where = "e.product_id = %d
+			AND o.{$order_status_col} IN ('wc-processing', 'wc-completed')
 			AND (
 				e.grant_status != 'revoked'
 				OR (
 					e.verification_status = 'verified'
 					AND e.revocation_reason = %s
-					AND o.{$order_status_col} IN ('wc-processing', 'wc-completed')
 				)
 			)";
 		$values = array( $product_id, self::REVOCATION_REASON_ASSET_REMOVED );
