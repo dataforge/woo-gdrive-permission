@@ -879,13 +879,21 @@ class WGDP_Entitlements {
 			$quantity      = (int) $item->get_quantity();
 			$qty_refunded  = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
 			$effective_qty = max( 0, $quantity - $qty_refunded );
-			$count_mode    = $args['count_mode'] ?? 'active';
-			$current_count = 'confirmed' === $count_mode
-				? $this->count_confirmed_recipients_for_item( $order_item_id )
-				: $this->count_active_recipients_for_item( $order_item_id );
+			$already_has_slot = ! empty( $this->get_siblings( $order_item_id, $email ) );
 
-			if ( $effective_qty <= 0 || $current_count >= $effective_qty ) {
+			if ( $effective_qty <= 0 ) {
 				return new WP_Error( 'wgdp_no_slots', 'No assignable digital access slots remain for this item.' );
+			}
+
+			if ( ! $already_has_slot ) {
+				$count_mode    = $args['count_mode'] ?? 'active';
+				$current_count = 'confirmed' === $count_mode
+					? $this->count_confirmed_recipients_for_item( $order_item_id )
+					: $this->count_active_recipients_for_item( $order_item_id );
+
+				if ( $current_count >= $effective_qty ) {
+					return new WP_Error( 'wgdp_no_slots', 'No assignable digital access slots remain for this item.' );
+				}
 			}
 
 			$resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
