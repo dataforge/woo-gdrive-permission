@@ -1077,9 +1077,10 @@ class WGDP_Entitlements {
 		);
 		$args = wp_parse_args( $args, $defaults );
 
-		$table          = $this->table();
-		$order_items    = $wpdb->prefix . 'woocommerce_order_items';
-		$order_itemmeta = $wpdb->prefix . 'woocommerce_order_itemmeta';
+		$table               = $this->table();
+		$order_items         = $wpdb->prefix . 'woocommerce_order_items';
+		$order_itemmeta      = $wpdb->prefix . 'woocommerce_order_itemmeta';
+		$refund_totals_table = WGDP_DB::get_refund_totals_table_name();
 		$order_storage  = $this->get_order_storage_sql_parts();
 		$orders_table   = $order_storage['table'];
 		$order_id_col   = $order_storage['id_column'];
@@ -1142,16 +1143,7 @@ class WGDP_Entitlements {
 				FROM {$table} WHERE grant_status != 'revoked'
 				GROUP BY order_item_id
 			) ent_counts ON ent_counts.order_item_id = oi.order_item_id
-			LEFT JOIN (
-				SELECT CAST(refunded_meta.meta_value AS UNSIGNED) AS order_item_id,
-				       SUM(ABS(CAST(refund_qty_meta.meta_value AS SIGNED))) AS refunded_qty
-				FROM {$order_itemmeta} refunded_meta
-				INNER JOIN {$order_itemmeta} refund_qty_meta
-				  ON refund_qty_meta.order_item_id = refunded_meta.order_item_id
-				 AND refund_qty_meta.meta_key = '_qty'
-				WHERE refunded_meta.meta_key = '_refunded_item_id'
-				GROUP BY CAST(refunded_meta.meta_value AS UNSIGNED)
-			) refund_totals ON refund_totals.order_item_id = oi.order_item_id
+			LEFT JOIN {$refund_totals_table} refund_totals ON refund_totals.order_item_id = oi.order_item_id
 			WHERE oi.order_item_type = 'line_item'
 			  AND o.{$order_status_col} IN ('wc-processing', 'wc-completed')
 			  AND (

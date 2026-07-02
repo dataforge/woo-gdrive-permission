@@ -562,6 +562,11 @@ class WGDP_Order_Handler {
 					continue;
 				}
 
+				// Keep the refund-totals cache in sync for every refunded item, regardless
+				// of whether it counts toward the release-gate threshold below — the
+				// unassigned-order-items list query relies on this cache for all items.
+				WGDP_DB::set_refund_total( $order_item_id, abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) ) );
+
 				// Decrement sales counter for qualifying refunded items.
 				$product_id       = $order_item->get_product_id();
 				$variation_id     = $order_item->get_variation_id();

@@ -3,7 +3,7 @@ defined( 'ABSPATH' ) || exit;
 
 class WGDP_DB {
 
-	const DB_VERSION = '3.4.8';
+	const DB_VERSION = '3.4.9';
 
 	/**
 	 * Get the entitlements table name.
@@ -22,14 +22,29 @@ class WGDP_DB {
 	}
 
 	/**
+	 * Get the refund-totals cache table name.
+	 *
+	 * Caches, per order item, the cumulative refunded quantity so entitlement
+	 * queries can join a single indexed row instead of scanning
+	 * wc_order_itemmeta for '_refunded_item_id' rows on every page load.
+	 */
+	public static function get_refund_totals_table_name() {
+		global $wpdb;
+		return $wpdb->prefix . 'wgdp_refund_totals';
+	}
+
+	/**
 	 * Create or update the database schema.
 	 */
 	public static function install() {
 		global $wpdb;
 
-		$table_name      = self::get_table_name();
-		$backfill_table  = self::get_backfill_table_name();
-		$charset_collate = $wpdb->get_charset_collate();
+		$table_name          = self::get_table_name();
+		$backfill_table      = self::get_backfill_table_name();
+		$refund_totals_table = self::get_refund_totals_table_name();
+		$charset_collate     = $wpdb->get_charset_collate();
+
+		$refund_totals_existed_before = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $refund_totals_table ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
 
 		$entitlements_sql = "CREATE TABLE {$table_name} (
   id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -88,21 +103,82 @@ class WGDP_DB {
   KEY status (status)
 ) {$charset_collate};";
 
+		$refund_totals_sql = "CREATE TABLE {$refund_totals_table} (
+  order_item_id bigint(20) unsigned NOT NULL,
+  refunded_qty int unsigned NOT NULL DEFAULT 0,
+  updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY  (order_item_id)
+) {$charset_collate};";
+
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
 		// Pass each statement separately rather than concatenated — avoids relying
 		// on dbDelta's internal statement splitting.
-		dbDelta( array( $entitlements_sql, $backfill_sql ) );
+		dbDelta( array( $entitlements_sql, $backfill_sql, $refund_totals_sql ) );
 
-		// Only record the new schema version once both tables actually exist, so a
+		// Only record the new schema version once all tables actually exist, so a
 		// partial/failed dbDelta is retried on the next maybe_upgrade() run instead
 		// of being masked by a matching stored version.
-		$entitlements_exists = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table_name ) ) );
-		$backfill_exists     = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $backfill_table ) ) );
+		$entitlements_exists    = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table_name ) ) );
+		$backfill_exists        = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $backfill_table ) ) );
+		$refund_totals_exists   = (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $refund_totals_table ) ) );
 
-		if ( $entitlements_exists && $backfill_exists ) {
+		if ( $entitlements_exists && $backfill_exists && $refund_totals_exists ) {
+			// Table is new on this run (didn't exist before dbDelta) — one-time backfill
+			// from the authoritative source (wc_order_itemmeta) so existing refunds are
+			// reflected immediately instead of only after their next refund event.
+			if ( ! $refund_totals_existed_before ) {
+				self::backfill_refund_totals();
+			}
 			update_option( 'wgdp_db_version', self::DB_VERSION );
 		}
+	}
+
+	/**
+	 * One-time population of the refund-totals cache from existing refund itemmeta.
+	 *
+	 * Runs once, when the cache table is first created, so pre-existing refunds are
+	 * reflected without waiting for their next refund event to re-touch the cache.
+	 */
+	private static function backfill_refund_totals() {
+		global $wpdb;
+
+		$refund_totals_table = self::get_refund_totals_table_name();
+		$order_itemmeta      = $wpdb->prefix . 'woocommerce_order_itemmeta';
+
+		$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
+			"INSERT INTO {$refund_totals_table} (order_item_id, refunded_qty)
+			SELECT CAST(refunded_meta.meta_value AS UNSIGNED) AS order_item_id,
+			       SUM(ABS(CAST(refund_qty_meta.meta_value AS SIGNED))) AS refunded_qty
+			FROM {$order_itemmeta} refunded_meta
+			INNER JOIN {$order_itemmeta} refund_qty_meta
+			  ON refund_qty_meta.order_item_id = refunded_meta.order_item_id
+			 AND refund_qty_meta.meta_key = '_qty'
+			WHERE refunded_meta.meta_key = '_refunded_item_id'
+			GROUP BY CAST(refunded_meta.meta_value AS UNSIGNED)"
+		);
+	}
+
+	/**
+	 * Upsert the cumulative refunded quantity for one order item into the cache table.
+	 *
+	 * Called whenever a refund event touches an order item, keeping the cache in
+	 * sync without ever re-scanning wc_order_itemmeta for entitlement queries.
+	 *
+	 * @param int $order_item_id   Original (non-refund) order item id.
+	 * @param int $total_refunded_qty Cumulative refunded quantity for this item across all refunds.
+	 */
+	public static function set_refund_total( $order_item_id, $total_refunded_qty ) {
+		global $wpdb;
+
+		$refund_totals_table = self::get_refund_totals_table_name();
+
+		$wpdb->query( $wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
+			"INSERT INTO {$refund_totals_table} (order_item_id, refunded_qty) VALUES (%d, %d)
+			 ON DUPLICATE KEY UPDATE refunded_qty = VALUES(refunded_qty)",
+			absint( $order_item_id ),
+			absint( $total_refunded_qty )
+		) );
 	}
 
 	/**
