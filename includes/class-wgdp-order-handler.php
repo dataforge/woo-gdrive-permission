@@ -866,6 +866,15 @@ class WGDP_Order_Handler {
 					continue;
 				}
 
+				// Mirror create_entitlements' account-connectivity check: if no
+				// entitlement will be created for this item, don't advance the
+				// release-gate counter for it either, and don't mark it counted —
+				// leave it eligible for reprocessing once the account is reconnected.
+				$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
+				if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
+					continue;
+				}
+
 				$qty = $this->get_effective_item_quantity( $order, $item );
 				if ( $qty <= 0 ) {
 					continue;
