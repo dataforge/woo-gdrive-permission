@@ -145,6 +145,12 @@ class WGDP_Google_Auth {
 			return $lock_result;
 		}
 
+		if ( null === $lock_result ) {
+			// Account was disconnected/deleted while the refresh was in flight —
+			// don't resurrect a token cache entry for an account we no longer track.
+			return new WP_Error( 'wgdp_not_connected', 'Google account not connected.' );
+		}
+
 		// Cache for the shorter of 55 min or the token's actual lifetime (minus a
 		// 60s safety margin) so short-lived tokens are never served stale.
 		$expires_in = isset( $body['expires_in'] ) ? (int) $body['expires_in'] : 3600;
