@@ -258,7 +258,7 @@ class WGDP_Order_Handler {
 				$ent, $order, $order_id, $order_item_id, $product_id, $variation_id,
 				$account_id, $resources, $recipients, $item
 			) {
-				$created_any = false;
+				$recipient_created_any = false;
 
 				foreach ( $recipients as $index => $email ) {
 					$email = WGDP_Entitlements::normalize_email( $email );
@@ -300,10 +300,10 @@ class WGDP_Order_Handler {
 							$result['primary_id']
 						) );
 					}
-					$created_any = true;
+					$recipient_created_any = true;
 				}
 
-				return $created_any;
+				return $recipient_created_any;
 			} );
 
 			if ( true === $lock_outcome ) {

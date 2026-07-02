@@ -4,8 +4,6 @@
 
 **Follow-up:** investigate a fix for the unindexed refund-lookup subquery added in v3.4.29 — `get_unassigned_order_items()` (`class-wgdp-entitlements.php`, `refund_totals` derived table) scans `wc_order_itemmeta` filtered by `meta_key = '_refunded_item_id'`, which WooCommerce's schema doesn't index (only `order_item_id` is indexed). Fine for typical stores, but on a store with a very large itemmeta table and heavy refund volume this could add noticeable query time to the Access Manager screen. Only worth chasing if that page is reported slow; possible directions: cache the refund totals, scope the scan by joining through `oi.order_item_id` ranges first, or maintain a summary table updated on refund events.
 
-**Follow-up:** minor maintainability risk (not a live bug) noted during 2026-07-02 review — `create_entitlements()` (`class-wgdp-order-handler.php:174-331`) has a closure inside `with_order_item_lock` that declares its own local `$created_any = false`, shadowing the outer-scope `$created_any` from line 195. The closure's return value is assigned to `$lock_outcome` and only merged back to the outer flag via `if (true === $lock_outcome) { $created_any = true; }` at line 309, so today's behavior is correct — but any future refactor that reads the outer `$created_any` before line 309, or changes the closure to return a falsy-but-truthy value, would silently break the "clear transient" logic at line 328. Consider renaming the inner variable to make the shadowing explicit, or restructuring so the closure doesn't need its own copy.
-
 ---
 
 ## Code review findings (2026-07-02)
