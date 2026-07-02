@@ -124,10 +124,20 @@ class WGDP_Admin {
 		$ent = WGDP_Entitlements::instance();
 
 		if ( 'resend_otp' === $action ) {
-			$count = 0;
+			$count       = 0;
+			$seen_groups = array();
 			foreach ( $ids as $id ) {
 				$row = $ent->get( $id );
 				if ( $row && 'revoked' !== $row['grant_status'] && 'verified' !== $row['verification_status'] ) {
+					// issue_otp_for_recipient_group() reissues one shared token for the
+					// whole order_item_id + recipient_email group, so only process each
+					// group once per bulk run — otherwise a later row in the same group
+					// invalidates the token/email just sent for an earlier row.
+					$group_key = $row['order_item_id'] . '|' . $row['recipient_email'];
+					if ( isset( $seen_groups[ $group_key ] ) ) {
+						continue;
+					}
+					$seen_groups[ $group_key ] = true;
 					$tokens = $ent->issue_otp_for_recipient_group( $id );
 					if ( is_wp_error( $tokens ) ) {
 						continue;
