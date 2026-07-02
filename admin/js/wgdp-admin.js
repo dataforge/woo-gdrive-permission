@@ -665,54 +665,6 @@
     });
 
     /* =========================================================
-     * Product page: URL paste detection (multi-file)
-     * ========================================================= */
-
-    $(document).on('blur', '.wgdp-resource-url-input', function () {
-        var $input = $(this);
-        var val = $input.val().trim();
-
-        if (!val || val.indexOf('drive.google.com') === -1) {
-            return;
-        }
-
-        var $container = $input.closest('.options_group, .wgdp-variation-fields');
-        var accountId = $container.find('.wgdp-account-select').val() || '';
-
-        if (!accountId) {
-            return;
-        }
-
-        $input.prop('disabled', true);
-
-        $.post(wgdp.ajax_url, {
-            action: 'wgdp_get_file_info',
-            nonce: wgdp.nonce,
-            file_id: val,
-            account_id: accountId
-        }, function (response) {
-            $input.prop('disabled', false);
-            if (response.success) {
-                var file = response.data;
-                if (file.resourceType === 'folder') {
-                    alert('Folders cannot be linked — please use individual file URLs.');
-                    return;
-                }
-                var $list = $container.find('.wgdp-resources-list');
-                addResourceRow({
-                    id: file.id,
-                    name: file.name,
-                    type: 'file'
-                }, $list);
-                $input.val('');
-                notifyVariationChanged($list);
-            }
-        }).fail(function () {
-            $input.prop('disabled', false);
-        });
-    });
-
-    /* =========================================================
      * Order meta box & entitlements list: Resend OTP button
      * ========================================================= */
 

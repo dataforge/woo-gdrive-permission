@@ -274,16 +274,6 @@ class WGDP_Product_Meta {
 
 		<div class="wgdp-resource-input-wrap">
 			<p class="form-field">
-				<label for="<?php echo esc_attr( $unique_id ); ?>-resource-url">
-					<?php esc_html_e( 'Add File', 'woo-gdrive-permission' ); ?>
-				</label>
-				<input type="text"
-					class="short wgdp-resource-url-input"
-					id="<?php echo esc_attr( $unique_id ); ?>-resource-url"
-					placeholder="<?php esc_attr_e( 'Paste a GDrive URL or click Browse', 'woo-gdrive-permission' ); ?>"
-				/>
-			</p>
-			<p class="form-field">
 				<label>&nbsp;</label>
 				<span class="wgdp-drive-actions">
 					<button type="button" class="button wgdp-browse-drive"><?php esc_html_e( 'Browse GDrive', 'woo-gdrive-permission' ); ?></button>

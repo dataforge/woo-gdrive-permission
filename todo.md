@@ -1,12 +1,10 @@
 **Follow-up:** adopt the automated release flow (Flow A) from the wp-plugin-updater-guide — add `build_plugin.py` at the repo root and `.github/workflows/release.yml` (publish-on-tag). This repo currently releases manually (Flow B); the CI flow builds the zip with Python on Linux (no Windows backslash-zip risk) and fails the release if the `vX.Y.Z` tag doesn't match the `Version:` header, preventing the "perpetual update available" loop.
 
+**Follow-up:** the "Browse GDrive" modal (`admin/js/wgdp-admin.js:362-365`, `.wgdp-drive-browser__paste` form) still has its own "Paste a Google Drive file URL or ID" box that hits the same `wgdp_get_file_info` AJAX handler — same `drive.file`-scope limitation as the product-editor paste field removed 2026-07-02 (v3.4.27): it will 404 for any file never opened via Browse/Picker. Left in place for now since it wasn't the field flagged in the review and it lives inside the browse-by-folder flow rather than being a bare freeform input, but worth revisiting with the same "remove or relabel" question if it causes support tickets.
+
 ---
 
 ## Code review findings (2026-07-02)
-
-### HIGH
-
-- **`drive.file` scope makes the manual "paste a GDrive URL" input unusable for pre-existing files** — `class-wgdp-google-auth.php:10`, `class-wgdp-product-meta.php:275-293`. Confirmed 2026-07-02: the product editor offers both "Browse GDrive" / "Google Picker" (which auto-grant per-file access under `drive.file`, per Google's documented pattern) *and* a free-text "Paste a GDrive URL" field. A file never opened via Browse/Picker is invisible to the app under `drive.file` and the Drive API returns 404 rather than 403 for it, so pasting a URL for any file the admin didn't select through the app fails. Partial fix applied 2026-07-02 (v3.4.26): `WGDP_Google_Drive::get_file()` now appends an explanatory hint to the 404 error message pointing the admin at Browse/Picker. **Remaining decision (needs product input, not just code):** either remove/relabel the paste-URL field as "paste ID of a file already opened via Browse/Picker", or widen the OAuth scope to `drive.readonly`/`drive` (requires Google re-verification/CASA assessment) if arbitrary pre-existing files must be supported.
 
 ### MEDIUM
 
