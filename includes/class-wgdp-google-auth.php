@@ -81,6 +81,18 @@ class WGDP_Google_Auth {
 	}
 
 	/**
+	 * Force a genuine token refresh with Google, bypassing the locally cached
+	 * expires_at bookkeeping. Used when a token that still looks unexpired
+	 * locally has already been rejected by Google (e.g. a 401 response),
+	 * since get_access_token() would otherwise just re-serve the same dead
+	 * token until expires_at naturally elapses.
+	 */
+	public function force_refresh_access_token( $account_id ) {
+		delete_transient( 'wgdp_access_token_' . $account_id );
+		return $this->refresh_access_token( $account_id );
+	}
+
+	/**
 	 * Refresh the access token for a specific account.
 	 */
 	private function refresh_access_token( $account_id ) {

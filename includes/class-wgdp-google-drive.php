@@ -71,10 +71,12 @@ class WGDP_Google_Drive {
 
 		$response = $this->dispatch( $method, $url, $args );
 
-		// On 401, clear cached token and retry once with a fresh token.
+		// On 401, force a genuine refresh with Google and retry once. A plain
+		// get_access_token() call would just re-serve the same rejected token
+		// whenever locally-stored expires_at still looks unexpired (e.g. the
+		// user revoked consent early), causing repeated 401s.
 		if ( ! is_wp_error( $response ) && 401 === wp_remote_retrieve_response_code( $response ) ) {
-			delete_transient( 'wgdp_access_token_' . $account_id );
-			$token = $auth->get_access_token( $account_id );
+			$token = $auth->force_refresh_access_token( $account_id );
 			if ( is_wp_error( $token ) ) {
 				return $token;
 			}
