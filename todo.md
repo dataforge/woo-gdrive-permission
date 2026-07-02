@@ -2,6 +2,8 @@
 
 **Follow-up:** the "Browse GDrive" modal (`admin/js/wgdp-admin.js:362-365`, `.wgdp-drive-browser__paste` form) still has its own "Paste a Google Drive file URL or ID" box that hits the same `wgdp_get_file_info` AJAX handler — same `drive.file`-scope limitation as the product-editor paste field removed 2026-07-02 (v3.4.27): it will 404 for any file never opened via Browse/Picker. Left in place for now since it wasn't the field flagged in the review and it lives inside the browse-by-folder flow rather than being a bare freeform input, but worth revisiting with the same "remove or relabel" question if it causes support tickets.
 
+**Follow-up:** investigate a fix for the unindexed refund-lookup subquery added in v3.4.29 — `get_unassigned_order_items()` (`class-wgdp-entitlements.php`, `refund_totals` derived table) scans `wc_order_itemmeta` filtered by `meta_key = '_refunded_item_id'`, which WooCommerce's schema doesn't index (only `order_item_id` is indexed). Fine for typical stores, but on a store with a very large itemmeta table and heavy refund volume this could add noticeable query time to the Access Manager screen. Only worth chasing if that page is reported slow; possible directions: cache the refund totals, scope the scan by joining through `oi.order_item_id` ranges first, or maintain a summary table updated on refund events.
+
 ---
 
 ## Code review findings (2026-07-02)
