@@ -580,48 +580,63 @@ class WGDP_Order_Handler {
 				}
 
 				// Calculate: remaining = original qty - total refunded qty.
-				$remaining    = $this->get_effective_item_quantity( $order, $order_item );
-				$active_count = $ent->count_active_recipients_for_item( $order_item_id );
+				$remaining = $this->get_effective_item_quantity( $order, $order_item );
 
-				if ( $active_count <= $remaining ) {
-					continue;
-				}
+				// Hold the per-order-item lock across the count-then-revoke sequence so a
+				// concurrent recipient assignment for the same order item can't slip in
+				// between count_active_recipients_for_item() and the revocation below and
+				// get revoked based on a now-stale snapshot. Mirrors create_entitlements().
+				$lock_outcome = $ent->with_order_item_lock( $order_item_id, function () use ( $ent, $order, $order_item_id, $remaining ) {
+					$active_count = $ent->count_active_recipients_for_item( $order_item_id );
 
-				$excess = $active_count - $remaining;
-				// Get distinct recipient emails to revoke (limited to $excess recipients).
-				$emails_to_revoke = $ent->get_revocation_candidates( $order_item_id, $excess );
-
-				// Revoke all entitlements for each email.
-				foreach ( $emails_to_revoke as $revoke_email ) {
-					$sibling_rows = $ent->get_siblings( $order_item_id, $revoke_email );
-					if ( empty( $sibling_rows ) ) {
-						continue;
+					if ( $active_count <= $remaining ) {
+						return;
 					}
-					$failed_revoke = false;
-					foreach ( $sibling_rows as $row ) {
-						$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_PARTIAL_REFUND );
-						if ( is_wp_error( $result ) ) {
-							$failed_revoke = true;
+
+					$excess = $active_count - $remaining;
+					// Get distinct recipient emails to revoke (limited to $excess recipients).
+					$emails_to_revoke = $ent->get_revocation_candidates( $order_item_id, $excess );
+
+					// Revoke all entitlements for each email.
+					foreach ( $emails_to_revoke as $revoke_email ) {
+						$sibling_rows = $ent->get_siblings( $order_item_id, $revoke_email );
+						if ( empty( $sibling_rows ) ) {
+							continue;
+						}
+						$failed_revoke = false;
+						foreach ( $sibling_rows as $row ) {
+							$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_PARTIAL_REFUND );
+							if ( is_wp_error( $result ) ) {
+								$failed_revoke = true;
+								$order->add_order_note( sprintf(
+									'WGDP: Failed to revoke Drive access for %s — %s',
+									$row['recipient_email'],
+									$result->get_error_message()
+								) );
+							}
+						}
+
+						if ( $failed_revoke ) {
 							$order->add_order_note( sprintf(
-								'WGDP: Failed to revoke Drive access for %s — %s',
-								$row['recipient_email'],
-								$result->get_error_message()
+								'WGDP: Revocation for %s is pending retry because at least one Drive permission could not be removed.',
+								$revoke_email
+							) );
+						} else {
+							WGDP_Notification_Email::send_access_revoked( $revoke_email, WGDP_Entitlements::get_product_name( $sibling_rows[0] ), $sibling_rows[0]['order_id'] );
+							$order->add_order_note( sprintf(
+								'WGDP: Revoked all entitlements for %s (partial refund)',
+								$revoke_email
 							) );
 						}
 					}
+				} );
 
-					if ( $failed_revoke ) {
-						$order->add_order_note( sprintf(
-							'WGDP: Revocation for %s is pending retry because at least one Drive permission could not be removed.',
-							$revoke_email
-						) );
-					} else {
-						WGDP_Notification_Email::send_access_revoked( $revoke_email, WGDP_Entitlements::get_product_name( $sibling_rows[0] ), $sibling_rows[0]['order_id'] );
-						$order->add_order_note( sprintf(
-							'WGDP: Revoked all entitlements for %s (partial refund)',
-							$revoke_email
-						) );
-					}
+				if ( is_wp_error( $lock_outcome ) ) {
+					$order->add_order_note( sprintf(
+						'WGDP: Could not lock order item #%d for partial-refund revocation — %s. Recheck from the Access Manager.',
+						$order_item_id,
+						$lock_outcome->get_error_message()
+					) );
 				}
 			}
 
