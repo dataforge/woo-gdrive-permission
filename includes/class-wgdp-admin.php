@@ -1302,83 +1302,105 @@ class WGDP_Admin {
 			wp_send_json_error( 'Entitlement is not yet verified.' );
 		}
 
-		$product_id   = (int) $row['product_id'];
-		$variation_id = (int) $row['variation_id'];
+		$order_item_id = (int) $row['order_item_id'];
 
-		// Get current product resources to detect stale assets.
-		$current_resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
-		$current_asset_ids = wp_list_pluck( $current_resources, 'id' );
-
-		// Collect all sibling error entitlements (same order_item + email).
-		$siblings = $ent->get_siblings( $row['order_item_id'], $row['recipient_email'] );
-		$to_retry = array();
-		foreach ( $siblings as $s ) {
-			if ( 'error' === $s['grant_status'] && 'verified' === $s['verification_status'] ) {
-				$to_retry[] = $s;
+		$result = $ent->with_order_item_lock( $order_item_id, function () use ( $ent, $entitlement_id, $order_item_id ) {
+			// Re-read inside the lock — another request may have retried this entitlement already.
+			$row = $ent->get( $entitlement_id );
+			if ( ! $row ) {
+				return new WP_Error( 'wgdp_entitlement_not_found', 'Entitlement not found.' );
 			}
-		}
-		if ( empty( $to_retry ) ) {
-			$to_retry = array( $row );
-		}
-
-		// Check if any entitlement references an asset not in the current product config.
-		$has_stale = false;
-		foreach ( $to_retry as $r ) {
-			if ( ! in_array( $r['cloud_asset_id'], $current_asset_ids, true ) ) {
-				$has_stale = true;
-				break;
+			if ( 'error' !== $row['grant_status'] ) {
+				return new WP_Error( 'wgdp_not_error_state', 'Only error-state entitlements can be retried.' );
 			}
-		}
-
-		// Stale asset detected — re-provision with current product files.
-		if ( $has_stale ) {
-			return $this->retry_grant_reprovision( $row, $to_retry, $current_resources );
-		}
-
-		// Normal retry — same assets, just re-attempt the Drive API call.
-		$granted_count = 0;
-		$last_error    = '';
-
-		foreach ( $to_retry as $r ) {
-			$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $r, true );
-			if ( is_wp_error( $result ) ) {
-				$ent->mark_error( $r['id'], $result->get_error_message() );
-				$last_error = $result->get_error_message();
-			} else {
-				$granted_count++;
-			}
-		}
-
-		delete_transient( 'wgdp_permission_counts' );
-
-		if ( $granted_count > 0 ) {
-			$this->send_retry_grant_emails( $row, $to_retry );
-
-			$order = wc_get_order( $row['order_id'] );
-			if ( $order ) {
-				$order->add_order_note( sprintf(
-					'WGDP: Manual retry successful — granted Drive access to %s (%d file(s))',
-					$row['recipient_email'],
-					$granted_count
-				) );
+			if ( 'verified' !== $row['verification_status'] ) {
+				return new WP_Error( 'wgdp_not_verified', 'Entitlement is not yet verified.' );
 			}
 
-			WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
+			$product_id   = (int) $row['product_id'];
+			$variation_id = (int) $row['variation_id'];
 
-			if ( $last_error ) {
-				wp_send_json_success( array(
-					'status'  => 'partial',
-					'message' => sprintf( '%d file(s) granted, but some failed: %s', $granted_count, $last_error ),
-				) );
+			// Get current product resources to detect stale assets.
+			$current_resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
+			$current_asset_ids = wp_list_pluck( $current_resources, 'id' );
+
+			// Collect all sibling error entitlements (same order_item + email).
+			$siblings = $ent->get_siblings( $order_item_id, $row['recipient_email'] );
+			$to_retry = array();
+			foreach ( $siblings as $s ) {
+				if ( 'error' === $s['grant_status'] && 'verified' === $s['verification_status'] ) {
+					$to_retry[] = $s;
+				}
+			}
+			if ( empty( $to_retry ) ) {
+				$to_retry = array( $row );
 			}
 
-			wp_send_json_success( array(
-				'status'  => 'granted',
-				'message' => sprintf( '%d file(s) granted successfully.', $granted_count ),
-			) );
+			// Check if any entitlement references an asset not in the current product config.
+			$has_stale = false;
+			foreach ( $to_retry as $r ) {
+				if ( ! in_array( $r['cloud_asset_id'], $current_asset_ids, true ) ) {
+					$has_stale = true;
+					break;
+				}
+			}
+
+			// Stale asset detected — re-provision with current product files.
+			if ( $has_stale ) {
+				return $this->retry_grant_reprovision( $row, $to_retry, $current_resources );
+			}
+
+			// Normal retry — same assets, just re-attempt the Drive API call.
+			$granted_count = 0;
+			$last_error    = '';
+
+			foreach ( $to_retry as $r ) {
+				$grant_result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $r, true );
+				if ( is_wp_error( $grant_result ) ) {
+					$ent->mark_error( $r['id'], $grant_result->get_error_message() );
+					$last_error = $grant_result->get_error_message();
+				} else {
+					$granted_count++;
+				}
+			}
+
+			delete_transient( 'wgdp_permission_counts' );
+
+			if ( $granted_count > 0 ) {
+				$this->send_retry_grant_emails( $row, $to_retry );
+
+				$order = wc_get_order( $row['order_id'] );
+				if ( $order ) {
+					$order->add_order_note( sprintf(
+						'WGDP: Manual retry successful — granted Drive access to %s (%d file(s))',
+						$row['recipient_email'],
+						$granted_count
+					) );
+				}
+
+				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
+
+				if ( $last_error ) {
+					return array(
+						'status'  => 'partial',
+						'message' => sprintf( '%d file(s) granted, but some failed: %s', $granted_count, $last_error ),
+					);
+				}
+
+				return array(
+					'status'  => 'granted',
+					'message' => sprintf( '%d file(s) granted successfully.', $granted_count ),
+				);
+			}
+
+			return new WP_Error( 'wgdp_retry_failed', 'Retry failed: ' . $last_error );
+		} );
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( $result->get_error_message() );
 		}
 
-		wp_send_json_error( 'Retry failed: ' . $last_error );
+		wp_send_json_success( $result );
 	}
 
 	/**
@@ -1391,12 +1413,12 @@ class WGDP_Admin {
 		$ent = WGDP_Entitlements::instance();
 
 		if ( empty( $current_resources ) ) {
-			wp_send_json_error( 'Product has no active Drive resources configured. Please update the product first.' );
+			return new WP_Error( 'wgdp_no_resources', 'Product has no active Drive resources configured. Please update the product first.' );
 		}
 
 		$account_id = WGDP_Product_Meta::get_account_for_item( (int) $primary_row['product_id'], (int) $primary_row['variation_id'] );
 		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
-			wp_send_json_error( 'No connected Google account for this product.' );
+			return new WP_Error( 'wgdp_no_account', 'No connected Google account for this product.' );
 		}
 
 		// Revoke the stale error entitlements.
@@ -1509,20 +1531,20 @@ class WGDP_Admin {
 		}
 
 		if ( $granted_count > 0 && $last_error ) {
-			wp_send_json_success( array(
+			return array(
 				'status'  => 'partial',
 				'message' => sprintf( 'Product files changed — re-provisioned %d file(s), but some failed: %s', $granted_count, $last_error ),
-			) );
+			);
 		}
 
 		if ( $granted_count > 0 ) {
-			wp_send_json_success( array(
+			return array(
 				'status'  => 'granted',
 				'message' => sprintf( 'Product files changed — re-provisioned and granted %d file(s).', $granted_count ),
-			) );
+			);
 		}
 
-		wp_send_json_error( 'Re-provisioning failed: ' . ( $last_error ?: 'No files could be granted.' ) );
+		return new WP_Error( 'wgdp_reprovision_failed', 'Re-provisioning failed: ' . ( $last_error ?: 'No files could be granted.' ) );
 	}
 
 	/**
