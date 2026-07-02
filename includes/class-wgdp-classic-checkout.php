@@ -100,6 +100,12 @@ class WGDP_Classic_Checkout {
 			$qty    = $item['quantity'];
 			$emails = isset( $recipients[ $key ] ) && is_array( $recipients[ $key ] ) ? $recipients[ $key ] : array();
 
+			// Reindex so positional validation matches save_recipient_meta(), which
+			// uses array_slice() on the internal order. Without this, a sparse array
+			// (e.g. wgdp_recipients[KEY][999]) would slip past the positional loops
+			// below while still being saved as a recipient.
+			$emails = array_values( $emails );
+
 			$valid_emails = array();
 
 			for ( $i = 0; $i < $qty; $i++ ) {

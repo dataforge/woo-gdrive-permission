@@ -180,30 +180,72 @@ class WGDP_Entitlements {
 	 */
 	public function mark_revoked( $id, $reason = self::REVOCATION_REASON_MANUAL ) {
 		$row = $this->get( $id );
-		$clear_claim = false;
 
+		// When revoking a pending row that still holds a live claim token, we
+		// opportunistically transfer that token to a pending sibling so the
+		// recipient group keeps one claimable token. Do this under the
+		// recipient-group lock so it cannot race a concurrent resend
+		// (issue_otp_for_recipient_group), which would otherwise leave two active
+		// claim tokens in the same group.
 		if ( $row && 'pending' === $row['verification_status'] && ! empty( $row['claim_token_hash'] ) ) {
-			$siblings = $this->get_siblings( $row['order_item_id'], $row['recipient_email'], $id );
-			foreach ( $siblings as $sibling ) {
-				if ( 'pending' !== $sibling['verification_status'] || 'revoked' === $sibling['grant_status'] ) {
-					continue;
-				}
+			$result = $this->with_recipient_group_lock(
+				$row['order_item_id'],
+				$row['recipient_email'],
+				function () use ( $id, $reason ) {
+					// Re-read under the lock; state may have changed while waiting.
+					$row = $this->get( $id );
+					if ( ! $row ) {
+						return null;
+					}
 
-				$updated = $this->update( $sibling['id'], array(
-					'otp_hash'               => $row['otp_hash'],
-					'otp_expires_at'         => $row['otp_expires_at'],
-					'otp_attempts'           => $row['otp_attempts'],
-					'claim_token_hash'       => $row['claim_token_hash'],
-					'claim_token_expires_at' => $row['claim_token_expires_at'],
-				) );
+					$clear_claim = false;
+					if ( 'pending' === $row['verification_status'] && ! empty( $row['claim_token_hash'] ) ) {
+						$siblings = $this->get_siblings( $row['order_item_id'], $row['recipient_email'], $id );
+						foreach ( $siblings as $sibling ) {
+							if ( 'pending' !== $sibling['verification_status'] || 'revoked' === $sibling['grant_status'] ) {
+								continue;
+							}
 
-				if ( false !== $updated ) {
-					$clear_claim = true;
-					break;
+							$updated = $this->update( $sibling['id'], array(
+								'otp_hash'               => $row['otp_hash'],
+								'otp_expires_at'         => $row['otp_expires_at'],
+								'otp_attempts'           => $row['otp_attempts'],
+								'claim_token_hash'       => $row['claim_token_hash'],
+								'claim_token_expires_at' => $row['claim_token_expires_at'],
+							) );
+
+							if ( false !== $updated ) {
+								$clear_claim = true;
+								break;
+							}
+						}
+					}
+
+					return $this->write_revoked_row( $id, $reason, $clear_claim );
 				}
+			);
+
+			// On lock success (including a null row that vanished), honour it.
+			// Only fall through to an unlocked plain revoke if the lock could not
+			// be acquired — revoking must never be blocked by lock contention.
+			if ( ! is_wp_error( $result ) ) {
+				return $result;
 			}
 		}
 
+		return $this->write_revoked_row( $id, $reason, false );
+	}
+
+	/**
+	 * Write the revoked-state columns for an entitlement row.
+	 *
+	 * @param int    $id          Entitlement ID.
+	 * @param string $reason      Revocation reason.
+	 * @param bool   $clear_claim Whether to clear OTP/claim-token columns (they
+	 *                            were transferred to a sibling).
+	 * @return int|false Rows updated, or false on failure.
+	 */
+	private function write_revoked_row( $id, $reason, $clear_claim ) {
 		$data = array(
 			'grant_status'       => 'revoked',
 			'revoked_at'         => current_time( 'mysql', true ),

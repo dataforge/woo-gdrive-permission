@@ -585,15 +585,19 @@ class WGDP_Google_Auth {
 			}
 		}
 
-		$iv  = openssl_random_pseudo_bytes( openssl_cipher_iv_length( self::CIPHER ) );
-
-		$encrypted = openssl_encrypt( $value, self::CIPHER, $key, 0, $iv );
+		// Authenticated CBC fallback (encrypt-then-MAC) for hosts lacking both
+		// libsodium and AES-GCM. The HMAC closes the defense-in-depth gap where
+		// the legacy unauthenticated CBC format could be tampered with undetected.
+		$iv        = openssl_random_pseudo_bytes( openssl_cipher_iv_length( self::CIPHER ) );
+		$encrypted = openssl_encrypt( $value, self::CIPHER, $key, OPENSSL_RAW_DATA, $iv );
 		if ( false === $encrypted ) {
 			return '';
 		}
 
-		// Base64-encode IV separately to avoid separator collision with raw binary.
-		return base64_encode( $iv ) . '::' . $encrypted;
+		$mac_key = hash_hmac( 'sha256', 'wgdp-cbc-mac', $key, true );
+		$hmac    = hash_hmac( 'sha256', $iv . $encrypted, $mac_key, true );
+
+		return 'v1c::' . base64_encode( $iv . $hmac . $encrypted );
 	}
 
 	/**
@@ -632,6 +636,26 @@ class WGDP_Google_Auth {
 			return ( false === $decrypted ) ? '' : $decrypted;
 		}
 
+		if ( 0 === strpos( $value, 'v1c::' ) ) {
+			$raw    = base64_decode( substr( $value, 5 ), true );
+			$iv_len = openssl_cipher_iv_length( self::CIPHER );
+			if ( false === $raw || strlen( $raw ) <= $iv_len + 32 ) {
+				return '';
+			}
+			$iv         = substr( $raw, 0, $iv_len );
+			$hmac       = substr( $raw, $iv_len, 32 );
+			$ciphertext = substr( $raw, $iv_len + 32 );
+			$mac_key    = hash_hmac( 'sha256', 'wgdp-cbc-mac', $key, true );
+			$expected   = hash_hmac( 'sha256', $iv . $ciphertext, $mac_key, true );
+			if ( ! hash_equals( $expected, $hmac ) ) {
+				return '';
+			}
+			$decrypted = openssl_decrypt( $ciphertext, self::CIPHER, $key, OPENSSL_RAW_DATA, $iv );
+			return ( false === $decrypted ) ? '' : $decrypted;
+		}
+
+		// Legacy unauthenticated CBC format: base64(iv)::ciphertext. Retained for
+		// reading data written before the v1c authenticated format existed.
 		$parts = explode( '::', $value, 2 );
 		if ( count( $parts ) !== 2 ) {
 			return '';

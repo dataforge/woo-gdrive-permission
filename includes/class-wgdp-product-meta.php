@@ -531,8 +531,12 @@ class WGDP_Product_Meta {
 			return;
 		}
 
-		// WooCommerce verifies nonces upstream before firing this hook
-		// (woocommerce_meta_nonce for full saves, security nonce for AJAX saves).
+		// Verify the WooCommerce variation-save nonce (defense-in-depth; WC checks
+		// this upstream via check_ajax_referer('save-variations','security') before
+		// firing woocommerce_save_product_variation). Mirrors save_product_meta().
+		if ( ! isset( $_POST['security'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['security'] ) ), 'save-variations' ) ) {
+			return;
+		}
 
 		if ( ! isset( $_POST['wgdp_var'][ $loop ] ) ) {
 			return;
