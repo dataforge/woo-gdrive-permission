@@ -225,6 +225,16 @@ class WGDP_Google_Auth {
 			return new WP_Error( 'wgdp_token_error', $error_msg );
 		}
 
+		// Google only returns a refresh_token on the first consent grant. If consent
+		// was cached (no refresh_token returned), we cannot persist a usable account —
+		// tied entitlements would silently never grant. Force the user to re-authorize.
+		if ( empty( $body['refresh_token'] ) ) {
+			return new WP_Error(
+				'wgdp_no_refresh_token',
+				'Google did not return a refresh token, so this account cannot be used for automated access. This usually happens when the account was already authorized. Please remove the app\'s access at https://myaccount.google.com/permissions and then connect again.'
+			);
+		}
+
 		$user_email = $this->fetch_user_email( $body['access_token'] );
 
 		// Inside lock: generate collision-safe ID, add account, save.

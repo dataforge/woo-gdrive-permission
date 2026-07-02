@@ -488,14 +488,14 @@ class WGDP_Self_Service {
 			wp_send_json_error( 'This link has expired. Please contact the store for assistance.' );
 		}
 
+		if ( ! is_array( $items ) || empty( $items ) ) {
+			wp_send_json_error( 'No items submitted.' );
+		}
+
 		if ( ! $this->consume_rate_limit( 'wgdp_ss_order_' . $order_id, 10, HOUR_IN_SECONDS )
 			|| ! $this->consume_rate_limit( 'wgdp_ss_ip_' . $order_id . '_' . md5( $this->get_request_ip() ), 5, HOUR_IN_SECONDS )
 		) {
 			wp_send_json_error( 'Too many requests. Please wait before submitting again.' );
-		}
-
-		if ( ! is_array( $items ) || empty( $items ) ) {
-			wp_send_json_error( 'No items submitted.' );
 		}
 
 		$ent = WGDP_Entitlements::instance();

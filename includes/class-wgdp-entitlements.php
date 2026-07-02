@@ -688,9 +688,9 @@ class WGDP_Entitlements {
 				   FROM {$table}
 				   WHERE order_item_id = %d AND grant_status != 'revoked'
 				   GROUP BY recipient_email
-				   ORDER BY priority, max_index DESC
-				   LIMIT %d
-				 ) sub",
+				 ) sub
+				 ORDER BY priority, max_index DESC
+				 LIMIT %d",
 				$order_item_id,
 				$excess
 			),

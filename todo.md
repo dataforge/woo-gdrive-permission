@@ -12,6 +12,14 @@
 
 **Follow-up:** cut a GitHub release for v3.4.12 so the auto-updater ships these to installed sites.
 
+## ✅ Fixed (v3.4.13)
+
+- **#8** Self-service rate-limit counters were consumed before input validation — empty/malformed submissions burned quota (self-DoS). Validation (`is_array($items)`) now runs before `consume_rate_limit()` (`class-wgdp-self-service.php`).
+- **#9** OAuth callback stored an account with an empty `refresh_token` when consent was cached, leaving it permanently "not connected" with no error. `handle_callback()` now detects the empty refresh token and returns a `WP_Error` telling the user to revoke access at Google and re-authorize (`class-wgdp-google-auth.php`).
+- **#10** `get_revocation_candidates()` had `ORDER BY ... LIMIT` inside a derived table (MySQL may ignore it, breaking unverified-first prioritization on partial refund). Moved `ORDER BY ... LIMIT` to the outer query (`class-wgdp-entitlements.php`).
+
+**Follow-up:** cut a GitHub release for v3.4.13 so the auto-updater ships these to installed sites.
+
 ------
 
 ## 🟡 MEDIUM severity
@@ -20,9 +28,6 @@
 | :--- | :------------------------------------------ | :----------------------------------------------------------- |
 | 6    | `class-wgdp-order-handler.php:258` + `:327` | Order-status-hook path creates entitlements **without** the `with_order_item_lock()` wrapper used by admin/self-service paths. Concurrent triggers (webhook retry + status transition, or `wcpr_order_charge_succeeded` racing `woocommerce_order_status_processing`) can both pass the non-atomic existence check and insert duplicate rows. |
 | 7    | `class-wgdp-claim-page.php:497`             | Resend rate limit is keyed per-`entitlement_id` but `issue_otp_for_recipient_group()` re-mails **all siblings**. A holder of N sibling claim tokens gets N independent 3/hr buckets → 3·N notification emails/hr per group. Key the bucket on `order_item_id`+`recipient_email`. |
-| 8    | `class-wgdp-self-service.php:491-495`       | Rate-limit counters consumed **before** `is_array($items)` validation, so empty/malformed submissions still burn quota → self-DoS/lockout. Validate input first. |
-| 9    | `class-wgdp-google-auth.php:241`            | OAuth callback stores account with empty `refresh_token` if consent was cached (`?? ''`). `is_account_connected()` then returns false, so tied entitlements never grant with no clear error. Detect empty refresh token and return a `WP_Error` instructing re-auth at Google. |
-| 10   | `class-wgdp-entitlements.php:684-693`       | `ORDER BY ... LIMIT` inside a derived table — MySQL may ignore it, so the "revoke unverified-first" prioritization can silently break, revoking a verified buyer on partial refund. Move `ORDER BY ... LIMIT` to the outer query. |
 ------
 
 ## 🟢 LOW severity / hardening
