@@ -409,6 +409,8 @@ class WGDP_Cron {
 		wp_clear_scheduled_hook( 'wgdp_retry_failed_permissions' );
 		wp_clear_scheduled_hook( 'wgdp_retry_failed_grants' );
 		wp_clear_scheduled_hook( 'wgdp_expire_stale_entitlements' );
+		// Also clear any pending single-event backfill jobs so they don't fire after deactivation.
+		wp_clear_scheduled_hook( 'wgdp_process_backfill' );
 	}
 
 }

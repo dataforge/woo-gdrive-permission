@@ -494,7 +494,11 @@ class WGDP_Claim_Page {
 			return;
 		}
 
-		if ( ! $this->consume_rate_limit( 'wgdp_claim_resend_' . (int) $entitlement['id'], 3, HOUR_IN_SECONDS ) ) {
+		// Key the bucket on the recipient group (order_item_id + recipient_email), not the
+		// per-entitlement id: issue_otp_for_recipient_group() re-mails every sibling token, so
+		// keying per-entitlement would grant a holder of N siblings N independent 3/hr buckets.
+		$rate_key = 'wgdp_claim_resend_' . (int) $entitlement['order_item_id'] . '_' . strtolower( (string) $entitlement['recipient_email'] );
+		if ( ! $this->consume_rate_limit( $rate_key, 3, HOUR_IN_SECONDS ) ) {
 			$this->post_result = $this->wrap_content( $this->form_content(
 				$token,
 				'Too many code requests. Please wait before requesting another code.',

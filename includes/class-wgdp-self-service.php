@@ -216,7 +216,7 @@ class WGDP_Self_Service {
 		}
 
 		$order = wc_get_order( $order_id );
-		if ( ! $order || $order->get_order_key() !== $order_key ) {
+		if ( ! $order || ! hash_equals( (string) $order->get_order_key(), $order_key ) ) {
 			return new WP_Error( 'wgdp_invalid_order_key', 'Invalid link. Order not found or key mismatch.' );
 		}
 
