@@ -1120,18 +1120,30 @@ class WGDP_Entitlements {
 			SELECT oi.order_item_id, oi.order_id,
 				CAST(prod_meta.meta_value AS UNSIGNED) AS product_id,
 				COALESCE(CAST(var_meta.meta_value AS UNSIGNED), 0) AS variation_id,
-				CAST(qty_meta.meta_value AS UNSIGNED) AS qty,
+				GREATEST(0, CAST(qty_meta.meta_value AS UNSIGNED) - COALESCE(refund_totals.refunded_qty, 0)) AS qty,
 				COALESCE(ent_counts.active_count, 0) AS assigned_count
 			FROM {$order_items} oi
 			INNER JOIN {$orders_table} o ON o.{$order_id_col} = oi.order_id
 			INNER JOIN {$order_itemmeta} prod_meta ON prod_meta.order_item_id = oi.order_item_id AND prod_meta.meta_key = '_product_id'
 			LEFT JOIN  {$order_itemmeta} var_meta  ON var_meta.order_item_id = oi.order_item_id AND var_meta.meta_key = '_variation_id'
 			INNER JOIN {$order_itemmeta} qty_meta  ON qty_meta.order_item_id = oi.order_item_id AND qty_meta.meta_key = '_qty'
+			LEFT JOIN {$wpdb->postmeta} digital_flag ON digital_flag.post_id = CAST(var_meta.meta_value AS UNSIGNED)
+			  AND digital_flag.meta_key = '_wgdp_includes_digital'
 			LEFT JOIN (
 				SELECT order_item_id, COUNT(DISTINCT recipient_email) AS active_count
 				FROM {$table} WHERE grant_status != 'revoked'
 				GROUP BY order_item_id
 			) ent_counts ON ent_counts.order_item_id = oi.order_item_id
+			LEFT JOIN (
+				SELECT CAST(refunded_meta.meta_value AS UNSIGNED) AS order_item_id,
+				       SUM(ABS(CAST(refund_qty_meta.meta_value AS SIGNED))) AS refunded_qty
+				FROM {$order_itemmeta} refunded_meta
+				INNER JOIN {$order_itemmeta} refund_qty_meta
+				  ON refund_qty_meta.order_item_id = refunded_meta.order_item_id
+				 AND refund_qty_meta.meta_key = '_qty'
+				WHERE refunded_meta.meta_key = '_refunded_item_id'
+				GROUP BY CAST(refunded_meta.meta_value AS UNSIGNED)
+			) refund_totals ON refund_totals.order_item_id = oi.order_item_id
 			WHERE oi.order_item_type = 'line_item'
 			  AND o.{$order_status_col} IN ('wc-processing', 'wc-completed')
 			  AND (
@@ -1146,8 +1158,12 @@ class WGDP_Entitlements {
 			        AND meta_key IN ('_wgdp_drive_resource_id', '_wgdp_drive_resources') AND meta_value != '' AND meta_value != '[]'
 			    )
 			  )
+			  AND (
+			    COALESCE(CAST(var_meta.meta_value AS UNSIGNED), 0) = 0
+			    OR digital_flag.meta_value IS NULL OR digital_flag.meta_value = '' OR digital_flag.meta_value = 'yes'
+			  )
 			  {$extra_where}
-			  AND CAST(qty_meta.meta_value AS UNSIGNED) > COALESCE(ent_counts.active_count, 0)
+			  AND GREATEST(0, CAST(qty_meta.meta_value AS UNSIGNED) - COALESCE(refund_totals.refunded_qty, 0)) > COALESCE(ent_counts.active_count, 0)
 		";
 		// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
@@ -1165,30 +1181,15 @@ class WGDP_Entitlements {
 		$all_values = array_merge( $extra_values, array( $per_page, $offset ) );
 		$rows = $wpdb->get_results( $wpdb->prepare( $items_sql, $all_values ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
 
-		// Post-process: filter by qualification and resolve cloud asset / account.
+		// Qualification and refund-adjusted qty are already applied in SQL above,
+		// so $total from the count query matches this page's rows exactly. Just
+		// resolve resources / account for display.
 		$items = array();
 		foreach ( $rows as $row ) {
 			$product_id   = (int) $row['product_id'];
 			$variation_id = (int) $row['variation_id'];
 
-			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-				$total--;
-				continue;
-			}
-
-			$order = wc_get_order( (int) $row['order_id'] );
-			if ( $order ) {
-				$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( (int) $row['order_item_id'] ) );
-				$row['qty']   = max( 0, (int) $row['qty'] - $qty_refunded );
-			}
-
-			if ( (int) $row['qty'] <= (int) $row['assigned_count'] ) {
-				$total--;
-				continue;
-			}
-
-			// Resolve resources (multi-file).
-			$resources = WGDP_Product_Meta::get_drive_resources( $product_id, $variation_id ?: 0 );
+			$resources  = WGDP_Product_Meta::get_drive_resources( $product_id, $variation_id ?: 0 );
 			$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
 
 			$row['resources']        = $resources;
@@ -1199,12 +1200,9 @@ class WGDP_Entitlements {
 			$items[] = $row;
 		}
 
-		// $total is a page-local approximation: the COUNT query can't replicate the
-		// PHP-side qualification/refund checks above, so each page nudges it down by
-		// however many of its own rows got filtered. Clamp so it never goes negative.
 		return array(
 			'items' => $items,
-			'total' => max( 0, $total ),
+			'total' => $total,
 		);
 	}
 
