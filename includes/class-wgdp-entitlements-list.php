@@ -116,6 +116,11 @@ class WGDP_Entitlements_List {
 
 		$count  = 0;
 		$errors = 0;
+		// Keyed by recipient email only (not order_item_id|email), so a recipient with
+		// entitlements across multiple order items in this bulk run is notified once —
+		// matching the admin-tab bulk revoke's per-recipient dedup instead of emailing
+		// once per order item.
+		$notified_emails = array();
 		foreach ( $groups as $group ) {
 			$group_revoked_any = false;
 			foreach ( $group['rows'] as $sibling ) {
@@ -134,8 +139,13 @@ class WGDP_Entitlements_List {
 			// Notify the customer whenever at least one sibling was actually revoked,
 			// even if others failed — the customer has genuinely lost access.
 			if ( $group_revoked_any ) {
-				WGDP_Notification_Email::send_access_revoked( $group['email'], WGDP_Entitlements::get_product_name( $group['row'] ), $group['row']['order_id'] ?? 0 );
+				$notified_emails[ $group['email'] ]['row']                                                             = $notified_emails[ $group['email'] ]['row'] ?? $group['row'];
+				$notified_emails[ $group['email'] ]['products'][ WGDP_Entitlements::get_product_name( $group['row'] ) ] = true;
 			}
+		}
+		foreach ( $notified_emails as $email => $data ) {
+			$product_name = implode( ', ', array_keys( $data['products'] ) );
+			WGDP_Notification_Email::send_access_revoked( $email, $product_name, $data['row']['order_id'] ?? 0 );
 		}
 
 		delete_transient( 'wgdp_permission_counts' );

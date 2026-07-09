@@ -1423,6 +1423,25 @@ class WGDP_Entitlements {
 			$recipient_index = $max_index + 1;
 		}
 
+		// Pre-fetch any reusable revoked rows once, up front, so the recipient_index for
+		// ALL of this recipient's resources is resolved before any row is created or
+		// reactivated — resolving it mid-loop let an earlier resource get created with a
+		// freshly-computed index before a later resource's revoked row forced a different
+		// one, producing inconsistent seat numbers across the same recipient's files.
+		$revoked_by_resource = array();
+		if ( $reuse_revoked ) {
+			foreach ( $resources as $res ) {
+				$revoked = $this->get_revoked_for_reuse( $order_item_id, $res['id'], $email );
+				if ( $revoked ) {
+					$revoked_by_resource[ $res['id'] ] = $revoked;
+					if ( ! $recipient_index_locked && ! empty( $revoked['recipient_index'] ) ) {
+						$recipient_index        = (int) $revoked['recipient_index'];
+						$recipient_index_locked = true;
+					}
+				}
+			}
+		}
+
 		$primary_entitlement_id = 0;
 		$created_ids            = array();
 		$reactivated_rows       = array();
@@ -1439,16 +1458,8 @@ class WGDP_Entitlements {
 			}
 
 			if ( ! $entitlement_id && $reuse_revoked ) {
-				$revoked = $this->get_revoked_for_reuse( $order_item_id, $resource_id, $email );
+				$revoked = $revoked_by_resource[ $resource_id ] ?? null;
 				if ( $revoked ) {
-					// Adopt a revoked row's seat index at most once, then lock it so a
-					// later resource reusing a different revoked row cannot overwrite
-					// the in-flight index and produce inconsistent seat numbers across
-					// the same recipient's files.
-					if ( ! $recipient_index_locked && ! empty( $revoked['recipient_index'] ) ) {
-						$recipient_index        = (int) $revoked['recipient_index'];
-						$recipient_index_locked = true;
-					}
 					$entitlement_id = (int) $revoked['id'];
 					$updated        = $this->update( $entitlement_id, array(
 						'verification_status'      => 'pending',
@@ -1464,7 +1475,11 @@ class WGDP_Entitlements {
 						'account_id'               => $account_id,
 						'recipient_index'          => $recipient_index,
 						'claim_token_hash'         => null,
-						'claim_token_expires_at'   => null,
+						// Reactivation time, not the row's original created_at, is what
+						// expire_stale()'s NULL-expiry fallback should measure from — a
+						// row reactivated weeks after its original creation must not be
+						// treated as already stale before its OTP is even issued.
+						'claim_token_expires_at'   => gmdate( 'Y-m-d H:i:s', time() + ( WGDP_OTP::CLAIM_TOKEN_EXPIRY_HOURS * 3600 ) ),
 					) );
 					if ( false === $updated ) {
 						$entitlement_id = 0;

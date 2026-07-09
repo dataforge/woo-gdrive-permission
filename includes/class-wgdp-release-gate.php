@@ -610,17 +610,19 @@ class WGDP_Release_Gate {
 			)
 		);
 
+		if ( false === $updated ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( sprintf( 'WGDP: atomic_increment_meta UPDATE failed for post %d, meta %s: %s', $post_id, $meta_key, $wpdb->last_error ) );
+		}
+
 		if ( ! $updated ) {
+			// $updated is 0 (no rows changed) either because the meta row doesn't exist
+			// yet, or because it already matched the GREATEST(0, ...) floor/ceiling — the
+			// value is correct either way, so only add_post_meta's own failure is worth logging.
 			$added = add_post_meta( $post_id, $meta_key, max( 0, $delta ), true );
-			if ( ! $added ) {
-				$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-					$wpdb->prepare(
-						"UPDATE {$wpdb->postmeta} SET meta_value = GREATEST(0, COALESCE(CAST(meta_value AS SIGNED), 0) + %d) WHERE post_id = %d AND meta_key = %s",
-						$delta,
-						$post_id,
-						$meta_key
-					)
-				);
+			if ( ! $added && ! metadata_exists( 'post', $post_id, $meta_key ) ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				error_log( sprintf( 'WGDP: atomic_increment_meta could not create meta %s for post %d.', $meta_key, $post_id ) );
 			}
 		}
 

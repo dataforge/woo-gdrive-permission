@@ -430,41 +430,55 @@ class WGDP_Claim_Page {
 				$entitlement['account_id']
 			);
 			if ( $existing && ! empty( $existing['provider_permission_id'] ) && (int) $existing['id'] !== (int) $entitlement['id'] ) {
-				$existing_permission = $drive->get_permission(
-					$entitlement['cloud_asset_id'],
-					$existing['provider_permission_id'],
-					$entitlement['account_id']
-				);
+				// Hold the sibling's own lock across the read-check-write so a concurrent
+				// revoke_with_drive_delete() on that sibling can't remove the permission
+				// between get_permission() and mark_granted() below. Returns null when the
+				// dedup didn't apply, meaning we should fall through and create a fresh
+				// permission below.
+				$dedup_result = $ent->with_entitlement_lock( (int) $existing['id'], function () use ( $ent, $drive, $entitlement, $existing, $suppress_email ) {
+					$existing_permission = $drive->get_permission(
+						$entitlement['cloud_asset_id'],
+						$existing['provider_permission_id'],
+						$entitlement['account_id']
+					);
 
-				if ( is_wp_error( $existing_permission ) ) {
-					if ( 'wgdp_permission_not_found' !== $existing_permission->get_error_code() ) {
-						return $existing_permission;
+					if ( is_wp_error( $existing_permission ) ) {
+						if ( 'wgdp_permission_not_found' !== $existing_permission->get_error_code() ) {
+							return $existing_permission;
+						}
+						$ent->mark_error( $existing['id'], 'Permission no longer exists on Google Drive.' );
+						return null;
 					}
-					$ent->mark_error( $existing['id'], 'Permission no longer exists on Google Drive.' );
-				} else {
+
 					$permission_email = strtolower( trim( $existing_permission['emailAddress'] ?? '' ) );
 					$recipient_email  = strtolower( trim( $entitlement['recipient_email'] ) );
-					if ( '' !== $permission_email && $permission_email === $recipient_email ) {
-						$marked = $ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
-						if ( empty( $marked ) ) {
-							// Row vanished or was concurrently revoked; do not report
-							// success for a permission we did not durably record.
-							return new WP_Error( 'wgdp_grant_not_recorded', 'Could not record the granted permission.' );
-						}
-
-						if ( ! $suppress_email ) {
-							$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
-							$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
-							$product_name  = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
-							WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
-							$billing = WGDP_Notification_Email::get_billing_email_if_different( $entitlement['order_id'], $entitlement['recipient_email'] );
-							if ( $billing ) {
-								WGDP_Notification_Email::send_access_granted( $billing, $drive_link, $product_name, $resource_type );
-							}
-						}
-
-						return true;
+					if ( '' === $permission_email || $permission_email !== $recipient_email ) {
+						return null;
 					}
+
+					$marked = $ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
+					if ( empty( $marked ) ) {
+						// Row vanished or was concurrently revoked; do not report
+						// success for a permission we did not durably record.
+						return new WP_Error( 'wgdp_grant_not_recorded', 'Could not record the granted permission.' );
+					}
+
+					if ( ! $suppress_email ) {
+						$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
+						$drive_link    = WGDP_Google_Drive::build_web_link( $entitlement['cloud_asset_id'], $resource_type === 'folder' ? 'application/vnd.google-apps.folder' : '' );
+						$product_name  = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
+						WGDP_Notification_Email::send_access_granted( $entitlement['recipient_email'], $drive_link, $product_name, $resource_type );
+						$billing = WGDP_Notification_Email::get_billing_email_if_different( $entitlement['order_id'], $entitlement['recipient_email'] );
+						if ( $billing ) {
+							WGDP_Notification_Email::send_access_granted( $billing, $drive_link, $product_name, $resource_type );
+						}
+					}
+
+					return true;
+				} );
+
+				if ( null !== $dedup_result ) {
+					return $dedup_result;
 				}
 			}
 

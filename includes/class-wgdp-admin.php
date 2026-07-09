@@ -127,30 +127,40 @@ class WGDP_Admin {
 			$count       = 0;
 			$seen_groups = array();
 			foreach ( $ids as $id ) {
-				$row = $ent->get( $id );
-				if ( $row && 'revoked' !== $row['grant_status'] && 'verified' !== $row['verification_status'] ) {
+				$peek = $ent->get( $id );
+				if ( ! $peek ) {
+					continue;
+				}
+				// Wrap the read-check-act per row in the same order-item lock used by
+				// the single-item paths, so a claim-page submission for this order item
+				// can't interleave with issue_otp_for_recipient_group() mid-bulk-run.
+				$ent->with_order_item_lock( (int) $peek['order_item_id'], function () use ( $ent, $id, &$count, &$seen_groups ) {
+					$row = $ent->get( $id );
+					if ( ! $row || 'revoked' === $row['grant_status'] || 'verified' === $row['verification_status'] ) {
+						return;
+					}
 					// issue_otp_for_recipient_group() reissues one shared token for the
 					// whole order_item_id + recipient_email group, so only process each
 					// group once per bulk run — otherwise a later row in the same group
 					// invalidates the token/email just sent for an earlier row.
 					$group_key = $row['order_item_id'] . '|' . $row['recipient_email'];
 					if ( isset( $seen_groups[ $group_key ] ) ) {
-						continue;
+						return;
 					}
 					$seen_groups[ $group_key ] = true;
 					$tokens = $ent->issue_otp_for_recipient_group( $id );
 					if ( is_wp_error( $tokens ) ) {
-						continue;
+						return;
 					}
-					$order  = wc_get_order( $row['order_id'] );
-					$item   = $order ? $order->get_item( $row['order_item_id'] ) : null;
+					$order = wc_get_order( $row['order_id'] );
+					$item  = $order ? $order->get_item( $row['order_item_id'] ) : null;
 					if ( $order && $item ) {
 						$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
 						if ( ! is_wp_error( $mail_result ) ) {
 							$count++;
 						}
 					}
-				}
+				} );
 			}
 			delete_transient( 'wgdp_permission_counts' );
 			echo '<div class="notice notice-success"><p>' . esc_html( sprintf( 'Resent OTP to %d entitlement(s).', $count ) ) . '</p></div>';
@@ -159,8 +169,19 @@ class WGDP_Admin {
 			$errors        = 0;
 			$skipped_stale = 0;
 			foreach ( $ids as $id ) {
-				$row = $ent->get( $id );
-				if ( $row && 'error' === $row['grant_status'] && 'verified' === $row['verification_status'] ) {
+				$peek = $ent->get( $id );
+				if ( ! $peek ) {
+					continue;
+				}
+				// grant_drive_access_for_entitlement() already locks the entitlement
+				// itself, but mark_error() below did not — wrap the whole row in the
+				// order-item lock so a concurrent claim-page submission for this order
+				// item can't race the error write.
+				$ent->with_order_item_lock( (int) $peek['order_item_id'], function () use ( $ent, $id, &$count, &$errors, &$skipped_stale ) {
+					$row = $ent->get( $id );
+					if ( ! $row || 'error' !== $row['grant_status'] || 'verified' !== $row['verification_status'] ) {
+						return;
+					}
 					// Unlike the single-item AJAX handler, bulk retry can't safely
 					// reprovision, so it must not blindly retry against a
 					// cloud_asset_id that's no longer part of the product's current
@@ -171,7 +192,7 @@ class WGDP_Admin {
 					);
 					if ( ! in_array( $row['cloud_asset_id'], $current_asset_ids, true ) ) {
 						$skipped_stale++;
-						continue;
+						return;
 					}
 					$result = WGDP_Claim_Page::grant_drive_access_for_entitlement( $row, false );
 					if ( is_wp_error( $result ) ) {
@@ -180,7 +201,7 @@ class WGDP_Admin {
 					} else {
 						$count++;
 					}
-				}
+				} );
 			}
 			delete_transient( 'wgdp_permission_counts' );
 			$msg = sprintf( 'Retried %d entitlement(s): %d granted', count( $ids ), $count );
