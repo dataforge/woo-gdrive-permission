@@ -1362,11 +1362,19 @@ class WGDP_Order_Handler {
 		$order = wc_get_order( $row['order_id'] );
 		$item  = $order ? $order->get_item( $row['order_item_id'] ) : null;
 
-		if ( $order && $item ) {
-			$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
-			if ( is_wp_error( $mail_result ) ) {
-				wp_send_json_error( 'Verification code was created, but email failed: ' . $mail_result->get_error_message() );
-			}
+		// issue_otp_for_recipient_group() has already rotated the OTP/claim token
+		// and invalidated the group's prior tokens. If the order or item can no
+		// longer be loaded we cannot render the email, so report the failure
+		// rather than claiming success — the recipient received nothing and any
+		// previously-valid token was just replaced.
+		if ( ! $order || ! $item ) {
+			delete_transient( 'wgdp_permission_counts' );
+			wp_send_json_error( 'Verification code was created, but the order or line item could not be loaded, so no email was sent.' );
+		}
+
+		$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+		if ( is_wp_error( $mail_result ) ) {
+			wp_send_json_error( 'Verification code was created, but email failed: ' . $mail_result->get_error_message() );
 		}
 
 		delete_transient( 'wgdp_permission_counts' );
@@ -1434,8 +1442,12 @@ class WGDP_Order_Handler {
 			$revoked_count++;
 		}
 
-		// Send one revocation email for the recipient.
-		if ( ! $drive_warning ) {
+		// Send one revocation email for the recipient as long as at least one row
+		// was actually revoked, even if a sibling's Drive delete failed. This
+		// matches revoke_all_entitlements(), which notifies the recipient as soon
+		// as any of their rows is successfully revoked; suppressing the email on a
+		// partial failure would silently strip access to the succeeded files.
+		if ( $revoked_count > 0 ) {
 			WGDP_Notification_Email::send_access_revoked( $row['recipient_email'], WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
 		}
 		delete_transient( 'wgdp_permission_counts' );

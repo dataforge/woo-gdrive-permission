@@ -28,7 +28,13 @@ class WGDP_Updater {
             return $update;
         }
 
-        $remote_version = (string) preg_replace( '/^v/', '', (string) $release->tag_name );
+        $remote_version = self::normalize_version( $release->tag_name );
+        if ( '' === $remote_version ) {
+            // Tag is not a recognizable version (e.g. "latest", "nightly"); a
+            // version_compare() against it would be unpredictable, so treat it
+            // as "no update" rather than filing a bogus release.
+            return $update;
+        }
 
         // Always return release info once the GitHub fetch succeeds -- even
         // when already current. WordPress core does its own version_compare()
@@ -52,9 +58,32 @@ class WGDP_Updater {
             return false;
         }
 
-        $remote_version = (string) preg_replace( '/^v/', '', (string) $release->tag_name );
+        $remote_version = self::normalize_version( $release->tag_name );
+        if ( '' === $remote_version ) {
+            return false;
+        }
 
         return version_compare( WGDP_VERSION, $remote_version, '<' );
+    }
+
+    /**
+     * Strip a leading "v" and confirm the tag looks like a dotted numeric
+     * version before it is fed to version_compare(). Returns '' when the tag is
+     * not a usable version string.
+     *
+     * @param string $tag_name Raw GitHub release tag.
+     * @return string Normalized version, or '' if invalid.
+     */
+    private static function normalize_version( $tag_name ) {
+        $version = (string) preg_replace( '/^v/', '', (string) $tag_name );
+
+        // Require a leading numeric-dotted core (e.g. 1, 1.2, 3.4.45), optionally
+        // followed by a pre-release/build suffix that version_compare understands.
+        if ( ! preg_match( '/^\d+(\.\d+)*([.\-+].+)?$/', $version ) ) {
+            return '';
+        }
+
+        return $version;
     }
 
     public static function fix_directory( $result, $options ) {

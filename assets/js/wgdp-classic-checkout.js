@@ -1,15 +1,24 @@
 (function ($) {
 	'use strict';
 
-	// Auto-fill first empty recipient email with billing email.
+	// Auto-fill the recipient email with the billing email, but only when there
+	// is exactly one recipient field. On a multi-product gift cart there is no
+	// reliable way to know which product the billing email is meant for, so
+	// pre-filling the first field in DOM order would put it against the wrong
+	// product. Leave those for the buyer to fill explicitly.
 	function maybeFillBillingEmail() {
 		var billingEmail = $( '#billing_email' ).val();
 		if ( ! billingEmail ) {
 			return;
 		}
 
-		var $first = $( '#wgdp-classic-recipients input[type="email"]' ).first();
-		if ( $first.length && ! $first.val() ) {
+		var $fields = $( '#wgdp-classic-recipients input[type="email"]' );
+		if ( 1 !== $fields.length ) {
+			return;
+		}
+
+		var $first = $fields.first();
+		if ( ! $first.val() ) {
 			$first.val( billingEmail ).trigger( 'input' );
 		}
 	}

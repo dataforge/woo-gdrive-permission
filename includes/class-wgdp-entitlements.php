@@ -195,7 +195,9 @@ class WGDP_Entitlements {
 					// Re-read under the lock; state may have changed while waiting.
 					$row = $this->get( $id );
 					if ( ! $row ) {
-						return null;
+						// Row vanished. Honour the int|false contract (callers only
+						// test is_wp_error) rather than returning null.
+						return false;
 					}
 
 					$clear_claim = false;
