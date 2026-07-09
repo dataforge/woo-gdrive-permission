@@ -152,7 +152,11 @@ class WGDP_Release_Gate {
 			// Compare counter vs threshold.
 			$threshold = self::get_effective_threshold_qty( $product_id, $variation_id );
 			if ( $threshold <= 0 ) {
-				return true;
+				// Misconfiguration: min_sales_qty mode selected but no positive
+				// threshold set. Keep the gate closed rather than silently
+				// auto-releasing as if the mode were 'immediate'. An admin who
+				// wants immediate release should choose the 'immediate' mode.
+				return false;
 			}
 			$current = self::get_current_qualifying_qty( $product_id, $variation_id );
 			return $current >= $threshold;

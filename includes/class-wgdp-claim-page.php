@@ -132,6 +132,13 @@ class WGDP_Claim_Page {
 		// Prevent claim token leakage via Referer headers.
 		header( 'Referrer-Policy: no-referrer' );
 
+		// The claim page carries a bearer claim token and can render recipient
+		// PII; never let a page cache/CDN store and re-serve it to another visitor.
+		nocache_headers();
+		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+			define( 'DONOTCACHEPAGE', true );
+		}
+
 		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
 			return;
 		}

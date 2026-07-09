@@ -192,6 +192,56 @@ class WGDP_DB {
 	}
 
 	/**
+	 * Pin subsequent reads to the primary DB connection for this request.
+	 *
+	 * MySQL GET_LOCK()/RELEASE_LOCK() are session-scoped: both calls must land
+	 * on the same connection, and that connection must be the primary or the
+	 * lock provides no exclusion at all. On HyperDB-based setups (e.g. WP VIP)
+	 * reads are otherwise routed to a replica, so the acquire and release can
+	 * land on different sessions and the mutex silently no-ops.
+	 */
+	public static function pin_locks_to_primary() {
+		global $wpdb;
+		if ( method_exists( $wpdb, 'send_reads_to_masters' ) ) {
+			$wpdb->send_reads_to_masters();
+		}
+	}
+
+	/**
+	 * Execute a callback while holding a MySQL named lock on the primary connection.
+	 *
+	 * Centralizes the GET_LOCK/RELEASE_LOCK pattern used across the plugin so
+	 * every named lock is pinned to the primary connection and released in a
+	 * finally block.
+	 *
+	 * @param string   $lock_name Lock name (already namespaced by the caller).
+	 * @param int      $timeout   GET_LOCK timeout in seconds.
+	 * @param callable $callback  Runs while the lock is held.
+	 * @param mixed    $on_fail   Value returned when the lock cannot be acquired.
+	 * @return mixed Callback return value, or $on_fail on lock failure.
+	 */
+	public static function with_named_lock( $lock_name, $timeout, $callback, $on_fail ) {
+		global $wpdb;
+		self::pin_locks_to_primary();
+
+		$locked = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock_name, max( 1, (int) $timeout ) )
+		);
+
+		if ( '1' !== (string) $locked ) {
+			return $on_fail;
+		}
+
+		try {
+			return $callback();
+		} finally {
+			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
+			);
+		}
+	}
+
+	/**
 	 * Atomically consume one fixed-window rate-limit token.
 	 *
 	 * Uses a short MySQL named lock around the transient read/write so parallel
@@ -207,11 +257,8 @@ class WGDP_DB {
 
 		// GET_LOCK()/RELEASE_LOCK() are session-scoped, so both calls must land on
 		// the same connection — and that connection must be the primary, or the
-		// lock provides no exclusion at all. On HyperDB-based setups (e.g. WP VIP)
-		// reads can otherwise be routed to a replica.
-		if ( method_exists( $wpdb, 'send_reads_to_masters' ) ) {
-			$wpdb->send_reads_to_masters();
-		}
+		// lock provides no exclusion at all.
+		self::pin_locks_to_primary();
 
 		$limit = max( 1, (int) $limit );
 		$window = max( 1, (int) $window );

@@ -545,6 +545,10 @@ class WGDP_Google_Auth {
 	 */
 	private function acquire_lock() {
 		global $wpdb;
+		// Pin to the primary connection so acquire and release land on the same
+		// session; otherwise on HyperDB/replica setups the lock provides no
+		// exclusion for the encrypted-credential mutations it guards.
+		WGDP_DB::pin_locks_to_primary();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$result = $wpdb->get_var( "SELECT GET_LOCK('wgdp_accounts', 5)" );
 		return '1' === (string) $result;
@@ -555,6 +559,7 @@ class WGDP_Google_Auth {
 	 */
 	private function release_lock() {
 		global $wpdb;
+		WGDP_DB::pin_locks_to_primary();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$wpdb->get_var( "SELECT RELEASE_LOCK('wgdp_accounts')" );
 	}

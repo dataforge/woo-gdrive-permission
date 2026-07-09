@@ -839,24 +839,13 @@ class WGDP_Order_Handler {
 	 * Execute a callback while holding a per-order sales counter lock.
 	 */
 	private function with_sales_counter_lock( $order_id, $callback ) {
-		global $wpdb;
-
 		$lock_name = 'wgdp_sales_counter_' . absint( $order_id );
-		$locked    = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			$wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $lock_name )
+		return WGDP_DB::with_named_lock(
+			$lock_name,
+			10,
+			$callback,
+			new WP_Error( 'wgdp_sales_counter_lock_failed', 'Could not lock this order for sales counter update.' )
 		);
-
-		if ( '1' !== (string) $locked ) {
-			return new WP_Error( 'wgdp_sales_counter_lock_failed', 'Could not lock this order for sales counter update.' );
-		}
-
-		try {
-			return $callback();
-		} finally {
-			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
-			);
-		}
 	}
 
 	/**

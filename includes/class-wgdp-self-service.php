@@ -33,6 +33,13 @@ class WGDP_Self_Service {
 		$page_id = (int) get_option( 'wgdp_provide_email_page_id', 0 );
 		if ( $page_id && is_page( $page_id ) ) {
 			header( 'Referrer-Policy: no-referrer' );
+
+			// The self-service form embeds a reusable bearer token/order key and
+			// can display pending recipient emails; keep it out of page caches/CDNs.
+			nocache_headers();
+			if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+				define( 'DONOTCACHEPAGE', true );
+			}
 		}
 	}
 

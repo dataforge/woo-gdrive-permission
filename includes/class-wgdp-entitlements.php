@@ -483,24 +483,13 @@ class WGDP_Entitlements {
 	 * Execute a callback while holding a recipient/file-group OTP lock.
 	 */
 	private function with_recipient_group_lock( $order_item_id, $recipient_email, $callback ) {
-		global $wpdb;
-
 		$lock_name = 'wgdp_otp_group_' . md5( absint( $order_item_id ) . '|' . self::normalize_email( $recipient_email ) );
-		$locked    = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			$wpdb->prepare( 'SELECT GET_LOCK(%s, 5)', $lock_name )
+		return WGDP_DB::with_named_lock(
+			$lock_name,
+			5,
+			$callback,
+			new WP_Error( 'wgdp_otp_group_lock_failed', 'Could not lock this recipient for OTP issuance. Please try again.' )
 		);
-
-		if ( '1' !== (string) $locked ) {
-			return new WP_Error( 'wgdp_otp_group_lock_failed', 'Could not lock this recipient for OTP issuance. Please try again.' );
-		}
-
-		try {
-			return $callback();
-		} finally {
-			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
-			);
-		}
 	}
 
 	/**
@@ -780,24 +769,13 @@ class WGDP_Entitlements {
 	 * concurrent admin/self-service submissions for the same order item.
 	 */
 	public function with_order_item_lock( $order_item_id, $callback ) {
-		global $wpdb;
-
 		$lock_name = 'wgdp_order_item_' . absint( $order_item_id );
-		$locked    = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			$wpdb->prepare( 'SELECT GET_LOCK(%s, 5)', $lock_name )
+		return WGDP_DB::with_named_lock(
+			$lock_name,
+			5,
+			$callback,
+			new WP_Error( 'wgdp_assignment_lock_failed', 'Could not lock this order item for assignment. Please try again.' )
 		);
-
-		if ( '1' !== (string) $locked ) {
-			return new WP_Error( 'wgdp_assignment_lock_failed', 'Could not lock this order item for assignment. Please try again.' );
-		}
-
-		try {
-			return $callback();
-		} finally {
-			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
-			);
-		}
 	}
 
 	/**
@@ -807,24 +785,13 @@ class WGDP_Entitlements {
 	 * submitted concurrently.
 	 */
 	public function with_entitlement_lock( $entitlement_id, $callback ) {
-		global $wpdb;
-
 		$lock_name = 'wgdp_entitlement_' . absint( $entitlement_id );
-		$locked    = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			$wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $lock_name )
+		return WGDP_DB::with_named_lock(
+			$lock_name,
+			10,
+			$callback,
+			new WP_Error( 'wgdp_entitlement_lock_failed', 'Could not lock this entitlement. Please try again.' )
 		);
-
-		if ( '1' !== (string) $locked ) {
-			return new WP_Error( 'wgdp_entitlement_lock_failed', 'Could not lock this entitlement. Please try again.' );
-		}
-
-		try {
-			return $callback();
-		} finally {
-			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
-			);
-		}
 	}
 
 	/**
