@@ -161,18 +161,32 @@ class WGDP_Entitlements {
 
 	/**
 	 * Mark an entitlement as granted.
+	 *
+	 * Conditional on the row not already being revoked, so a grant that lost a
+	 * race with a concurrent revoke cannot resurrect a row back to 'granted'.
+	 *
+	 * @return int|false Rows updated (0 if the row was already revoked), or false on failure.
 	 */
 	public function mark_granted( $id, $permission_id ) {
-		return $this->update( $id, array(
-			'grant_status'          => 'granted',
-			'provider_permission_id' => $permission_id,
-			'granted_at'            => current_time( 'mysql', true ),
-			'revoked_at'            => null,
-			'revocation_reason'     => null,
-			'revocation_error'      => null,
-			'revocation_retries'    => 0,
-			'grant_error'           => null,
-		) );
+		global $wpdb;
+		$table = $this->table();
+		return $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"UPDATE {$table}
+				 SET grant_status = 'granted',
+				     provider_permission_id = %s,
+				     granted_at = %s,
+				     revoked_at = NULL,
+				     revocation_reason = NULL,
+				     revocation_error = NULL,
+				     revocation_retries = 0,
+				     grant_error = NULL
+				 WHERE id = %d AND grant_status != 'revoked'",
+				$permission_id,
+				current_time( 'mysql', true ),
+				$id
+			)
+		);
 	}
 
 	/**
@@ -298,40 +312,58 @@ class WGDP_Entitlements {
 	/**
 	 * Revoke an entitlement only after the matching Drive permission is removed.
 	 *
-	 * @param array  $row    Entitlement row.
+	 * Acquires the same per-entitlement lock as grant_drive_access_for_entitlement()
+	 * and re-reads the row under it, so a grant that is mid-flight (e.g. waiting on
+	 * Google) cannot have its outcome raced by a concurrent revoke acting on a stale
+	 * snapshot, and vice versa.
+	 *
+	 * @param array  $row    Entitlement row (used only to obtain the ID; re-read under the lock).
 	 * @param string $reason Revocation reason.
 	 * @return true|WP_Error
 	 */
 	public function revoke_with_drive_delete( $row, $reason = self::REVOCATION_REASON_MANUAL ) {
-		if ( ! $row || 'revoked' === $row['grant_status'] ) {
+		if ( ! $row ) {
 			return true;
 		}
 
-		if ( in_array( $row['grant_status'], array( 'granted', 'revocation_error' ), true ) && ! empty( $row['provider_permission_id'] ) ) {
-			$result = $this->delete_drive_permission_for_row( $row );
-			if ( is_wp_error( $result ) ) {
-				$data   = $result->get_error_data();
-				$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 0;
-				if ( 404 !== $status ) {
-					$this->mark_revocation_error( $row['id'], $reason, $result->get_error_message() );
-					return $result;
+		$id = (int) $row['id'];
+
+		return $this->with_entitlement_lock( $id, function () use ( $id, $reason ) {
+			$row = $this->get( $id );
+			if ( ! $row || 'revoked' === $row['grant_status'] ) {
+				return true;
+			}
+
+			if ( in_array( $row['grant_status'], array( 'granted', 'revocation_error' ), true ) && ! empty( $row['provider_permission_id'] ) ) {
+				$result = $this->delete_drive_permission_for_row( $row );
+				if ( is_wp_error( $result ) ) {
+					$data   = $result->get_error_data();
+					$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 0;
+					if ( 404 !== $status ) {
+						$this->mark_revocation_error( $row['id'], $reason, $result->get_error_message() );
+						return $result;
+					}
 				}
 			}
-		}
 
-		$this->mark_revoked( $row['id'], $reason );
-		return true;
+			$this->mark_revoked( $row['id'], $reason );
+			return true;
+		} );
 	}
 
 	/**
 	 * Mark an entitlement with a grant error and increment retry count.
+	 *
+	 * Conditional on the row not already being revoked, so a failed grant whose
+	 * error is recorded after the row was concurrently revoked cannot flip it
+	 * back to 'error' (which would make cron eligible to retry-grant it).
 	 */
 	public function mark_error( $id, $error ) {
 		global $wpdb;
 		$table = $this->table();
 		return $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"UPDATE {$table} SET grant_status = 'error', grant_error = %s, grant_retries = grant_retries + 1 WHERE id = %d",
+				"UPDATE {$table} SET grant_status = 'error', grant_error = %s, grant_retries = grant_retries + 1 WHERE id = %d AND grant_status != 'revoked'",
 				$error,
 				$id
 			)
@@ -899,6 +931,13 @@ class WGDP_Entitlements {
 	 * Delete the Drive permission for a row unless another active entitlement
 	 * references the same file/account/permission tuple.
 	 *
+	 * The shared-reference check and the delete are serialized under a lock keyed
+	 * by the (account, asset, permission) tuple, not by entitlement ID. Without
+	 * this, the last two entitlements referencing one Drive permission could be
+	 * revoked concurrently, each see the other as still active via
+	 * permission_is_shared(), and both skip the Google delete while the
+	 * permission remains live.
+	 *
 	 * @param array $row Entitlement row.
 	 * @return true|WP_Error
 	 */
@@ -907,14 +946,29 @@ class WGDP_Entitlements {
 			return true;
 		}
 
-		if ( $this->permission_is_shared( $row ) ) {
-			return true;
-		}
+		return $this->with_permission_lock( $row['account_id'], $row['cloud_asset_id'], $row['provider_permission_id'], function () use ( $row ) {
+			if ( $this->permission_is_shared( $row ) ) {
+				return true;
+			}
 
-		return WGDP_Google_Drive::instance()->delete_permission(
-			$row['cloud_asset_id'],
-			$row['provider_permission_id'],
-			$row['account_id']
+			return WGDP_Google_Drive::instance()->delete_permission(
+				$row['cloud_asset_id'],
+				$row['provider_permission_id'],
+				$row['account_id']
+			);
+		} );
+	}
+
+	/**
+	 * Execute a callback while holding a lock scoped to one Drive permission tuple.
+	 */
+	private function with_permission_lock( $account_id, $cloud_asset_id, $provider_permission_id, $callback ) {
+		$lock_name = 'wgdp_permission_' . md5( $account_id . '|' . $cloud_asset_id . '|' . $provider_permission_id );
+		return WGDP_DB::with_named_lock(
+			$lock_name,
+			10,
+			$callback,
+			new WP_Error( 'wgdp_permission_lock_failed', 'Could not lock this Drive permission. Please try again.' )
 		);
 	}
 
