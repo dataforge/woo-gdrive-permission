@@ -284,7 +284,14 @@ class WGDP_Google_Auth {
 			return $result;
 		}
 
-		set_transient( 'wgdp_access_token_' . $account_id, $body['access_token'], 55 * MINUTE_IN_SECONDS );
+		// Cache for the shorter of 55 min or the token's actual lifetime (minus a
+		// 60s safety margin) so a short-lived token is never served stale, matching
+		// refresh_access_token().
+		$expires_in = isset( $body['expires_in'] ) ? (int) $body['expires_in'] : 3600;
+		$cache_ttl  = min( 55 * MINUTE_IN_SECONDS, $expires_in - 60 );
+		if ( $cache_ttl > 0 ) {
+			set_transient( 'wgdp_access_token_' . $account_id, $body['access_token'], $cache_ttl );
+		}
 
 		return $account_id;
 	}

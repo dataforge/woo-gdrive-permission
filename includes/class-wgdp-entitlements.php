@@ -1576,9 +1576,11 @@ class WGDP_Entitlements {
 			) );
 		}
 
-		if ( $clear_counts ) {
-			delete_transient( 'wgdp_permission_counts' );
-		}
+		// Creating/reactivating an entitlement moves a row into pending_verification
+		// and shifts every count_by_status() bucket, so the cached counts are now
+		// stale regardless of which admin path called us. Always clear.
+		unset( $clear_counts );
+		delete_transient( 'wgdp_permission_counts' );
 
 		wp_send_json_success( array(
 			'id'              => $result['primary_id'],

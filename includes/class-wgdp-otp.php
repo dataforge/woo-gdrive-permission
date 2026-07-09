@@ -144,9 +144,12 @@ class WGDP_OTP {
 		}
 
 		// Mark as verified once. A concurrent valid submit may have done this first.
+		// Guard on grant_status too so an entitlement revoked in the window between
+		// the initial read and this update is not flipped to verified (mirrors the
+		// sibling update below).
 		$verified = (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"UPDATE {$table} SET verification_status = 'verified' WHERE id = %d AND verification_status = 'pending'",
+				"UPDATE {$table} SET verification_status = 'verified' WHERE id = %d AND verification_status = 'pending' AND grant_status != 'revoked'",
 				$entitlement['id']
 			)
 		);

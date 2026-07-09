@@ -43,30 +43,43 @@ class WGDP_Entitlements_List {
 		$ids = array_map( 'absint', (array) ( $_POST['ids'] ?? array() ) );
 		$ent = WGDP_Entitlements::instance();
 		$count = 0;
+		// issue_otp_for_recipient_group() resets the OTP/claim token for the whole
+		// recipient group (order_item_id + recipient_email) and invalidates any
+		// prior token. Selecting several file rows for one recipient must therefore
+		// resend only once — otherwise each call invalidates the email the previous
+		// call just sent, so only the last message would work.
+		$seen_groups = array();
 
 		foreach ( $ids as $id ) {
 			$row = $ent->get( $id );
-			if ( $row && 'revoked' !== $row['grant_status'] && 'verified' !== $row['verification_status'] ) {
-				$tokens = $ent->issue_otp_for_recipient_group( $id );
-				if ( is_wp_error( $tokens ) ) {
-					continue;
-				}
-					$order  = wc_get_order( $row['order_id'] );
-					$item   = $order ? $order->get_item( $row['order_item_id'] ) : null;
-					if ( $order && $item ) {
-						$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
-						if ( ! is_wp_error( $mail_result ) ) {
-							$count++;
-						}
-					}
+			if ( ! $row || 'revoked' === $row['grant_status'] || 'verified' === $row['verification_status'] ) {
+				continue;
+			}
+			$group_key = $row['order_item_id'] . '|' . $row['recipient_email'];
+			if ( isset( $seen_groups[ $group_key ] ) ) {
+				continue;
+			}
+			$seen_groups[ $group_key ] = true;
+
+			$tokens = $ent->issue_otp_for_recipient_group( $id );
+			if ( is_wp_error( $tokens ) ) {
+				continue;
+			}
+			$order = wc_get_order( $row['order_id'] );
+			$item  = $order ? $order->get_item( $row['order_item_id'] ) : null;
+			if ( $order && $item ) {
+				$mail_result = WGDP_Notification_Email::send_otp( $row['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+				if ( ! is_wp_error( $mail_result ) ) {
+					$count++;
 				}
 			}
+		}
 
 		if ( $count > 0 ) {
 			delete_transient( 'wgdp_permission_counts' );
 		}
 
-		wp_send_json_success( sprintf( 'Resent OTP to %d entitlement(s).', $count ) );
+		wp_send_json_success( sprintf( 'Resent verification email to %d recipient(s).', $count ) );
 	}
 
 	/**

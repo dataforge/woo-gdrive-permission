@@ -685,7 +685,7 @@ class WGDP_Order_Handler {
 		$order_id = $item && method_exists( $item, 'get_order_id' ) ? absint( $item->get_order_id() ) : 0;
 
 		$ent = WGDP_Entitlements::instance();
-		$ent->with_order_item_lock( $order_item_id, function () use ( $ent, $order_item_id, $order_id ) {
+		$lock_result = $ent->with_order_item_lock( $order_item_id, function () use ( $ent, $order_item_id, $order_id ) {
 			$rows = $ent->get_by_order_item( $order_item_id );
 			if ( empty( $rows ) ) {
 				return;
@@ -728,6 +728,28 @@ class WGDP_Order_Handler {
 			}
 		} );
 
+		// If the lock could not be acquired, no entitlements were revoked. Leave a
+		// note and bail before decrementing the sales counter so we don't drop the
+		// sale count while Drive permissions remain live (mirrors the other
+		// with_order_item_lock call sites).
+		if ( is_wp_error( $lock_result ) ) {
+			$note_order_id = $order_id ?: 0;
+			$order         = $note_order_id ? wc_get_order( $note_order_id ) : null;
+			if ( $order ) {
+				$order->add_order_note( sprintf(
+					'WGDP: Could not acquire lock to revoke entitlements for deleted order item #%d (%s). Entitlements were not revoked and the sales counter was left unchanged.',
+					$order_item_id,
+					$lock_result->get_error_message()
+				) );
+			}
+			error_log( sprintf(
+				'WGDP: revoke_entitlements_for_deleted_order_item could not acquire lock for order item #%d: %s',
+				$order_item_id,
+				$lock_result->get_error_message()
+			) );
+			return;
+		}
+
 		$this->decrement_sales_counter_for_deleted_order_item( $order_id, $order_item_id, $item );
 	}
 
@@ -767,7 +789,13 @@ class WGDP_Order_Handler {
 			$product_deltas         = array();
 			$variation_deltas       = array();
 
-			$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $counted_qty );
+			// Partial refunds already decremented part of this item's counted
+			// quantity. Only subtract what's still counted so we don't double-count
+			// the refunded portion (mirrors revoke_all_entitlements()).
+			$already_removed = $refund_decremented_qty[ $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 );
+			$remaining_qty   = max( 0, $counted_qty - (int) $already_removed );
+
+			$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $remaining_qty );
 
 			foreach ( $product_deltas as $pid => $qty ) {
 				WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
