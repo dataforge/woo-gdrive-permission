@@ -41,18 +41,3 @@ the cited lines). Not yet fixed.
 
 - **Activation page creation doesn't detect slug collision** — `woo-gdrive-permission.php:113-117`, `class-wgdp-self-service.php:274-282`, `class-wgdp-claim-page.php:64-72`. If `wgdp-provide-email` or the claim slug already exists as another post's slug, WP appends `-2` and the configured `wgdp_claim_page_slug` setting silently drifts from the actual page slug.
 
----
-
-## Code review findings (2026-07-09, session 5)
-
-The tasks below are new findings from a full review of the current `3.4.43`
-tree. They are intentionally not duplicates of the session 3/4 items above.
-
-### MEDIUM
-
-- [ ] **Do not let capped cron scans permanently starve later actionable entitlements** -- `includes/class-wgdp-cron.php:121-170`, `includes/class-wgdp-entitlements.php:983-1011`. Each cron run resets `$after_id` to zero and scans at most 200 rows. Pending/error rows whose release gate is still closed remain at the front forever without changing state or retry count; 200 such low-ID rows prevent higher-ID rows for already-released products from ever being reached. Persist a cursor with wraparound, query only currently actionable rows, or use a fair work queue. Test with more than 200 blocked rows preceding a released row.
-
-- [ ] **Reject grants for assets no longer present in the product's active resource set** -- `includes/class-wgdp-claim-page.php:730-737`, `includes/class-wgdp-cron.php:24-31`, `includes/class-wgdp-release-gate.php:427-434`. All three helpers return "not retired" when the asset is absent from product metadata, so a pending claim/retry can grant a detached file after an interrupted product save, direct meta edit/import, or other missed revocation. This conflicts with the admin retry path, which explicitly refuses stale assets. Require positive membership in the effective active-resource list before any grant; mark/reprovision stale rows instead of sharing the old file.
-
-### LOW
-

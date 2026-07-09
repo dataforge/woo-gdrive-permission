@@ -435,7 +435,9 @@ class WGDP_Release_Gate {
 				return ! empty( $resource['status'] ) && 'active' !== $resource['status'];
 			}
 		}
-		return false;
+		// Not present in the product's resource set at all — treat as removed,
+		// not as "still active", so a detached file is never (re-)granted.
+		return true;
 	}
 
 	/**

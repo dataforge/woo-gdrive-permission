@@ -28,7 +28,9 @@ class WGDP_Cron {
 				return ! empty( $r['status'] ) && 'active' !== $r['status'];
 			}
 		}
-		return false;
+		// Not present in the product's resource set at all — treat as removed,
+		// not as "still active", so a detached file is never (re-)granted.
+		return true;
 	}
 
 	/**
@@ -119,11 +121,17 @@ class WGDP_Cron {
 		$had_candidates = false;
 
 		// Pick up pending_release overflow for already-released items. Use cursor
-		// pagination so blocked rows do not permanently hide later grantable rows.
-		$after_id = 0;
+		// pagination so blocked rows do not permanently hide later grantable rows
+		// within this run. The cursor is also persisted across runs (wrapping to
+		// zero once a full pass drains cleanly) so rows stuck at the front behind
+		// a still-closed release gate cannot starve rows further back forever.
+		$cursor_option = 'wgdp_cron_cursor_pending_release';
+		$after_id      = (int) get_option( $cursor_option, 0 );
+		$drained       = false;
 		for ( $page = 0; $page < 10; $page++ ) {
 			$pending_release_rows = $ent->get_stale_pending_release( 20, $after_id );
 			if ( empty( $pending_release_rows ) ) {
+				$drained = true;
 				break;
 			}
 			$had_candidates = true;
@@ -148,14 +156,18 @@ class WGDP_Cron {
 				}
 			}
 		}
+		update_option( $cursor_option, $drained ? 0 : $after_id, false );
 
 		// Track retired asset IDs already noted per order to avoid duplicate notes.
 		$retired_noted = array();
 
-		$after_id = 0;
+		$cursor_option = 'wgdp_cron_cursor_failed_verified';
+		$after_id      = (int) get_option( $cursor_option, 0 );
+		$drained       = false;
 		for ( $page = 0; $page < 10; $page++ ) {
 			$rows = $ent->get_failed_verified( 20, 50, $after_id );
 			if ( empty( $rows ) ) {
+				$drained = true;
 				break;
 			}
 			$had_candidates = true;
@@ -224,11 +236,15 @@ class WGDP_Cron {
 				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 			}
 		}
+		update_option( $cursor_option, $drained ? 0 : $after_id, false );
 
-		$after_id = 0;
+		$revocation_cursor_option = 'wgdp_cron_cursor_failed_revocation';
+		$after_id                 = (int) get_option( $revocation_cursor_option, 0 );
+		$revocation_drained       = false;
 		for ( $page = 0; $page < 10; $page++ ) {
 			$revocation_rows = $ent->get_failed_revocations( 20, 50, $after_id );
 			if ( empty( $revocation_rows ) ) {
+				$revocation_drained = true;
 				break;
 			}
 			$had_candidates = true;
@@ -259,6 +275,7 @@ class WGDP_Cron {
 				}
 			}
 		}
+		update_option( $revocation_cursor_option, $revocation_drained ? 0 : $after_id, false );
 
 		if ( ! $had_candidates ) {
 			return;
