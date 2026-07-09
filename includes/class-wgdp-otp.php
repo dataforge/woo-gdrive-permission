@@ -118,14 +118,21 @@ class WGDP_OTP {
 			return array( 'success' => false, 'error' => 'Your verification code has expired. Please contact the store for a new code.', 'entitlement' => $entitlement );
 		}
 
-		// Atomically increment attempts only if under the limit (prevents TOCTOU race).
+		// Snapshot the OTP hash under validation so a concurrent resend (which
+		// replaces claim_token_hash/otp_hash) cannot let this stale pair verify
+		// the row after being superseded.
+		$otp_hash_snapshot = $entitlement['otp_hash'];
+
+		// Atomically increment attempts only if under the limit (prevents TOCTOU race)
+		// and only if this row's claim token still matches the one being verified.
 		global $wpdb;
 		$table = WGDP_DB::get_table_name();
 		$rows_affected = (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"UPDATE {$table} SET otp_attempts = otp_attempts + 1 WHERE id = %d AND otp_attempts < %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"UPDATE {$table} SET otp_attempts = otp_attempts + 1 WHERE id = %d AND otp_attempts < %d AND claim_token_hash = %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				$entitlement['id'],
-				self::MAX_OTP_ATTEMPTS
+				self::MAX_OTP_ATTEMPTS,
+				$token_hash
 			)
 		);
 
@@ -146,11 +153,15 @@ class WGDP_OTP {
 		// Mark as verified once. A concurrent valid submit may have done this first.
 		// Guard on grant_status too so an entitlement revoked in the window between
 		// the initial read and this update is not flipped to verified (mirrors the
-		// sibling update below).
+		// sibling update below). Also require the claim token/OTP hash to still
+		// match the snapshot that was validated above, so a concurrent resend
+		// (which replaces both) cannot let this now-superseded pair verify the row.
 		$verified = (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"UPDATE {$table} SET verification_status = 'verified' WHERE id = %d AND verification_status = 'pending' AND grant_status != 'revoked'",
-				$entitlement['id']
+				"UPDATE {$table} SET verification_status = 'verified' WHERE id = %d AND verification_status = 'pending' AND grant_status != 'revoked' AND claim_token_hash = %s AND otp_hash = %s",
+				$entitlement['id'],
+				$token_hash,
+				$otp_hash_snapshot
 			)
 		);
 

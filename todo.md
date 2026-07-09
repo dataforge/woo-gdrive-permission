@@ -48,15 +48,7 @@ the cited lines). Not yet fixed.
 The tasks below are new findings from a full review of the current `3.4.43`
 tree. They are intentionally not duplicates of the session 3/4 items above.
 
-### HIGH
-
-- [ ] **Do not delete Google credentials while live entitlements still depend on them for revocation** -- `includes/class-wgdp-google-auth.php:295-305,443-456`. Disconnect simply removes the account record and its refresh token. Existing rows retain that `account_id`, so later refunds, cancellations, file removals, and manual revokes can never authenticate to delete their Drive permissions; reconnecting creates a different random account ID and does not repair those rows. Refuse disconnect while active permissions/product assignments reference the account, or retain a disabled credential record until permissions are revoked/migrated. The handler must also check and report the `with_accounts_lock()` result instead of always returning success.
-
 ### MEDIUM
-
-- [ ] **Treat a Drive operation as successful only after its database state transition succeeds** -- `includes/class-wgdp-claim-page.php:441-462,470-486`, `includes/class-wgdp-entitlements.php:308-321`. Both grant paths ignore the result of `mark_granted()` and can send the access email/return success after the row update failed or the row vanished, leaving an untracked live permission. Conversely, revocation ignores the result of `mark_revoked()` after Google has deleted the permission and reports success while the row can remain `granted`. Check affected rows, suppress success notifications on a failed commit, and add explicit reconciliation/compensation for the external side effect.
-
-- [ ] **Make OTP verification conditional on the exact token/hash snapshot that was validated** -- `includes/class-wgdp-otp.php:92-152`, `includes/class-wgdp-entitlements.php:414-479`. Verification looks up and validates an old claim token/OTP, but its attempt increment and final `verified` update are conditional only on row ID/attempt count/status. A concurrent resend can replace the token and OTP between the initial read and final update, yet the invalidated old pair can still verify the row. Include the original `claim_token_hash` (and unchanged OTP hash/expiry or a token generation/version) in the conditional update, and coordinate verification with the recipient-group lock. Add a resend-versus-verify race test.
 
 - [ ] **Do not let capped cron scans permanently starve later actionable entitlements** -- `includes/class-wgdp-cron.php:121-170`, `includes/class-wgdp-entitlements.php:983-1011`. Each cron run resets `$after_id` to zero and scans at most 200 rows. Pending/error rows whose release gate is still closed remain at the front forever without changing state or retry count; 200 such low-ID rows prevent higher-ID rows for already-released products from ever being reached. Persist a cursor with wraparound, query only currently actionable rows, or use a fair work queue. Test with more than 200 blocked rows preceding a released row.
 

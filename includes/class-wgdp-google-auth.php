@@ -298,17 +298,43 @@ class WGDP_Google_Auth {
 
 	/**
 	 * Disconnect a specific account.
+	 *
+	 * Refuses to disconnect while any entitlement still depends on this account
+	 * for revocation (non-'revoked' grant_status): removing the credential would
+	 * leave those rows permanently unable to authenticate a future Drive-side
+	 * revoke (refund, cancellation, manual revoke, etc.), since reconnecting
+	 * issues a different account_id that the old rows do not reference.
+	 *
+	 * @return true|WP_Error True on success, WP_Error if refused or the lock failed.
 	 */
 	public function disconnect( $account_id ) {
-		$this->with_accounts_lock( function ( $accounts ) use ( $account_id ) {
+		$active = WGDP_Entitlements::instance()->count_active_by_account( $account_id );
+		if ( $active > 0 ) {
+			return new WP_Error(
+				'wgdp_account_in_use',
+				sprintf(
+					/* translators: %d: number of active entitlements */
+					'Cannot disconnect: %d active entitlement(s) still depend on this account for revocation. Revoke or reassign them first.',
+					$active
+				)
+			);
+		}
+
+		$result = $this->with_accounts_lock( function ( $accounts ) use ( $account_id ) {
 			if ( isset( $accounts[ $account_id ] ) ) {
 				unset( $accounts[ $account_id ] );
 				return $accounts;
 			}
 			return null;
 		} );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
 		delete_transient( 'wgdp_access_token_' . $account_id );
 		delete_transient( 'wgdp_token_error_' . $account_id );
+		return true;
 	}
 
 	/**
@@ -459,7 +485,10 @@ class WGDP_Google_Auth {
 			wp_send_json_error( 'No account specified.' );
 		}
 
-		$this->disconnect( $account_id );
+		$result = $this->disconnect( $account_id );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( $result->get_error_message() );
+		}
 		wp_send_json_success( 'Disconnected.' );
 	}
 

@@ -445,7 +445,12 @@ class WGDP_Claim_Page {
 					$permission_email = strtolower( trim( $existing_permission['emailAddress'] ?? '' ) );
 					$recipient_email  = strtolower( trim( $entitlement['recipient_email'] ) );
 					if ( '' !== $permission_email && $permission_email === $recipient_email ) {
-						$ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
+						$marked = $ent->mark_granted( $entitlement['id'], $existing['provider_permission_id'] );
+						if ( empty( $marked ) ) {
+							// Row vanished or was concurrently revoked; do not report
+							// success for a permission we did not durably record.
+							return new WP_Error( 'wgdp_grant_not_recorded', 'Could not record the granted permission.' );
+						}
 
 						if ( ! $suppress_email ) {
 							$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );
@@ -476,7 +481,13 @@ class WGDP_Claim_Page {
 			}
 
 			$permission_id = $result['id'] ?? '';
-			$ent->mark_granted( $entitlement['id'], $permission_id );
+			$marked        = $ent->mark_granted( $entitlement['id'], $permission_id );
+			if ( empty( $marked ) ) {
+				// The Drive permission was created but the row could not be marked
+				// granted (vanished or concurrently revoked). Surface an error
+				// rather than reporting success for an untracked live permission.
+				return new WP_Error( 'wgdp_grant_not_recorded', 'Could not record the granted permission.' );
+			}
 
 			if ( ! $suppress_email ) {
 				$resource_type = WGDP_Entitlements::get_resource_type( $entitlement );

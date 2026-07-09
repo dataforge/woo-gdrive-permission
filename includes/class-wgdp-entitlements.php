@@ -119,6 +119,21 @@ class WGDP_Entitlements {
 	}
 
 	/**
+	 * Count entitlements still depending on a Google account for revocation
+	 * (i.e. not in a terminal 'revoked' state).
+	 */
+	public function count_active_by_account( $account_id ) {
+		global $wpdb;
+		$table = $this->table();
+		return (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$table} WHERE account_id = %s AND grant_status != 'revoked'",
+				$account_id
+			)
+		);
+	}
+
+	/**
 	 * Find a revoked entitlement matching the unique key (order_item_id, cloud_asset_id, recipient_email).
 	 * Used to reactivate instead of inserting when the same combo was previously revoked.
 	 */
@@ -346,7 +361,13 @@ class WGDP_Entitlements {
 				}
 			}
 
-			$this->mark_revoked( $row['id'], $reason );
+			$marked = $this->mark_revoked( $row['id'], $reason );
+			if ( empty( $marked ) ) {
+				// The Drive permission is gone but the row could not be committed
+				// as revoked (vanished or already changed underneath us). Do not
+				// report success for a row that can remain 'granted' in the DB.
+				return new WP_Error( 'wgdp_revoke_not_recorded', 'Drive permission was removed but the entitlement could not be marked revoked.' );
+			}
 			return true;
 		} );
 	}
