@@ -13,7 +13,10 @@ class WGDP_Notification_Email {
 		$site_name    = get_bloginfo( 'name' );
 
 		// Build product label with variation attributes if applicable.
-		$product_label = $item->get_product_id() ? get_the_title( $item->get_product_id() ) : $product_name;
+		$product_label = $item->get_product_id() ? get_the_title( $item->get_product_id() ) : '';
+		if ( '' === $product_label ) {
+			$product_label = $product_name;
+		}
 		$variation_label = '';
 		if ( $item->get_variation_id() ) {
 			$attrs = $item instanceof WC_Order_Item_Product ? $item->get_formatted_meta_data( '_', true ) : array();
