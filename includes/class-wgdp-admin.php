@@ -200,6 +200,7 @@ class WGDP_Admin {
 						$errors++;
 					} else {
 						$count++;
+						WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 					}
 				} );
 			}
