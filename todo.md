@@ -79,3 +79,13 @@ todo.md again had no actionable bugs, so this session ran a fresh code review ta
 Not fixed (lower confidence, narrower window, admin-triggered only): `recalculate_sales_counter()` / `recalculate_variation_sales_counter()` (`class-wgdp-release-gate.php`) overwrite the paid-qty counter via a plain `update_post_meta()` with no lock, unlike every other counter-mutating path in this codebase. If an admin's "Recalculate sales" action runs its order scan in the narrow window between `WGDP_Order_Handler::update_sales_counter()` incrementing the counter and persisting `_wgdp_qty_counted_items` for that same order, it could compute a stale total and silently clobber the just-incremented counter. Left open as a documented risk rather than fixed blind, since it requires an admin action to coincide with an in-flight order-status transition and has no automated exploit path.
 
 Fix is in `includes/class-wgdp-claim-page.php`, `includes/class-wgdp-release-gate.php`, and `includes/class-wgdp-cron.php`. Released as v3.4.55.
+
+---
+
+## Session 12 (2026-07-10) — no open bugs, targeted review found nothing actionable
+
+todo.md again had no actionable bugs (only the out-of-scope updater signature item), so per the standing instruction this session ran another fresh code review instead of a fix batch.
+
+Dispatched 1 review agent targeting `class-wgdp-notification-email.php` (access-granted/revoked/OTP email composition and sending) plus its real callers in `class-wgdp-cron.php`, `class-wgdp-release-gate.php`, `class-wgdp-claim-page.php`, `class-wgdp-order-handler.php`, `class-wgdp-entitlements.php`, `class-wgdp-entitlements-list.php`, `class-wgdp-self-service.php`, `class-wgdp-product-meta.php`, and `class-wgdp-admin.php` — clean. Checked: HTML escaping of all dynamic email content, `wp_mail_content_type` filter cleanup (try/finally), `wp_mail()` failure handling, the v3.4.55 duplicate-email batching key consistency, case-insensitive billing-email-dedup normalization, and item-type guards in OTP variation-label building. No bugs found.
+
+No code changes made this session. Nothing to release.
