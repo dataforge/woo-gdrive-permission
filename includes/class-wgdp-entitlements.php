@@ -800,13 +800,31 @@ class WGDP_Entitlements {
 	}
 
 	/**
-	 * Revoke all unverified entitlements for an order item, freeing up slots.
+	 * Revoke unverified entitlements for an order item, freeing up slots.
+	 *
+	 * When $recipient_email is given, only that recipient's pending/expired
+	 * row(s) are revoked, leaving other recipients' pending slots on the same
+	 * order item untouched. When omitted, all unverified rows for the item
+	 * are revoked (legacy/full-item behavior).
 	 *
 	 * @return int Number of rows revoked.
 	 */
-	public function revoke_unverified_for_item( $order_item_id ) {
+	public function revoke_unverified_for_item( $order_item_id, $recipient_email = '' ) {
 		global $wpdb;
 		$table = $this->table();
+
+		if ( '' !== $recipient_email ) {
+			return (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$wpdb->prepare(
+					"UPDATE {$table} SET grant_status = 'revoked', revoked_at = %s, revocation_reason = %s WHERE order_item_id = %d AND recipient_email = %s AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'",
+					current_time( 'mysql', true ),
+					self::REVOCATION_REASON_SELF_SERVICE_RETRY,
+					$order_item_id,
+					$recipient_email
+				)
+			);
+		}
+
 		return (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
 				"UPDATE {$table} SET grant_status = 'revoked', revoked_at = %s, revocation_reason = %s WHERE order_item_id = %d AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'",
@@ -895,7 +913,7 @@ class WGDP_Entitlements {
 			}
 
 			if ( ! empty( $args['clear_unverified'] ) ) {
-				$this->revoke_unverified_for_item( $order_item_id );
+				$this->revoke_unverified_for_item( $order_item_id, $args['clear_unverified_email'] ?? '' );
 			}
 
 			$quantity      = (int) $item->get_quantity();

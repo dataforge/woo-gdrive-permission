@@ -523,6 +523,7 @@ class WGDP_Self_Service {
 		foreach ( $items as $submission ) {
 			$order_item_id = absint( $submission['order_item_id'] ?? 0 );
 			$email         = WGDP_Entitlements::normalize_email( $submission['email'] ?? '' );
+			$old_email     = WGDP_Entitlements::normalize_email( $submission['old_email'] ?? '' );
 
 			if ( ! $order_item_id || ! is_email( $email ) ) {
 				continue;
@@ -545,20 +546,25 @@ class WGDP_Self_Service {
 				continue;
 			}
 
-			$clear_unverified = empty( $cleared_items[ $order_item_id ] );
+			// Only clear the specific pending recipient being replaced (identified by
+			// their old email), never every pending slot on the order item — other
+			// recipients on the same multi-slot item must keep their own pending rows.
+			$clear_key        = $order_item_id . '|' . $old_email;
+			$clear_unverified = '' !== $old_email && empty( $cleared_items[ $clear_key ] );
 			$result = $ent->assign_recipient_to_order_item( array(
 				'order_id'               => $order_id,
 				'order_item_id'          => $order_item_id,
 				'email'                  => $email,
 				'count_mode'             => 'active',
 				'clear_unverified'       => $clear_unverified,
+				'clear_unverified_email' => $old_email,
 				'allowed_order_statuses' => array( 'processing', 'completed' ),
 			) );
 
 			if ( is_wp_error( $result ) ) {
 				continue;
 			}
-			$cleared_items[ $order_item_id ] = true;
+			$cleared_items[ $clear_key ] = true;
 			$order = $result['order'];
 			$item  = $result['item'];
 
@@ -812,6 +818,7 @@ class WGDP_Self_Service {
 					$html .= '<input type="email" '
 						. 'name="items[' . $field_index . '][email]" '
 						. 'data-order-item-id="' . esc_attr( $ua['order_item_id'] ) . '" '
+						. 'data-old-email="' . esc_attr( $pending_email ) . '" '
 						. 'value="' . esc_attr( $pending_email ) . '" '
 						. 'placeholder="Google account email" '
 						. 'style="display:none;width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;font-size:15px;box-sizing:border-box;margin-top:8px;" />';
@@ -872,7 +879,8 @@ class WGDP_Self_Service {
 				hasEmail = true;
 				items.push({
 					order_item_id: inputs[i].getAttribute("data-order-item-id"),
-					email: email
+					email: email,
+					old_email: inputs[i].getAttribute("data-old-email") || ""
 				});
 			}
 		}
