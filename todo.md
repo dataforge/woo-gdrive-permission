@@ -33,3 +33,13 @@ Dispatched 3 independent review agents, each reading the full target file plus i
 - `class-wgdp-cron.php` (retry cursors, expiry, verification) — clean. Cursor pagination, UTC-consistent expiry comparisons, per-entitlement locking against overlapping runs, and WP_Error handling all checked out.
 
 No code changes made this session. Nothing to release.
+
+---
+
+## Session 7 (2026-07-09) — no open bugs, targeted review found nothing actionable
+
+todo.md again had no actionable bugs (only the "decide later" release-flow note and the out-of-scope updater signature item), so per the standing instruction this session ran another fresh code review instead of a fix batch.
+
+Dispatched 1 review agent targeting `class-wgdp-otp.php` (OTP/claim-token generation and verification) plus its real caller `class-wgdp-claim-page.php` — clean. Checked: brute-force/rate-limiting (5-attempt hard cap, atomically enforced — sufficient given 1-in-a-million code space), timing side channels (`wp_check_password` is bcrypt/`password_verify`-backed, effectively constant-time), OTP/claim-token entropy (`random_int`/`random_bytes`, CSPRNG), expiry math (UTC-consistent `gmdate()` writes vs `+0000`-forced `strtotime()` reads), reuse-after-verify (blocked by `verification_status` check), concurrent resend-vs-verify races (snapshot-and-conditional-update pattern), SQL parameterization, and output escaping. No bugs found.
+
+No code changes made this session. Nothing to release.
