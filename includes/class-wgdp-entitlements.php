@@ -1431,6 +1431,19 @@ class WGDP_Entitlements {
 		$recipient_index_locked   = $recipient_index_provided;
 		$recipient_index          = (int) ( $args['recipient_index'] ?? 0 );
 		if ( ! $recipient_index ) {
+			// This recipient may already hold non-revoked rows for other resources on
+			// this item (e.g. a new Drive file was added to the product after they were
+			// assigned). Reuse their existing index so all of a recipient's rows share
+			// one seat number — otherwise this new row gets a freshly-computed global
+			// max+1, desyncing recipient_index across the same recipient's own files and
+			// corrupting get_revocation_candidates()'s per-recipient MAX(recipient_index).
+			$siblings = $this->get_siblings( $order_item_id, $email );
+			if ( ! empty( $siblings ) && ! empty( $siblings[0]['recipient_index'] ) ) {
+				$recipient_index        = (int) $siblings[0]['recipient_index'];
+				$recipient_index_locked = true;
+			}
+		}
+		if ( ! $recipient_index ) {
 			$existing  = $this->get_by_order_item( $order_item_id );
 			$max_index = 0;
 			foreach ( $existing as $row ) {
