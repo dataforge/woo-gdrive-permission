@@ -64,6 +64,16 @@ class WGDP_Classic_Checkout {
 					)
 					: esc_html( $item['product_name'] );
 
+				// woocommerce_form_field()'s default value lookup does a raw
+				// $_POST[ $key ] read using the literal bracketed field name, which
+				// never matches PHP's parsed nested array — so on a non-AJAX
+				// checkout redisplay (JS disabled) the field would always render
+				// blank even if the customer already filled it in correctly.
+				// phpcs:ignore WordPress.Security.NonceVerification.Missing -- WooCommerce verifies the checkout nonce; this only echoes back a previously submitted value for redisplay.
+				$posted_value = isset( $_POST['wgdp_recipients'][ $item['cart_key'] ][ $i ] )
+					? wp_unslash( $_POST['wgdp_recipients'][ $item['cart_key'] ][ $i ] )
+					: '';
+
 				woocommerce_form_field( $field_key, array(
 					'type'        => 'email',
 					'label'       => $label,
@@ -71,6 +81,7 @@ class WGDP_Classic_Checkout {
 					'id'          => $field_id,
 					'placeholder' => __( 'Google account email (optional)', 'woo-gdrive-permission' ),
 					'class'       => array( 'form-row-wide' ),
+					'value'       => $posted_value,
 				) );
 			}
 		}
@@ -191,16 +202,30 @@ class WGDP_Classic_Checkout {
 		// slices positionally, matching validate_recipient_fields().
 		$raw_emails = array_values( $raw_emails );
 
+		// Keep each email at its original slot position (rather than compacting
+		// past skipped/blank slots) so recipient_index — assigned positionally
+		// downstream in WGDP_Order_Handler::create_entitlements() — still matches
+		// the "Recipient N" slot the customer actually filled in. This matters
+		// for recipient_index_within_effective_quantity(), which decides which
+		// recipient keeps access after a partial refund.
 		$emails = array();
-		foreach ( array_slice( $raw_emails, 0, $quantity ) as $raw ) {
-				$email = strtolower( sanitize_email( $raw ) );
+		foreach ( array_slice( $raw_emails, 0, $quantity ) as $position => $raw ) {
+			$raw = trim( $raw );
+			if ( '' === $raw ) {
+				continue;
+			}
+			$email = strtolower( sanitize_email( $raw ) );
 			if ( is_email( $email ) && ! in_array( $email, $emails, true ) ) {
-				$emails[] = $email;
+				$emails[ $position ] = $email;
 			}
 		}
 
 		if ( ! empty( $emails ) ) {
-			$item->update_meta_data( '_wgdp_recipients', wp_json_encode( $emails ) );
+			$positional = array_fill( 0, max( array_keys( $emails ) ) + 1, '' );
+			foreach ( $emails as $position => $email ) {
+				$positional[ $position ] = $email;
+			}
+			$item->update_meta_data( '_wgdp_recipients', wp_json_encode( $positional ) );
 		}
 	}
 

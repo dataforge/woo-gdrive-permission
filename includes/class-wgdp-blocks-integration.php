@@ -156,7 +156,7 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 						400
 					);
 				}
-				$emails[] = $email;
+				$emails[ $position ] = $email;
 			}
 
 			if ( empty( $emails ) ) {
@@ -175,7 +175,18 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 				);
 			}
 
-			$item->update_meta_data( '_wgdp_recipients', wp_json_encode( $emails ) );
+			// Keep each email at its original slot position (rather than compacting
+			// past skipped/blank slots) so recipient_index — assigned positionally
+			// downstream in WGDP_Order_Handler::create_entitlements() — still
+			// matches the "Recipient N" slot the customer actually filled in. This
+			// matters for recipient_index_within_effective_quantity(), which
+			// decides which recipient keeps access after a partial refund.
+			$positional = array_fill( 0, max( array_keys( $emails ) ) + 1, '' );
+			foreach ( $emails as $position => $email ) {
+				$positional[ $position ] = $email;
+			}
+
+			$item->update_meta_data( '_wgdp_recipients', wp_json_encode( $positional ) );
 			$item->save();
 		}
 	}
