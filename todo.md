@@ -20,3 +20,16 @@ if WordPress appended a collision suffix).
 ### LOW
 
 - **Updater performs no checksum/signature verification of the downloaded release zip** — `class-wgdp-updater.php:198-207` (`get_asset_url()`, picks the release zip's `browser_download_url` with no hash/signature check), `class-wgdp-updater.php:46-52` (`check_update()` hands that URL straight to WP core's upgrader). Beyond WP's default HTTPS transport, a compromised GitHub release (or forged-cert MITM) would install arbitrary code. Industry-typical for GitHub-updater plugins. Fixing this properly needs release-side signing infrastructure (e.g. GitHub Actions signing the zip) plus verification logic here — out of scope for a small patch, left open.
+
+---
+
+## Session 6 (2026-07-09) — no open bugs, targeted review found nothing actionable
+
+todo.md had no actionable bugs left (only the "decide later" release-flow note above and the out-of-scope updater signature item), so per the standing instruction this session ran fresh code reviews instead of a fix batch.
+
+Dispatched 3 independent review agents, each reading the full target file plus its real callers/callees (not in isolation):
+- `class-wgdp-google-drive.php` (Drive API wrapper) — clean. Only note: no 429/rate-limit-specific backoff (`create_permission`/`delete_permission`/`get_permission`/`list_files`/`get_file` all treat 429 like any other error). Not fixed: cron already retries every ~20 min up to 50 times (~16.6 hrs of backoff headroom), which comfortably outlasts any real Google throttling window, so this isn't a practical bug.
+- `class-wgdp-order-handler.php` (WooCommerce order/subscription hook dispatch) — clean. Locking, refund-vs-cancellation disambiguation, sales-counter math, and duplicate-grant guards all checked out.
+- `class-wgdp-cron.php` (retry cursors, expiry, verification) — clean. Cursor pagination, UTC-consistent expiry comparisons, per-entitlement locking against overlapping runs, and WP_Error handling all checked out.
+
+No code changes made this session. Nothing to release.
