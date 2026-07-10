@@ -545,33 +545,43 @@ class WGDP_Product_Meta {
 		}
 
 		// Multi-file resources.
-		$product_id     = wp_get_post_parent_id( $variation_id );
-		$old_resources  = self::get_drive_resources( $product_id, $variation_id );
-		$old_active_ids = self::extract_active_resource_ids( $old_resources );
+		$product_id        = wp_get_post_parent_id( $variation_id );
+		$had_own_resources = self::variation_has_own_resources( $variation_id );
+		$old_resources     = self::get_drive_resources( $product_id, $variation_id );
+		$old_active_ids    = self::extract_active_resource_ids( $old_resources );
 
 		$resources_submitted = isset( $data['_wgdp_drive_resources_submitted'] );
 
 		if ( isset( $data['_wgdp_drive_resources'] ) && is_array( $data['_wgdp_drive_resources'] ) ) {
 			$resources = self::sanitize_resources_array( $data['_wgdp_drive_resources'] );
-			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
-			delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
-			delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
-			delete_post_meta( $variation_id, '_wgdp_drive_resource_name' );
 
-			// Detect new active resources and queue backfill.
-			$new_active_ids = self::extract_active_resource_ids( $resources );
-			$added_ids      = array_diff( $new_active_ids, $old_active_ids );
-			if ( ! empty( $added_ids ) ) {
-				$account_id = self::get_account_for_item( $product_id, $variation_id );
-				if ( $account_id ) {
-					self::queue_backfill( $product_id, $variation_id, array_values( $added_ids ), $account_id );
+			// If the variation has no resources of its own, the rendered form was
+			// pre-filled with the parent's inherited resources (re-submitted as
+			// hidden fields on every save). Only persist a variation-level copy if
+			// the submitted set actually differs from what was inherited — otherwise
+			// saving the variation for an unrelated reason (e.g. price) would freeze
+			// a stale, no-longer-inherited copy and silently break inheritance.
+			if ( $had_own_resources || ! self::resources_match( $resources, $old_resources ) ) {
+				update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
+				delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
+				delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
+				delete_post_meta( $variation_id, '_wgdp_drive_resource_name' );
+
+				// Detect new active resources and queue backfill.
+				$new_active_ids = self::extract_active_resource_ids( $resources );
+				$added_ids      = array_diff( $new_active_ids, $old_active_ids );
+				if ( ! empty( $added_ids ) ) {
+					$account_id = self::get_account_for_item( $product_id, $variation_id );
+					if ( $account_id ) {
+						self::queue_backfill( $product_id, $variation_id, array_values( $added_ids ), $account_id );
+					}
 				}
-			}
 
-			// Detect removed resources and auto-revoke.
-			$removed_ids = array_diff( $old_active_ids, $new_active_ids );
-			if ( ! empty( $removed_ids ) ) {
-				self::revoke_removed_assets( $product_id, $variation_id, array_values( $removed_ids ), $old_resources );
+				// Detect removed resources and auto-revoke.
+				$removed_ids = array_diff( $old_active_ids, $new_active_ids );
+				if ( ! empty( $removed_ids ) ) {
+					self::revoke_removed_assets( $product_id, $variation_id, array_values( $removed_ids ), $old_resources );
+				}
 			}
 		} elseif ( $resources_submitted ) {
 			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
@@ -755,6 +765,30 @@ class WGDP_Product_Meta {
 			}
 		}
 		return $ids;
+	}
+
+	/**
+	 * Compare two resources arrays for equality, normalizing the default
+	 * ('active') status so a resource stored without a 'status' key still
+	 * matches an equivalent one round-tripped through the submitted form
+	 * (which always includes an explicit status).
+	 *
+	 * @param array $a Resources array.
+	 * @param array $b Resources array.
+	 * @return bool True if the arrays represent the same resource set in the same order.
+	 */
+	private static function resources_match( $a, $b ) {
+		$normalize = function( $resources ) {
+			return array_map( function( $r ) {
+				return array(
+					'id'     => $r['id'] ?? '',
+					'type'   => $r['type'] ?? 'file',
+					'name'   => $r['name'] ?? '',
+					'status' => $r['status'] ?? 'active',
+				);
+			}, $resources );
+		};
+		return $normalize( $a ) === $normalize( $b );
 	}
 
 	/**
