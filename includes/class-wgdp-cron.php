@@ -349,10 +349,12 @@ class WGDP_Cron {
 			$job_id
 		), ARRAY_A );
 
-		// Re-read account_id from product meta (may have changed since job creation).
-		$account_id = WGDP_Product_Meta::get_account_for_item(
-			(int) $job['product_id'], (int) $job['variation_id']
-		);
+		// Use the account_id stored on the job, not a fresh read from product meta:
+		// queue_backfill() already re-stamps it (and resets the cursor) whenever new
+		// resources are added under a different account, so this stays consistent for
+		// the whole job. Re-reading here would let an account change made mid-job
+		// (without adding resources) split entitlements across two Google accounts.
+		$account_id = $job['account_id'];
 
 		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
 			$wpdb->update( $table, array(
