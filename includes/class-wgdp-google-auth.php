@@ -177,6 +177,10 @@ class WGDP_Google_Auth {
 			return new WP_Error( 'wgdp_not_connected', 'Google account not connected.' );
 		}
 
+		// A successful refresh means the refresh token is not (or no longer) dead,
+		// so clear any stale "expired/revoked" flag from an earlier failed attempt.
+		delete_transient( 'wgdp_token_error_' . $account_id );
+
 		// Cache for the shorter of 55 min or the token's actual lifetime (minus a
 		// 60s safety margin) so short-lived tokens are never served stale.
 		$expires_in = isset( $body['expires_in'] ) ? (int) $body['expires_in'] : 3600;
@@ -319,19 +323,29 @@ class WGDP_Google_Auth {
 	 * revoke (refund, cancellation, manual revoke, etc.), since reconnecting
 	 * issues a different account_id that the old rows do not reference.
 	 *
+	 * Exception: if refresh_access_token() has already confirmed this account's
+	 * refresh token is permanently expired/revoked (wgdp_token_error_<id> is
+	 * set), that Drive-side revoke is already unreachable through this account
+	 * regardless of whether we disconnect it — blocking disconnect here would
+	 * only brick the exact "disconnect and reconnect" remediation the admin
+	 * notice for that same condition tells the admin to perform.
+	 *
 	 * @return true|WP_Error True on success, WP_Error if refused or the lock failed.
 	 */
 	public function disconnect( $account_id ) {
-		$active = WGDP_Entitlements::instance()->count_active_by_account( $account_id );
-		if ( $active > 0 ) {
-			return new WP_Error(
-				'wgdp_account_in_use',
-				sprintf(
-					/* translators: %d: number of active entitlements */
-					'Cannot disconnect: %d active entitlement(s) still depend on this account for revocation. Revoke or reassign them first.',
-					$active
-				)
-			);
+		$token_confirmed_dead = (bool) get_transient( 'wgdp_token_error_' . $account_id );
+		if ( ! $token_confirmed_dead ) {
+			$active = WGDP_Entitlements::instance()->count_active_by_account( $account_id );
+			if ( $active > 0 ) {
+				return new WP_Error(
+					'wgdp_account_in_use',
+					sprintf(
+						/* translators: %d: number of active entitlements */
+						'Cannot disconnect: %d active entitlement(s) still depend on this account for revocation. Revoke or reassign them first.',
+						$active
+					)
+				);
+			}
 		}
 
 		$result = $this->with_accounts_lock( function ( $accounts ) use ( $account_id ) {
