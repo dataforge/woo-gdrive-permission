@@ -325,7 +325,20 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 	 */
 	public function column_grant_status( $item ) {
 		if ( ! empty( $item['_unassigned'] ) ) {
-			return '<span class="wgdp-status-badge" style="background:#fcf0f0;color:#d63638;">Awaiting Assignment</span>';
+			$html = '<span class="wgdp-status-badge" style="background:#fcf0f0;color:#d63638;">Awaiting Assignment</span>';
+
+			$product_id   = (int) ( $item['product_id'] ?? 0 );
+			$variation_id = (int) ( $item['variation_id'] ?? 0 );
+			if ( ! WGDP_Release_Gate::is_item_released( $product_id, $variation_id ) ) {
+				$mode = WGDP_Release_Gate::get_effective_release_mode( $product_id, $variation_id );
+				if ( 'min_sales_qty' === $mode ) {
+					$html .= '<br><small style="color:#646970;">Minimum sales goal not yet met</small>';
+				} elseif ( 'manual_release' === $mode ) {
+					$html .= '<br><small style="color:#646970;">Awaiting manual release</small>';
+				}
+			}
+
+			return $html;
 		}
 
 		$status = $item['grant_status'];
