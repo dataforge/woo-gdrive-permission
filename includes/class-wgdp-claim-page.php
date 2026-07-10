@@ -410,7 +410,9 @@ class WGDP_Claim_Page {
 	 *
 	 * @param array $entitlement    The entitlement row.
 	 * @param bool  $suppress_email When true, skip sending individual access-granted email (caller will send batch).
-	 * @return true|WP_Error
+	 * @return true|null|WP_Error True if granted just now by this call, null if the entitlement
+	 *                            was already granted (no-op — callers that batch a summary email
+	 *                            should not count this as a fresh grant), or WP_Error on failure.
 	 */
 	public static function grant_drive_access_for_entitlement( $entitlement, $suppress_email = false ) {
 		$ent   = WGDP_Entitlements::instance();
@@ -423,7 +425,10 @@ class WGDP_Claim_Page {
 				return new WP_Error( 'wgdp_entitlement_revoked', 'This access has been revoked.' );
 			}
 			if ( 'granted' === $entitlement['grant_status'] && ! empty( $entitlement['provider_permission_id'] ) ) {
-				return true;
+				// Already granted by a concurrent caller (or a prior run) — distinct
+				// from `true` (freshly granted just now) so batch/cron callers that
+				// collect grants for a summary email don't send a duplicate one.
+				return null;
 			}
 
 			$drive = WGDP_Google_Drive::instance();

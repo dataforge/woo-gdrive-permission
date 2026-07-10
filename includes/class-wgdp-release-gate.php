@@ -519,7 +519,12 @@ class WGDP_Release_Gate {
 					$ent->mark_error( $row['id'], $result->get_error_message() );
 				} else {
 					$order_ids_to_check[ $row['order_id'] ] = true;
-					self::collect_granted_for_email( $granted_by_recipient, $row );
+					// null means the entitlement was already granted (e.g. by an
+					// overlapping cron retry pass) — not a fresh grant, so don't
+					// queue a duplicate access-granted email for it.
+					if ( null !== $result ) {
+						self::collect_granted_for_email( $granted_by_recipient, $row );
+					}
 				}
 			}
 
@@ -567,7 +572,12 @@ class WGDP_Release_Gate {
 					$ent->mark_error( $row['id'], $result->get_error_message() );
 				} else {
 					$order_ids_to_check[ $row['order_id'] ] = true;
-					self::collect_granted_for_email( $granted_by_recipient, $row );
+					// null means the entitlement was already granted (e.g. by an
+					// overlapping cron retry pass) — not a fresh grant, so don't
+					// queue a duplicate access-granted email for it.
+					if ( null !== $result ) {
+						self::collect_granted_for_email( $granted_by_recipient, $row );
+					}
 				}
 			}
 

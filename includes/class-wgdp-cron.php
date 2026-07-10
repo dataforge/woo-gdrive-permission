@@ -151,7 +151,12 @@ class WGDP_Cron {
 				if ( is_wp_error( $result ) ) {
 					$ent->mark_error( $row['id'], $result->get_error_message() );
 				} else {
-					$this->collect_granted( $granted_by_recipient, $row );
+					// null means the entitlement was already granted (e.g. by an
+					// overlapping release-gate batch) — not a fresh grant, so don't
+					// queue a duplicate access-granted email for it.
+					if ( null !== $result ) {
+						$this->collect_granted( $granted_by_recipient, $row );
+					}
 					WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 				}
 			}
@@ -221,18 +226,24 @@ class WGDP_Cron {
 					continue;
 				}
 
-				$order = wc_get_order( $row['order_id'] );
-				if ( $order ) {
-					$product_name = WGDP_Entitlements::get_product_name( $row );
-					$order->add_order_note( sprintf(
-						'WGDP: Retry successful — granted Drive access to %s for "%s" (entitlement #%d)',
-						$row['recipient_email'],
-						$product_name,
-						$row['id']
-					) );
-				}
+				// null means the entitlement was already granted (e.g. by an
+				// overlapping release-gate batch) — not a fresh grant, so don't
+				// log a duplicate "retry successful" note or queue a duplicate
+				// access-granted email for it.
+				if ( null !== $result ) {
+					$order = wc_get_order( $row['order_id'] );
+					if ( $order ) {
+						$product_name = WGDP_Entitlements::get_product_name( $row );
+						$order->add_order_note( sprintf(
+							'WGDP: Retry successful — granted Drive access to %s for "%s" (entitlement #%d)',
+							$row['recipient_email'],
+							$product_name,
+							$row['id']
+						) );
+					}
 
-				$this->collect_granted( $granted_by_recipient, $row );
+					$this->collect_granted( $granted_by_recipient, $row );
+				}
 				WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 			}
 		}
