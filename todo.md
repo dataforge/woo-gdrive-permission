@@ -1,11 +1,3 @@
-**Follow-up (decide later):** adopt the automated release flow (Flow A) from the wp-plugin-updater-guide — add `build_plugin.py` at the repo root and `.github/workflows/release.yml` (publish-on-tag), vs. staying on manual releases (Flow B). Validated 2026-07-02: confirmed no `.github/workflows/` or build script exists yet.
-
-Re-evaluated 2026-07-02 (session 3) after finding releases had drifted (last GitHub Release was v3.4.25 while code had moved to v3.4.43 across ~18 unreleased version bumps): the drift happened because no release had been *requested*, not because manual building is error-prone — owner's actual process is on-demand, human-gated releases (owner asks, states the version, Claude packages the zip and pushes the GitHub Release), not automatic-on-every-commit. Flow A's main value (catching forgotten releases) doesn't apply to that process. Its other two benefits — failing on tag/`Version:` header mismatch, and avoiding a Windows backslash-in-zip corruption risk by building on Linux — can both be handled manually each release (check the version match; build the zip with a tool that forces forward slashes, e.g. Python `zipfile` or PHP `ZipArchive`, instead of a Windows compress command) without standing up CI infrastructure.
-
-Net: not clearly worth building right now given the owner's workflow. Owner wants to decide later rather than close it out — revisit if the release cadence changes (e.g. wanting releases to auto-publish on every merge to main) or if manual releases start causing repeated mistakes.
-
----
-
 ## Code review findings (2026-07-02, session 4) — remaining items
 
 Re-validated 2026-07-09 (session 5) against v3.4.49: fixed lock-race and
@@ -25,7 +17,7 @@ if WordPress appended a collision suffix).
 
 ## Session 6 (2026-07-09) — no open bugs, targeted review found nothing actionable
 
-todo.md had no actionable bugs left (only the "decide later" release-flow note above and the out-of-scope updater signature item), so per the standing instruction this session ran fresh code reviews instead of a fix batch.
+todo.md had no actionable bugs left (only the out-of-scope updater signature item below), so per the standing instruction this session ran fresh code reviews instead of a fix batch.
 
 Dispatched 3 independent review agents, each reading the full target file plus its real callers/callees (not in isolation):
 - `class-wgdp-google-drive.php` (Drive API wrapper) — clean. Only note: no 429/rate-limit-specific backoff (`create_permission`/`delete_permission`/`get_permission`/`list_files`/`get_file` all treat 429 like any other error). Not fixed: cron already retries every ~20 min up to 50 times (~16.6 hrs of backoff headroom), which comfortably outlasts any real Google throttling window, so this isn't a practical bug.
@@ -38,7 +30,7 @@ No code changes made this session. Nothing to release.
 
 ## Session 7 (2026-07-09) — no open bugs, targeted review found nothing actionable
 
-todo.md again had no actionable bugs (only the "decide later" release-flow note and the out-of-scope updater signature item), so per the standing instruction this session ran another fresh code review instead of a fix batch.
+todo.md again had no actionable bugs (only the out-of-scope updater signature item), so per the standing instruction this session ran another fresh code review instead of a fix batch.
 
 Dispatched 1 review agent targeting `class-wgdp-otp.php` (OTP/claim-token generation and verification) plus its real caller `class-wgdp-claim-page.php` — clean. Checked: brute-force/rate-limiting (5-attempt hard cap, atomically enforced — sufficient given 1-in-a-million code space), timing side channels (`wp_check_password` is bcrypt/`password_verify`-backed, effectively constant-time), OTP/claim-token entropy (`random_int`/`random_bytes`, CSPRNG), expiry math (UTC-consistent `gmdate()` writes vs `+0000`-forced `strtotime()` reads), reuse-after-verify (blocked by `verification_status` check), concurrent resend-vs-verify races (snapshot-and-conditional-update pattern), SQL parameterization, and output escaping. No bugs found.
 
