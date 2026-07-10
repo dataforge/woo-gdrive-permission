@@ -445,15 +445,17 @@ class WGDP_Order_Handler {
 					continue;
 				}
 
-				// Queue one notification per recipient.
+				// Queue one notification per recipient, collecting every product revoked for them.
 				if ( ! isset( $notified_emails[ $row['recipient_email'] ] ) ) {
-					$notified_emails[ $row['recipient_email'] ] = $row;
+					$notified_emails[ $row['recipient_email'] ] = array();
 				}
+				$notified_emails[ $row['recipient_email'] ][] = $row;
 			}
 
-			// Send one revocation email per recipient.
-			foreach ( $notified_emails as $email => $row ) {
-				WGDP_Notification_Email::send_access_revoked( $email, WGDP_Entitlements::get_product_name( $row ), $row['order_id'] ?? 0 );
+			// Send one revocation email per recipient, listing all products revoked for them.
+			foreach ( $notified_emails as $email => $email_rows ) {
+				$product_names = array_unique( array_map( array( 'WGDP_Entitlements', 'get_product_name' ), $email_rows ) );
+				WGDP_Notification_Email::send_access_revoked( $email, implode( ', ', $product_names ), $email_rows[0]['order_id'] ?? 0 );
 			}
 
 			if ( $drive_failures > 0 ) {
