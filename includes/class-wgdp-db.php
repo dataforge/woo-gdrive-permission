@@ -146,8 +146,12 @@ class WGDP_DB {
 		$refund_totals_table = self::get_refund_totals_table_name();
 		$order_itemmeta      = $wpdb->prefix . 'woocommerce_order_itemmeta';
 
+		// INSERT IGNORE: if a concurrent request also observes the table as
+		// newly-created and runs this same backfill, the loser's duplicate
+		// rows (same PRIMARY KEY order_item_id) are silently skipped instead
+		// of erroring out the whole statement.
 		$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
-			"INSERT INTO {$refund_totals_table} (order_item_id, refunded_qty)
+			"INSERT IGNORE INTO {$refund_totals_table} (order_item_id, refunded_qty)
 			SELECT CAST(refunded_meta.meta_value AS UNSIGNED) AS order_item_id,
 			       SUM(ABS(CAST(refund_qty_meta.meta_value AS SIGNED))) AS refunded_qty
 			FROM {$order_itemmeta} refunded_meta
@@ -186,9 +190,22 @@ class WGDP_DB {
 	 */
 	public static function maybe_upgrade() {
 		$current = get_option( 'wgdp_db_version', '' );
-		if ( $current !== self::DB_VERSION ) {
-			self::install();
+		if ( $current === self::DB_VERSION ) {
+			return;
 		}
+
+		// install() only records wgdp_db_version once dbDelta() actually
+		// produced all three tables. If that keeps failing (e.g. the DB user
+		// lacks CREATE/ALTER privileges), this hook runs on every front-end,
+		// admin, AJAX, and cron request via plugins_loaded — throttle retries
+		// instead of re-running dbDelta() and three SHOW TABLES queries on
+		// every single page load indefinitely.
+		if ( false !== get_transient( 'wgdp_db_upgrade_attempted' ) ) {
+			return;
+		}
+		set_transient( 'wgdp_db_upgrade_attempted', time(), 5 * MINUTE_IN_SECONDS );
+
+		self::install();
 	}
 
 	/**
