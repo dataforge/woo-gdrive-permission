@@ -458,7 +458,11 @@ class WGDP_Self_Service {
 			return $this->wrap_content( $this->error_content( 'This order is no longer eligible for digital access.' ) );
 		}
 
-		if ( $this->is_link_expired( $order ) ) {
+		// Token-based links carry their own issuance-based expiry (checked in
+		// validate_self_service_token()); the order-date-based check below only
+		// applies to legacy order-key links, which have no per-link expiry of
+		// their own.
+		if ( 'legacy' === $auth['auth_type'] && $this->is_link_expired( $order ) ) {
 			return $this->wrap_content( $this->error_content( 'This link has expired. Please contact the store for assistance.' ) );
 		}
 
@@ -494,7 +498,9 @@ class WGDP_Self_Service {
 			wp_send_json_error( 'This order is no longer eligible for digital access.' );
 		}
 
-		if ( $this->is_link_expired( $order ) ) {
+		// See filter_page_content() for why the order-date-based expiry check
+		// only applies to legacy order-key links, not plugin-issued tokens.
+		if ( 'legacy' === $auth['auth_type'] && $this->is_link_expired( $order ) ) {
 			wp_send_json_error( 'This link has expired. Please contact the store for assistance.' );
 		}
 
@@ -856,6 +862,11 @@ class WGDP_Self_Service {
 		var inputs = form.querySelectorAll("input[type=email]");
 		var hasEmail = false;
 		for (var i = 0; i < inputs.length; i++) {
+			if (inputs[i].style.display === "none") {
+				// Still-hidden pending-email field: user did not click
+				// "Use a different email" for this slot, so leave it alone.
+				continue;
+			}
 			var email = inputs[i].value.trim();
 			if (email) {
 				hasEmail = true;
