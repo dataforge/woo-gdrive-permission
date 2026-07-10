@@ -151,3 +151,21 @@ todo.md again had no actionable bugs (only the out-of-scope updater signature it
 - **Unlocked concurrent `install()` calls can duplicate-key-fail the one-time refund-totals backfill** — `backfill_refund_totals()`'s `INSERT INTO ... SELECT ... GROUP BY` has no `ON DUPLICATE KEY UPDATE`/`IGNORE` (unlike `set_refund_total()`, which correctly upserts). If two overlapping requests both observe the `wgdp_refund_totals` table as newly-created (e.g. during a busy site's plugin upgrade, before `wgdp_db_version` is persisted), both run the backfill and the losing request's identical INSERT hits a duplicate-key violation on the PRIMARY KEY (`order_item_id`), surfacing a raw DB error on a plugin-critical migration path. Fixed by changing the backfill to `INSERT IGNORE`, making a losing race a silent no-op instead of a query error.
 
 Fix is in `includes/class-wgdp-db.php`. Released as v3.4.61.
+
+---
+
+## Session 19 (2026-07-10) — clarified Awaiting Assignment badge with release-gate reason (v3.4.62)
+
+User-reported UX issue (not a code-review finding): the Access Manager table's "Awaiting Assignment" badge (shown for a purchased seat with no recipient email assigned yet) gave no indication of whether the underlying product's release gate was also still closed. For a product using `min_sales_qty` or `manual_release` mode, an admin seeing "Awaiting Assignment" on a recent order could not tell whether the recipient genuinely hadn't provided an email yet, or whether the product simply hadn't reached its release condition. Fixed by adding a secondary note under the badge — "Minimum sales goal not yet met" or "Awaiting manual release" — whenever `WGDP_Release_Gate::is_item_released()` is still false for that item's product/variation.
+
+Fix is in `includes/class-wgdp-access-manager-table.php`. Released as v3.4.62.
+
+---
+
+## Session 19 (2026-07-10) — access-manager table now explains why unassigned items are blocked (v3.4.62)
+
+Found an uncommitted, complete fix left in the working tree from an interrupted prior session (version already bumped to 3.4.62). Validated it against current code before proceeding: `WGDP_Release_Gate::is_item_released()` and `get_effective_release_mode()` both exist with matching signatures, the `product_id`/`variation_id` item-array access matches the pattern used everywhere else in the file, and `php -l` passed clean.
+
+- **"Awaiting Assignment" badge gave no indication of *why* a fully-unassigned order item hadn't been granted yet** — `column_grant_status()` in `class-wgdp-access-manager-table.php` showed a bare "Awaiting Assignment" badge for `_unassigned` items regardless of whether the item was simply missing a recipient email, or was additionally blocked by a release gate (minimum sales quantity not met, or awaiting manual release). An admin looking at the Access Manager table had no way to tell these cases apart without checking the product settings separately. Fixed by appending a small explanatory line ("Minimum sales goal not yet met" / "Awaiting manual release") when `WGDP_Release_Gate::is_item_released()` is false for the item's product/variation.
+
+Fix is in `includes/class-wgdp-access-manager-table.php`. Released as v3.4.62.
