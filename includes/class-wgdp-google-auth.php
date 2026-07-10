@@ -128,6 +128,20 @@ class WGDP_Google_Auth {
 		$code = wp_remote_retrieve_response_code( $response );
 
 		if ( $code !== 200 || empty( $body['access_token'] ) ) {
+			// Before treating this as a real failure, check whether another process
+			// already rotated the refresh token (a concurrent refresh that won the
+			// race). In that case the token we submitted is stale-but-not-revoked,
+			// so don't flag the account and don't shadow the winner's update.
+			$current_accounts      = $this->get_all_accounts();
+			$current_refresh_token = $current_accounts[ $account_id ]['refresh_token'] ?? null;
+			if ( null !== $current_refresh_token && $current_refresh_token !== $account['refresh_token'] ) {
+				$cached = get_transient( 'wgdp_access_token_' . $account_id );
+				if ( $cached ) {
+					return $cached;
+				}
+				return new WP_Error( 'wgdp_refresh_race', 'Refresh token was rotated by a concurrent request; retry.' );
+			}
+
 			$error_msg = $body['error_description'] ?? ( $body['error'] ?? 'Unknown error refreshing token.' );
 
 			// Flag the account for an admin notice when the refresh token is permanently dead.

@@ -8,18 +8,16 @@ Net: not clearly worth building right now given the owner's workflow. Owner want
 
 ## Code review findings (2026-07-02, session 4) — remaining items
 
-Re-validated 2026-07-09 (session 5) against v3.4.49. Items below are still open;
-the rest of the original list (bulk-action locking, atomic_increment_meta error
-masking, claim-page dedup sibling lock, expire_stale reactivation cutoff,
-recipient_index consistency, ajax_bulk_revoke email dedup) was fixed in v3.4.50.
+Re-validated 2026-07-09 (session 5) against v3.4.49. Fixed in v3.4.51: the
+`refresh_access_token` lock-race and the `save_token_records` full-order-save
+issue (see below). The rest of the original list (bulk-action locking,
+atomic_increment_meta error masking, claim-page dedup sibling lock,
+expire_stale reactivation cutoff, recipient_index consistency,
+ajax_bulk_revoke email dedup) was fixed in v3.4.50.
 
 ### MEDIUM
 
-- **`refresh_access_token` reads `refresh_token` outside the lock** — `class-wgdp-google-auth.php:99, 113-121`. `$accounts` is read at line 99 (no lock), the HTTP refresh runs at 113-121 using that snapshot, and the lock is only taken for the write-back at line 144. If a concurrent refresh in another process caused Google to rotate the refresh token, this process submits the now-superseded token, which Google rejects; the winner's stored update can then be shadowed.
-
-- **Self-service `save_token_records` triggers a full `$order->save()` on every token issuance, and tokens are issued on every order-email render** — `class-wgdp-self-service.php:94-97, 126-142` via `build_self_service_url`/`render_email_link`. `render_email_link` → `build_self_service_url` → `issue_self_service_token` → `save_token_records` → `$order->save()` is on the hot path of processing/completed/invoice email renders, which WooCommerce resends on many admin actions. Produces excessive order-meta writes and re-fires order-status-change hooks on every email send.
-
-- **Cron grant/revocation retry queue has no dead-letter at the retry cap** — `class-wgdp-cron.php:168, 245` + `class-wgdp-entitlements.php:1049, 1066`. Once `grant_retries`/`revocation_retries` reaches the 50 cap, the row falls out of both `get_failed_verified` and `get_failed_revocations` and is neither retried nor flagged as permanently failed — it becomes a silently orphaned entitlement that surfaces nowhere. (v3.4.49 fixed the cursor-pagination starvation issue but not this dead-letter gap.)
+- **Cron grant/revocation retry queue has no dead-letter at the retry cap** — `class-wgdp-cron.php:168, 245` + `class-wgdp-entitlements.php:1049, 1066`. Once `grant_retries`/`revocation_retries` reaches the 50 cap, the row falls out of both `get_failed_verified` and `get_failed_revocations` and is no longer auto-retried. Re-validated 2026-07-09: the row is not fully invisible — it still shows up in the dashboard widget's `grant_status = 'error'` count and in the access-manager admin table (which queries by status, not retry count), and admins can manually resend from there. So it's not a silent orphan, but the admin UI doesn't distinguish "still auto-retrying" from "gave up after 50 tries," which could read as a live retry when it's actually stalled. Worth a small UI/label fix later, not a data-loss bug.
 
 ### LOW
 

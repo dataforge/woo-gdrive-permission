@@ -100,7 +100,10 @@ class WGDP_Self_Service {
 	 */
 	private function save_token_records( $order, $records ) {
 		$order->update_meta_data( self::TOKEN_META_KEY, wp_json_encode( array_values( $records ) ) );
-		$order->save();
+		// Meta-only persist: issuing a token happens on the order-email render hot
+		// path, and a full $order->save() would re-fire status-change hooks and
+		// rewrite order data on every email send.
+		$order->save_meta_data();
 	}
 
 	/**
