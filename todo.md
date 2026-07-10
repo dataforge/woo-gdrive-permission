@@ -8,19 +8,15 @@ Net: not clearly worth building right now given the owner's workflow. Owner want
 
 ## Code review findings (2026-07-02, session 4) — remaining items
 
-Re-validated 2026-07-09 (session 5) against v3.4.49. Fixed in v3.4.51: the
-`refresh_access_token` lock-race and the `save_token_records` full-order-save
-issue (see below). The rest of the original list (bulk-action locking,
-atomic_increment_meta error masking, claim-page dedup sibling lock,
-expire_stale reactivation cutoff, recipient_index consistency,
-ajax_bulk_revoke email dedup) was fixed in v3.4.50.
-
-### MEDIUM
-
-- **Cron grant/revocation retry queue has no dead-letter at the retry cap** — `class-wgdp-cron.php:168, 245` + `class-wgdp-entitlements.php:1049, 1066`. Once `grant_retries`/`revocation_retries` reaches the 50 cap, the row falls out of both `get_failed_verified` and `get_failed_revocations` and is no longer auto-retried. Re-validated 2026-07-09: the row is not fully invisible — it still shows up in the dashboard widget's `grant_status = 'error'` count and in the access-manager admin table (which queries by status, not retry count), and admins can manually resend from there. So it's not a silent orphan, but the admin UI doesn't distinguish "still auto-retrying" from "gave up after 50 tries," which could read as a live retry when it's actually stalled. Worth a small UI/label fix later, not a data-loss bug.
+Re-validated 2026-07-09 (session 5) against v3.4.49: fixed lock-race and
+full-order-save issues (v3.4.51), plus bulk-action locking, dedup sibling
+lock, reactivation cutoff, and email dedup (v3.4.50). Also fixed this session
+(v3.4.52): the cron retry dead-letter label (access-manager admin table now
+shows "Max retries reached" once grant_retries/revocation_retries hits the
+50 cap) and the claim-page slug drift (ensure_page_exists() now reads back
+the actual assigned post_name and corrects the wgdp_claim_page_slug option
+if WordPress appended a collision suffix).
 
 ### LOW
 
-- **Updater performs no checksum/signature verification of the downloaded release zip** — `class-wgdp-updater.php:169-178, 194-200`. Beyond WP's default HTTPS transport, a compromised GitHub release (or forged-cert MITM) would install arbitrary code. Industry-typical for GitHub-updater plugins, but worth noting.
-
-- **Activation page creation doesn't detect slug collision** — `woo-gdrive-permission.php:113-117`, `class-wgdp-self-service.php:274-282`, `class-wgdp-claim-page.php:64-72`. If `wgdp-provide-email` or the claim slug already exists as another post's slug, WP appends `-2` and the configured `wgdp_claim_page_slug` setting silently drifts from the actual page slug.
+- **Updater performs no checksum/signature verification of the downloaded release zip** — `class-wgdp-updater.php:198-207` (`get_asset_url()`, picks the release zip's `browser_download_url` with no hash/signature check), `class-wgdp-updater.php:46-52` (`check_update()` hands that URL straight to WP core's upgrader). Beyond WP's default HTTPS transport, a compromised GitHub release (or forged-cert MITM) would install arbitrary code. Industry-typical for GitHub-updater plugins. Fixing this properly needs release-side signing infrastructure (e.g. GitHub Actions signing the zip) plus verification logic here — out of scope for a small patch, left open.

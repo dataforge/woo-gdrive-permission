@@ -345,6 +345,12 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			$html .= '<br><small style="color:#d63638;">' . esc_html( $item['revocation_error'] ) . '</small>';
 		}
 
+		if ( 'error' === $status && (int) ( $item['grant_retries'] ?? 0 ) >= 50 ) {
+			$html .= '<br><small style="color:#d63638;">Max retries reached — will not auto-retry. Use Retry Grant to try again.</small>';
+		} elseif ( 'revocation_error' === $status && (int) ( $item['revocation_retries'] ?? 0 ) >= 50 ) {
+			$html .= '<br><small style="color:#d63638;">Max retries reached — will not auto-retry. Use Retry Revoke to try again.</small>';
+		}
+
 		return $html;
 	}
 

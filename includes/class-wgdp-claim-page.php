@@ -73,6 +73,11 @@ class WGDP_Claim_Page {
 
 		if ( $page_id && ! is_wp_error( $page_id ) ) {
 			update_option( 'wgdp_claim_page_id', $page_id, false );
+
+			$actual_slug = get_post_field( 'post_name', $page_id );
+			if ( $actual_slug && $actual_slug !== sanitize_title( $slug ) ) {
+				update_option( 'wgdp_claim_page_slug', $actual_slug );
+			}
 		}
 
 		return $page_id;
