@@ -508,8 +508,12 @@ class WGDP_Claim_Page {
 			$marked        = $ent->mark_granted( $entitlement['id'], $permission_id );
 			if ( empty( $marked ) ) {
 				// The Drive permission was created but the row could not be marked
-				// granted (vanished or concurrently revoked). Surface an error
-				// rather than reporting success for an untracked live permission.
+				// granted (vanished or concurrently revoked). Delete the orphaned
+				// permission so it isn't left granting access forever with no
+				// entitlement row tracking it for later revocation.
+				if ( '' !== $permission_id ) {
+					$drive->delete_permission( $entitlement['cloud_asset_id'], $permission_id, $entitlement['account_id'] );
+				}
 				return new WP_Error( 'wgdp_grant_not_recorded', 'Could not record the granted permission.' );
 			}
 
