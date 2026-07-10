@@ -621,7 +621,9 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 
 			// When no status filter is active, also include fully-unassigned
 			// order items (no entitlements at all) so they appear in the default view.
-			if ( empty( $status ) ) {
+			// Only inject on page 1 — the injected batch isn't paginated, so
+			// repeating it on every page would duplicate rows across pages.
+			if ( empty( $status ) && 1 === $page ) {
 				$this->inject_missing_email_items( $product_id, $product_name, $order_id, $search );
 
 				// Re-sort so injected rows appear in order ID descending (latest first).
