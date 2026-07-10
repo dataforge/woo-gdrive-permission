@@ -189,11 +189,52 @@ class WGDP_Release_Gate {
 	 * Atomically increment the paid qty counter for a product.
 	 */
 	public static function increment_paid_qty( $product_id, $delta ) {
-		self::atomic_increment_meta( $product_id, '_wgdp_paid_qty_total', $delta );
+		self::with_paid_qty_lock( $product_id, function () use ( $product_id, $delta ) {
+			self::atomic_increment_meta( $product_id, '_wgdp_paid_qty_total', $delta );
+		} );
 
 		if ( $delta > 0 ) {
 			self::maybe_trigger_release( $product_id );
 		}
+	}
+
+	/**
+	 * Execute a callback while holding a per-product paid-qty counter lock.
+	 *
+	 * Serializes recalculate_sales_counter()'s scan-then-overwrite against
+	 * concurrent atomic increments so a recalc can't clobber an in-flight
+	 * increment (or vice versa). Falls back to running unlocked if the lock
+	 * can't be acquired, matching prior (unlocked) behavior.
+	 */
+	private static function with_paid_qty_lock( $product_id, $callback ) {
+		$lock_name = 'wgdp_paid_qty_' . absint( $product_id );
+		$failed    = new stdClass();
+		$result    = WGDP_DB::with_named_lock( $lock_name, 10, $callback, $failed );
+
+		if ( $failed === $result ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( sprintf( 'WGDP: could not acquire paid-qty lock for product %d; proceeding without lock.', $product_id ) );
+			return $callback();
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Execute a callback while holding a per-variation paid-qty counter lock.
+	 */
+	private static function with_variation_paid_qty_lock( $variation_id, $callback ) {
+		$lock_name = 'wgdp_variation_paid_qty_' . absint( $variation_id );
+		$failed    = new stdClass();
+		$result    = WGDP_DB::with_named_lock( $lock_name, 10, $callback, $failed );
+
+		if ( $failed === $result ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( sprintf( 'WGDP: could not acquire paid-qty lock for variation %d; proceeding without lock.', $variation_id ) );
+			return $callback();
+		}
+
+		return $result;
 	}
 
 	/**
@@ -238,39 +279,42 @@ class WGDP_Release_Gate {
 	 * Respects per-variation counts_toward_product_threshold setting.
 	 */
 	public static function recalculate_sales_counter( $product_id ) {
-		$total = 0;
-		$orders = self::get_orders_with_counted_items();
+		self::with_paid_qty_lock( $product_id, function () use ( $product_id ) {
+			$total  = 0;
+			$orders = self::get_orders_with_counted_items();
 
-		foreach ( $orders as $order ) {
-			$counted_ids = self::get_counted_item_ids( $order );
-			if ( empty( $counted_ids ) ) {
-				continue;
+			foreach ( $orders as $order ) {
+				$counted_ids = self::get_counted_item_ids( $order );
+				if ( empty( $counted_ids ) ) {
+					continue;
+				}
+				foreach ( $order->get_items() as $item ) {
+					if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
+						continue;
+					}
+					if ( (int) $item->get_product_id() !== (int) $product_id ) {
+						continue;
+					}
+
+					$variation_id = $item->get_variation_id();
+					if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+						continue;
+					}
+
+					// Skip variations that don't count toward product threshold.
+					if ( ! self::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 ) ) {
+						continue;
+					}
+
+					$qty_ordered  = $item->get_quantity();
+					$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
+					$total       += max( 0, $qty_ordered - $qty_refunded );
+				}
 			}
-			foreach ( $order->get_items() as $item ) {
-				if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
-					continue;
-				}
-				if ( (int) $item->get_product_id() !== (int) $product_id ) {
-					continue;
-				}
 
-				$variation_id = $item->get_variation_id();
-				if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-					continue;
-				}
+			update_post_meta( $product_id, '_wgdp_paid_qty_total', max( 0, $total ) );
+		} );
 
-				// Skip variations that don't count toward product threshold.
-				if ( ! self::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 ) ) {
-					continue;
-				}
-
-				$qty_ordered  = $item->get_quantity();
-				$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
-				$total       += max( 0, $qty_ordered - $qty_refunded );
-			}
-		}
-
-		update_post_meta( $product_id, '_wgdp_paid_qty_total', max( 0, $total ) );
 		self::maybe_trigger_release( $product_id );
 	}
 
@@ -285,7 +329,9 @@ class WGDP_Release_Gate {
 		if ( ! $variation_id ) {
 			return;
 		}
-		self::atomic_increment_meta( $variation_id, '_wgdp_variation_paid_qty_total', $delta );
+		self::with_variation_paid_qty_lock( $variation_id, function () use ( $variation_id, $delta ) {
+			self::atomic_increment_meta( $variation_id, '_wgdp_variation_paid_qty_total', $delta );
+		} );
 
 		if ( $delta > 0 ) {
 			self::maybe_trigger_variation_release( $product_id, $variation_id );
@@ -339,35 +385,38 @@ class WGDP_Release_Gate {
 			return;
 		}
 
-		$total = 0;
-		$orders = self::get_orders_with_counted_items();
+		self::with_variation_paid_qty_lock( $variation_id, function () use ( $product_id, $variation_id ) {
+			$total  = 0;
+			$orders = self::get_orders_with_counted_items();
 
-		foreach ( $orders as $order ) {
-			$counted_ids = self::get_counted_item_ids( $order );
-			if ( empty( $counted_ids ) ) {
-				continue;
+			foreach ( $orders as $order ) {
+				$counted_ids = self::get_counted_item_ids( $order );
+				if ( empty( $counted_ids ) ) {
+					continue;
+				}
+				foreach ( $order->get_items() as $item ) {
+					if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
+						continue;
+					}
+					if ( (int) $item->get_product_id() !== (int) $product_id ) {
+						continue;
+					}
+					if ( (int) $item->get_variation_id() !== (int) $variation_id ) {
+						continue;
+					}
+					if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ) ) {
+						continue;
+					}
+
+					$qty_ordered  = $item->get_quantity();
+					$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
+					$total       += max( 0, $qty_ordered - $qty_refunded );
+				}
 			}
-			foreach ( $order->get_items() as $item ) {
-				if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
-					continue;
-				}
-				if ( (int) $item->get_product_id() !== (int) $product_id ) {
-					continue;
-				}
-				if ( (int) $item->get_variation_id() !== (int) $variation_id ) {
-					continue;
-				}
-				if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ) ) {
-					continue;
-				}
 
-				$qty_ordered  = $item->get_quantity();
-				$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
-				$total       += max( 0, $qty_ordered - $qty_refunded );
-			}
-		}
+			update_post_meta( $variation_id, '_wgdp_variation_paid_qty_total', max( 0, $total ) );
+		} );
 
-		update_post_meta( $variation_id, '_wgdp_variation_paid_qty_total', max( 0, $total ) );
 		self::maybe_trigger_variation_release( $product_id, $variation_id );
 	}
 
