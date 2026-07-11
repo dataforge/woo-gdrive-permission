@@ -466,6 +466,10 @@ class WGDP_Self_Service {
 			return $this->wrap_content( $this->error_content( 'This link has expired. Please contact the store for assistance.' ) );
 		}
 
+		if ( $this->should_defer_preorder_order( $order ) ) {
+			return $this->wrap_content( $this->error_content( 'Digital access is available after the preorder campaign is successfully charged.' ) );
+		}
+
 		$unassigned = $this->get_unassigned_items( $order );
 		if ( empty( $unassigned ) ) {
 			return $this->wrap_content( $this->success_content( $order ) );
@@ -568,11 +572,24 @@ class WGDP_Self_Service {
 			$order = $result['order'];
 			$item  = $result['item'];
 
-			if ( empty( $result['tokens'] ) ) {
-				continue;
+			$tokens = $result['tokens'];
+			if ( empty( $tokens ) ) {
+				// The recipient already had a non-revoked row for this item (e.g. the
+				// customer resubmitted the same email after a failed verification
+				// email). If it's still unverified, reissue a fresh OTP/claim token
+				// and resend rather than silently no-op'ing — otherwise a retry after
+				// a transient mail failure can never succeed.
+				$existing_row = $ent->get( $result['primary_id'] );
+				if ( ! $existing_row || 'pending' !== $existing_row['verification_status'] || 'revoked' === $existing_row['grant_status'] ) {
+					continue;
+				}
+				$tokens = $ent->issue_otp_for_recipient_group( $result['primary_id'] );
+				if ( is_wp_error( $tokens ) ) {
+					continue;
+				}
 			}
 
-			$mail_result = WGDP_Notification_Email::send_otp( $email, $result['tokens']['otp'], $result['tokens']['claim_token'], $order, $item );
+			$mail_result = WGDP_Notification_Email::send_otp( $email, $tokens['otp'], $tokens['claim_token'], $order, $item );
 
 			// Set drive items flag if not already set.
 			if ( ! $order->get_meta( '_wgdp_has_drive_items' ) ) {
@@ -913,6 +930,7 @@ class WGDP_Self_Service {
 		for (var j = 0; j < items.length; j++) {
 			fd.append("items[" + j + "][order_item_id]", items[j].order_item_id);
 			fd.append("items[" + j + "][email]", items[j].email);
+			fd.append("items[" + j + "][old_email]", items[j].old_email);
 		}
 
 		fetch(' . wp_json_encode( $ajax_url ) . ', {
