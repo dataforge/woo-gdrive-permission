@@ -234,9 +234,10 @@ class WGDP_Claim_Page {
 				return;
 			}
 
-			$granted_links = array();
-			$had_errors    = false;
-			$had_retired   = false;
+			$granted_links   = array();
+			$had_fresh_grant = false;
+			$had_errors      = false;
+			$had_retired     = false;
 
 			foreach ( $all_to_grant as $eg ) {
 				// Skip retired resources.
@@ -252,6 +253,12 @@ class WGDP_Claim_Page {
 					$ent->mark_error( $eg['id'], $grant_result->get_error_message() );
 					$had_errors = true;
 				} else {
+					// true means freshly granted by this call; null means a concurrent
+					// request already granted it — don't count that toward sending a
+					// duplicate batch email below.
+					if ( true === $grant_result ) {
+						$had_fresh_grant = true;
+					}
 					// $refreshed can be false if the entitlement was deleted between
 					// mark_granted and this re-read; fall back to the pre-grant row.
 					$refreshed = $ent->get( $eg['id'] );
@@ -265,8 +272,10 @@ class WGDP_Claim_Page {
 				}
 			}
 
-			// Send consolidated email if multiple files.
-			if ( count( $all_to_grant ) > 1 && ! empty( $granted_links ) ) {
+			// Send consolidated email if multiple files, and only if this request
+			// actually granted at least one of them just now (avoids sending a
+			// duplicate batch email when a concurrent request already handled it).
+			if ( count( $all_to_grant ) > 1 && $had_fresh_grant && ! empty( $granted_links ) ) {
 				$product_name = WGDP_Entitlements::get_product_name( $result['entitlement'], 'your purchase' );
 				// Resolve friendly names from resources.
 				$resources = WGDP_Product_Meta::get_drive_resources(
