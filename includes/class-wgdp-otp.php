@@ -142,7 +142,13 @@ class WGDP_OTP {
 
 		// Verify OTP.
 		if ( empty( $entitlement['otp_hash'] ) || ! $this->verify_otp( $otp_input, $entitlement['otp_hash'] ) ) {
-			$remaining = self::MAX_OTP_ATTEMPTS - (int) $entitlement['otp_attempts'] - 1;
+			// Re-read the post-increment count rather than the pre-increment snapshot,
+			// so a concurrent wrong-OTP submission racing through the atomic increment
+			// above doesn't cause both requests to report the same "remaining" count.
+			$current_attempts = (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$wpdb->prepare( "SELECT otp_attempts FROM {$table} WHERE id = %d", $entitlement['id'] ) // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			);
+			$remaining = self::MAX_OTP_ATTEMPTS - $current_attempts;
 			$msg = 'Invalid verification code.';
 			if ( $remaining > 0 ) {
 				$msg .= sprintf( ' %d attempt(s) remaining.', $remaining );
