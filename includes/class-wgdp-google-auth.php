@@ -47,7 +47,14 @@ class WGDP_Google_Auth {
 		if ( ! isset( $accounts[ $account_id ] ) ) {
 			return false;
 		}
-		return ! empty( $accounts[ $account_id ]['refresh_token'] );
+		if ( empty( $accounts[ $account_id ]['refresh_token'] ) ) {
+			return false;
+		}
+		// If refresh_access_token() has already confirmed this account's refresh
+		// token is permanently expired/revoked, treat it as disconnected so
+		// callers (cron retries, order handler) stop burning a live HTTP round
+		// trip to Google every retry cycle for a token known to be dead.
+		return ! get_transient( 'wgdp_token_error_' . $account_id );
 	}
 
 	/**
@@ -348,16 +355,34 @@ class WGDP_Google_Auth {
 			}
 		}
 
-		$result = $this->with_accounts_lock( function ( $accounts ) use ( $account_id ) {
-			if ( isset( $accounts[ $account_id ] ) ) {
-				unset( $accounts[ $account_id ] );
-				return $accounts;
+		$blocked_by_race = false;
+		$result          = $this->with_accounts_lock( function ( $accounts ) use ( $account_id, $token_confirmed_dead, &$blocked_by_race ) {
+			if ( ! isset( $accounts[ $account_id ] ) ) {
+				return null;
 			}
-			return null;
+			// Re-check active entitlements now that the lock is held, to shrink the
+			// window between the pre-lock check above and this unset — a new
+			// entitlement could have been assigned to this account in between.
+			if ( ! $token_confirmed_dead ) {
+				$active = WGDP_Entitlements::instance()->count_active_by_account( $account_id );
+				if ( $active > 0 ) {
+					$blocked_by_race = true;
+					return null;
+				}
+			}
+			unset( $accounts[ $account_id ] );
+			return $accounts;
 		} );
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
+		}
+
+		if ( $blocked_by_race ) {
+			return new WP_Error(
+				'wgdp_account_in_use',
+				'Cannot disconnect: an entitlement was assigned to this account while disconnecting. Please try again.'
+			);
 		}
 
 		delete_transient( 'wgdp_access_token_' . $account_id );
