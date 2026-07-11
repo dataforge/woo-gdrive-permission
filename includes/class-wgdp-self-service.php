@@ -132,22 +132,43 @@ class WGDP_Self_Service {
 
 	/**
 	 * Issue a plugin-scoped self-service token without invalidating old tokens.
+	 *
+	 * Guarded by a named lock: this runs on the order-email hot path, where two
+	 * concurrent issuances for the same order (e.g. overlapping status-change
+	 * emails) could otherwise each read the same meta snapshot and the later
+	 * save would silently drop the other's token.
 	 */
 	private function issue_self_service_token( $order ) {
-		$token   = rtrim( strtr( base64_encode( random_bytes( 32 ) ), '+/', '-_' ), '=' );
-		$records = $this->prune_token_records( $order, $this->get_token_records( $order ) );
+		$token    = rtrim( strtr( base64_encode( random_bytes( 32 ) ), '+/', '-_' ), '=' );
+		$hash     = hash( 'sha256', $token );
+		$order_id = $order->get_id();
 
-		$records[] = array(
-			'hash'    => hash( 'sha256', $token ),
-			'expires' => time() + self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS,
-			'created' => time(),
+		WGDP_DB::with_named_lock(
+			'wgdp_sst_' . absint( $order_id ),
+			5,
+			function() use ( $order_id, $hash ) {
+				$fresh_order = wc_get_order( $order_id );
+				if ( ! $fresh_order ) {
+					return false;
+				}
+
+				$records   = $this->prune_token_records( $fresh_order, $this->get_token_records( $fresh_order ) );
+				$records[] = array(
+					'hash'    => $hash,
+					'expires' => time() + self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS,
+					'created' => time(),
+				);
+
+				if ( count( $records ) > self::MAX_ACTIVE_TOKENS ) {
+					$records = array_slice( $records, -self::MAX_ACTIVE_TOKENS );
+				}
+
+				$this->save_token_records( $fresh_order, $records );
+				return true;
+			},
+			false
 		);
 
-		if ( count( $records ) > self::MAX_ACTIVE_TOKENS ) {
-			$records = array_slice( $records, -self::MAX_ACTIVE_TOKENS );
-		}
-
-		$this->save_token_records( $order, $records );
 		return $token;
 	}
 
