@@ -107,23 +107,37 @@ class WGDP_Self_Service {
 	}
 
 	/**
-	 * Remove expired plugin-issued self-service token records.
+	 * Filter out expired plugin-issued self-service token records.
+	 *
+	 * Read-only: does not persist. Callers that need the pruned result
+	 * saved back to order meta must do so themselves (see
+	 * issue_self_service_token(), which does this under a named lock).
 	 */
-	private function prune_token_records( $order, $records ) {
-		$now     = time();
-		$pruned  = array();
-		$changed = false;
+	private function filter_active_token_records( $records ) {
+		$now    = time();
+		$active = array();
 
 		foreach ( $records as $record ) {
 			$expires = isset( $record['expires'] ) ? (int) $record['expires'] : 0;
 			if ( $expires > 0 && $expires >= $now && ! empty( $record['hash'] ) ) {
-				$pruned[] = $record;
-			} else {
-				$changed = true;
+				$active[] = $record;
 			}
 		}
 
-		if ( $changed ) {
+		return $active;
+	}
+
+	/**
+	 * Remove expired plugin-issued self-service token records and persist
+	 * the result. Only safe to call while holding the per-order named lock
+	 * (see issue_self_service_token()) — saving here outside that lock can
+	 * race with a concurrent locked save and silently drop newly issued
+	 * tokens.
+	 */
+	private function prune_token_records( $order, $records ) {
+		$pruned = $this->filter_active_token_records( $records );
+
+		if ( count( $pruned ) !== count( $records ) ) {
 			$this->save_token_records( $order, $pruned );
 		}
 
@@ -181,7 +195,7 @@ class WGDP_Self_Service {
 		}
 
 		$hash    = hash( 'sha256', $token );
-		$records = $this->prune_token_records( $order, $this->get_token_records( $order ) );
+		$records = $this->filter_active_token_records( $this->get_token_records( $order ) );
 
 		foreach ( $records as $record ) {
 			if ( ! empty( $record['hash'] ) && hash_equals( $record['hash'], $hash ) ) {
