@@ -224,7 +224,8 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			if ( $order ) {
 				$oi = $order->get_item( $order_item_id );
 				if ( $oi ) {
-					$qty = (int) $oi->get_quantity();
+					$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
+					$qty          = max( 0, (int) $oi->get_quantity() - $qty_refunded );
 				}
 			}
 			$this->item_qty_cache[ $order_item_id ] = $qty;

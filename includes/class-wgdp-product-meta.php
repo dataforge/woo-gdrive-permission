@@ -955,47 +955,60 @@ class WGDP_Product_Meta {
 	 * @param string $account_id   The Google account ID.
 	 */
 	public static function queue_backfill( $product_id, $variation_id, $added_ids, $account_id ) {
-		global $wpdb;
-
 		if ( empty( $added_ids ) || empty( $account_id ) ) {
 			return;
 		}
 
 		sort( $added_ids );
-		$table = WGDP_DB::get_backfill_table_name();
 
-		// Check for existing pending/processing job for same product+variation.
-		$existing = $wpdb->get_row( $wpdb->prepare(
-			"SELECT id, asset_ids FROM {$table} WHERE product_id = %d AND variation_id = %d AND status IN ('pending', 'processing') LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			$product_id,
-			$variation_id
-		), ARRAY_A );
+		// Guarded by a named lock: concurrent saves for the same product/variation
+		// (e.g. a double-submitted product save) could otherwise both see no
+		// existing pending/processing job and both insert, producing duplicate
+		// backfill rows that redundantly re-scan the same entitlements.
+		WGDP_DB::with_named_lock(
+			'wgdp_backfill_' . absint( $product_id ) . '_' . absint( $variation_id ),
+			5,
+			function() use ( $product_id, $variation_id, $added_ids, $account_id ) {
+				global $wpdb;
+				$table = WGDP_DB::get_backfill_table_name();
 
-		if ( $existing ) {
-			// Merge new asset IDs into existing job and reset cursor to re-scan
-			// from the beginning. The unique constraint on entitlements makes
-			// re-scanning safe — already-created rows are skipped.
-			// Also reset status to 'pending' so the cursor reset is authoritative
-			// and any in-flight batch completion won't overwrite it.
-			$old_ids  = json_decode( $existing['asset_ids'], true ) ?: array();
-			$merged   = array_values( array_unique( array_merge( $old_ids, $added_ids ) ) );
-			sort( $merged );
-			$wpdb->update( $table, array(
-				'asset_ids'      => wp_json_encode( $merged ),
-				'account_id'     => $account_id,
-				'cursor_item_id' => 0,
-				'cursor_email'   => '',
-				'status'         => 'pending',
-				'started_at'     => null,
-			), array( 'id' => $existing['id'] ) );
-		} else {
-			$wpdb->insert( $table, array(
-				'product_id'   => $product_id,
-				'variation_id' => $variation_id,
-				'account_id'   => $account_id,
-				'asset_ids'    => wp_json_encode( $added_ids ),
-			) );
-		}
+				// Check for existing pending/processing job for same product+variation.
+				$existing = $wpdb->get_row( $wpdb->prepare(
+					"SELECT id, asset_ids FROM {$table} WHERE product_id = %d AND variation_id = %d AND status IN ('pending', 'processing') LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+					$product_id,
+					$variation_id
+				), ARRAY_A );
+
+				if ( $existing ) {
+					// Merge new asset IDs into existing job and reset cursor to re-scan
+					// from the beginning. The unique constraint on entitlements makes
+					// re-scanning safe — already-created rows are skipped.
+					// Also reset status to 'pending' so the cursor reset is authoritative
+					// and any in-flight batch completion won't overwrite it.
+					$old_ids  = json_decode( $existing['asset_ids'], true ) ?: array();
+					$merged   = array_values( array_unique( array_merge( $old_ids, $added_ids ) ) );
+					sort( $merged );
+					$wpdb->update( $table, array(
+						'asset_ids'      => wp_json_encode( $merged ),
+						'account_id'     => $account_id,
+						'cursor_item_id' => 0,
+						'cursor_email'   => '',
+						'status'         => 'pending',
+						'started_at'     => null,
+					), array( 'id' => $existing['id'] ) );
+				} else {
+					$wpdb->insert( $table, array(
+						'product_id'   => $product_id,
+						'variation_id' => $variation_id,
+						'account_id'   => $account_id,
+						'asset_ids'    => wp_json_encode( $added_ids ),
+					) );
+				}
+
+				return true;
+			},
+			false
+		);
 
 		wp_schedule_single_event( time(), 'wgdp_process_backfill' );
 	}

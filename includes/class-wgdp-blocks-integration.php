@@ -91,6 +91,12 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 
 		$cart_key_queue = $this->get_cart_key_queue_by_product();
 
+		// Pass 1: validate every item and compute its positional recipient list
+		// before saving anything. Validating and saving in the same loop would
+		// leave earlier items' meta persisted on the order even though a later
+		// item's validation failure aborts the whole checkout request.
+		$to_save = array();
+
 		foreach ( $order->get_items() as $item ) {
 			$product_id   = $item->get_product_id();
 			$variation_id = $item->get_variation_id();
@@ -186,8 +192,16 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 				$positional[ $position ] = $email;
 			}
 
-			$item->update_meta_data( '_wgdp_recipients', wp_json_encode( $positional ) );
-			$item->save();
+			$to_save[] = array(
+				'item'       => $item,
+				'positional' => $positional,
+			);
+		}
+
+		// Pass 2: all items validated successfully, so persist them.
+		foreach ( $to_save as $entry ) {
+			$entry['item']->update_meta_data( '_wgdp_recipients', wp_json_encode( $entry['positional'] ) );
+			$entry['item']->save();
 		}
 	}
 
