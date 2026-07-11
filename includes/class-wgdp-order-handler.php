@@ -82,23 +82,6 @@ class WGDP_Order_Handler {
 		return $this->is_preorder_order( $order ) && ! $this->preorder_charge_succeeded( $order );
 	}
 
-	private function order_has_active_entitlements_or_counted_items( WC_Order $order ) {
-		$counted_json = $order->get_meta( '_wgdp_qty_counted_items' );
-		$counted_ids  = ! empty( $counted_json ) ? json_decode( $counted_json, true ) : array();
-		if ( is_array( $counted_ids ) && ! empty( $counted_ids ) ) {
-			return true;
-		}
-
-		$rows = WGDP_Entitlements::instance()->get_by_order( $order->get_id() );
-		foreach ( $rows as $row ) {
-			if ( 'revoked' !== $row['grant_status'] ) {
-				return true;
-			}
-		}
-
-		return false;
-	}
-
 	private function decode_order_json_meta( WC_Order $order, $key ) {
 		$json = $order->get_meta( $key );
 		$data = ! empty( $json ) ? json_decode( $json, true ) : array();
@@ -372,10 +355,12 @@ class WGDP_Order_Handler {
 			return;
 		}
 
-		if ( ! $this->order_has_active_entitlements_or_counted_items( $order ) ) {
-			return;
-		}
-
+		// Do not gate this call on an unlocked "does the order have anything to
+		// revoke" pre-check: that check can race a concurrent create_entitlements() call (e.g.
+		// wcpr_order_charge_succeeded firing at the same time as this cancellation
+		// event), reading stale "nothing to revoke" state and skipping revocation
+		// entirely. revoke_all_entitlements() itself is fully locked and idempotent —
+		// call it unconditionally and let its own locked reads decide what to revoke.
 		$this->revoke_all_entitlements( $order->get_id() );
 	}
 
@@ -391,10 +376,9 @@ class WGDP_Order_Handler {
 			return;
 		}
 
-		if ( ! $this->order_has_active_entitlements_or_counted_items( $order ) ) {
-			return;
-		}
-
+		// See handle_preorder_reservation_cancelled() — the unlocked pre-check was
+		// removed for the same race-condition reason; revoke_all_entitlements() is
+		// safe and cheap to call unconditionally.
 		$this->revoke_all_entitlements( $order->get_id() );
 	}
 
