@@ -1120,7 +1120,7 @@ class WGDP_Admin {
 			}
 
 			$replacement_resources = array();
-			$deferred_revoke_ids   = array();
+			$revoke_ids            = array();
 			foreach ( $all_rows as $sibling ) {
 				if ( 'revoked' === $sibling['grant_status'] ) {
 					continue;
@@ -1130,36 +1130,31 @@ class WGDP_Admin {
 					'type' => $resource_map[ $sibling['cloud_asset_id'] ]['type'] ?? WGDP_Entitlements::get_resource_type( $sibling ),
 					'name' => $resource_map[ $sibling['cloud_asset_id'] ]['name'] ?? $sibling['cloud_asset_id'],
 				);
-
-				if ( 'granted' === $sibling['grant_status'] && ! empty( $sibling['provider_permission_id'] ) ) {
-					$delete_result = $ent->delete_drive_permission_for_row( $sibling );
-					if ( is_wp_error( $delete_result ) ) {
-						$data   = $delete_result->get_error_data();
-						$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 0;
-						if ( 404 !== $status ) {
-							$ent->mark_revocation_error(
-								$sibling['id'],
-								WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT,
-								$delete_result->get_error_message()
-							);
-							return new WP_Error(
-								'wgdp_old_permission_delete_failed',
-								'Could not remove Drive access for the old email (' . $old_email . '): ' . $delete_result->get_error_message() . '. Replacement was not completed; any removed permissions were marked revoked and this revocation will be retried automatically.'
-							);
-						}
-					}
-					$ent->mark_revoked( $sibling['id'], WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT );
-				} else {
-					$deferred_revoke_ids[] = (int) $sibling['id'];
-				}
+				$revoke_ids[] = (int) $sibling['id'];
 			}
 
 			if ( empty( $replacement_resources ) ) {
 				return new WP_Error( 'wgdp_no_replacement_resources', 'No active entitlement rows were available to replace.' );
 			}
 
-			foreach ( $deferred_revoke_ids as $revoke_id ) {
-				$ent->mark_revoked( $revoke_id, WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT );
+			// Use revoke_with_drive_delete() (not a snapshot-based delete+mark_revoked)
+			// so each row is re-read under its own per-entitlement lock immediately
+			// before revoking. A sibling snapshotted here as "not yet granted" may be
+			// granted for real by a concurrent cron retry (e.g. a pending_release row
+			// whose release gate opens mid-request) between the snapshot above and
+			// this point; re-reading under the lock catches that and deletes the live
+			// Drive permission instead of leaving it orphaned.
+			foreach ( $revoke_ids as $revoke_id ) {
+				$revoke_result = $ent->revoke_with_drive_delete(
+					array( 'id' => $revoke_id ),
+					WGDP_Entitlements::REVOCATION_REASON_REASSIGNMENT
+				);
+				if ( is_wp_error( $revoke_result ) ) {
+					return new WP_Error(
+						'wgdp_old_permission_delete_failed',
+						'Could not remove Drive access for the old email (' . $old_email . '): ' . $revoke_result->get_error_message() . '. Replacement was not completed; any removed permissions were marked revoked and this revocation will be retried automatically.'
+					);
+				}
 			}
 
 			$replacement = $ent->create_entitlements_for_recipient( array(
