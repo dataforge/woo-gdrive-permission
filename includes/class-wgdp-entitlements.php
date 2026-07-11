@@ -268,6 +268,10 @@ class WGDP_Entitlements {
 		// but we must not leave a live claim token orphaned on the revoked row
 		// (it would still validate while pointing at a revoked entitlement).
 		// Clear the token here; the group can obtain a fresh one via resend.
+		// Re-read the row rather than reusing the pre-lock-wait snapshot: up to
+		// 5 seconds elapsed while waiting on the lock, during which a concurrent
+		// resend could have rotated the claim token or changed the status.
+		$row = $this->get( $id );
 		$clear_orphaned_claim = $row
 			&& 'pending' === $row['verification_status']
 			&& ! empty( $row['claim_token_hash'] );
