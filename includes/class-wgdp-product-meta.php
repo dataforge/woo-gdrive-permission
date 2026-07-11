@@ -875,7 +875,9 @@ class WGDP_Product_Meta {
 			return;
 		}
 
-		// Group by recipient: email => [ 'rows' => [...], 'file_names' => [...] ].
+		// Group by recipient+order: recipients with entitlements from more than
+		// one order (e.g. repeat purchases) must get a separate notification per
+		// order, or the order number for all but the first-seen order is lost.
 		$by_recipient = array();
 		foreach ( $rows as $row ) {
 			if ( ! self::removed_asset_row_applies( (int) $variation_id, (int) ( $row['variation_id'] ?? 0 ) ) ) {
@@ -888,19 +890,20 @@ class WGDP_Product_Meta {
 			}
 
 			if ( ! empty( $row['recipient_email'] ) ) {
-				$email = $row['recipient_email'];
-				if ( ! isset( $by_recipient[ $email ] ) ) {
-					$by_recipient[ $email ] = array( 'row' => $row, 'file_names' => array() );
+				$key = $row['recipient_email'] . '|' . ( $row['order_id'] ?? 0 );
+				if ( ! isset( $by_recipient[ $key ] ) ) {
+					$by_recipient[ $key ] = array( 'row' => $row, 'file_names' => array() );
 				}
 				$file_name = $asset_names[ $row['cloud_asset_id'] ] ?? '';
-				if ( $file_name && ! in_array( $file_name, $by_recipient[ $email ]['file_names'], true ) ) {
-					$by_recipient[ $email ]['file_names'][] = $file_name;
+				if ( $file_name && ! in_array( $file_name, $by_recipient[ $key ]['file_names'], true ) ) {
+					$by_recipient[ $key ]['file_names'][] = $file_name;
 				}
 			}
 		}
 
 		// Send revocation emails with file-level detail.
-		foreach ( $by_recipient as $email => $info ) {
+		foreach ( $by_recipient as $info ) {
+			$email        = $info['row']['recipient_email'];
 			$product_name = WGDP_Entitlements::get_product_name( $info['row'] );
 			$order_id     = $info['row']['order_id'] ?? 0;
 			if ( ! empty( $info['file_names'] ) ) {
