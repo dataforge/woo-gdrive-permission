@@ -782,7 +782,7 @@ class WGDP_Entitlements {
 			$wpdb->prepare(
 				"SELECT recipient_email FROM (
 				   SELECT recipient_email,
-				     MIN(CASE WHEN verification_status = 'pending' THEN 0 ELSE 1 END) AS priority,
+				     MIN(CASE WHEN verification_status IN ('pending', 'expired') THEN 0 ELSE 1 END) AS priority,
 				     MAX(recipient_index) AS max_index
 				   FROM {$table}
 				   WHERE order_item_id = %d AND grant_status != 'revoked'
