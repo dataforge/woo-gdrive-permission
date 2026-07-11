@@ -152,8 +152,13 @@ class WGDP_Order_Handler {
 		}
 
 		if ( $variation_id ) {
-			$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
-			if ( 'min_sales_qty' === $var_mode ) {
+			$var_mode              = get_post_meta( $variation_id, '_wgdp_release_mode', true );
+			$counts_toward_product = WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id );
+			// Maintain the variation-level counter whenever the variation's own
+			// min_sales_qty gating needs it, or whenever the sale is excluded from
+			// the product-level counter — otherwise those sales would never be
+			// tracked anywhere (see WGDP_Shortcodes::sold_count_shortcode()).
+			if ( 'min_sales_qty' === $var_mode || ! $counts_toward_product ) {
 				if ( ! isset( $variation_deltas[ $variation_id ] ) ) {
 					$variation_deltas[ $variation_id ] = array( 'product_id' => $product_id, 'qty' => 0 );
 				}
