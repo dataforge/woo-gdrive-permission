@@ -408,48 +408,62 @@ class WGDP_Order_Handler {
 				return;
 			}
 
-			$ent  = WGDP_Entitlements::instance();
-			$rows = $ent->get_by_order( $order_id );
+			$ent = WGDP_Entitlements::instance();
 			$counted_ids            = $this->get_counted_item_ids( $order );
 			$counted_quantities     = $this->get_counted_quantities( $order );
 			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
 
+			$drive_failures  = 0;
+			$notified_emails = array(); // Track recipients to send one email each.
 			$has_active_rows = false;
-			foreach ( $rows as $row ) {
-				if ( 'revoked' !== $row['grant_status'] ) {
-					$has_active_rows = true;
-					break;
+
+			// Hold the per-order-item lock while reading and revoking each item's rows
+			// so a concurrent create_entitlements() call for the same item (which holds
+			// the same lock while inserting) can't slip a fresh grant past a stale read
+			// here. Mirrors handle_partial_refund() / revoke_entitlements_for_deleted_order_item().
+			foreach ( $order->get_items() as $item ) {
+				$order_item_id = $item->get_id();
+
+				$lock_outcome = $ent->with_order_item_lock( $order_item_id, function () use (
+					$ent, $order, $order_item_id, &$drive_failures, &$notified_emails, &$has_active_rows
+				) {
+					$rows = $ent->get_by_order_item( $order_item_id );
+					foreach ( $rows as $row ) {
+						if ( 'revoked' === $row['grant_status'] ) {
+							continue;
+						}
+						$has_active_rows = true;
+
+						$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_ORDER_INELIGIBLE );
+						if ( is_wp_error( $result ) ) {
+							$drive_failures++;
+							$order->add_order_note( sprintf(
+								'WGDP: Failed to revoke Drive access for %s — %s',
+								$row['recipient_email'],
+								$result->get_error_message()
+							) );
+							continue;
+						}
+
+						// Queue one notification per recipient, collecting every product revoked for them.
+						if ( ! isset( $notified_emails[ $row['recipient_email'] ] ) ) {
+							$notified_emails[ $row['recipient_email'] ] = array();
+						}
+						$notified_emails[ $row['recipient_email'] ][] = $row;
+					}
+				} );
+
+				if ( is_wp_error( $lock_outcome ) ) {
+					$order->add_order_note( sprintf(
+						'WGDP: Could not lock order item #%d for entitlement revocation — %s. Recheck from the Access Manager.',
+						$order_item_id,
+						$lock_outcome->get_error_message()
+					) );
 				}
 			}
 
 			if ( ! $has_active_rows && empty( $counted_ids ) ) {
 				return;
-			}
-
-			$drive_failures  = 0;
-			$notified_emails = array(); // Track recipients to send one email each.
-
-			foreach ( $rows as $row ) {
-				if ( 'revoked' === $row['grant_status'] ) {
-					continue;
-				}
-
-				$result = $ent->revoke_with_drive_delete( $row, WGDP_Entitlements::REVOCATION_REASON_ORDER_INELIGIBLE );
-				if ( is_wp_error( $result ) ) {
-					$drive_failures++;
-					$order->add_order_note( sprintf(
-						'WGDP: Failed to revoke Drive access for %s — %s',
-						$row['recipient_email'],
-						$result->get_error_message()
-					) );
-					continue;
-				}
-
-				// Queue one notification per recipient, collecting every product revoked for them.
-				if ( ! isset( $notified_emails[ $row['recipient_email'] ] ) ) {
-					$notified_emails[ $row['recipient_email'] ] = array();
-				}
-				$notified_emails[ $row['recipient_email'] ][] = $row;
 			}
 
 			// Send one revocation email per recipient, listing all products revoked for them.
@@ -458,10 +472,12 @@ class WGDP_Order_Handler {
 				WGDP_Notification_Email::send_access_revoked( $email, implode( ', ', $product_names ), $email_rows[0]['order_id'] ?? 0 );
 			}
 
-			if ( $drive_failures > 0 ) {
-				$order->add_order_note( sprintf( 'WGDP: All entitlements revoked (%d Drive permission removal(s) failed).', $drive_failures ) );
-			} else {
-				$order->add_order_note( 'WGDP: All entitlements revoked.' );
+			if ( $has_active_rows ) {
+				if ( $drive_failures > 0 ) {
+					$order->add_order_note( sprintf( 'WGDP: All entitlements revoked (%d Drive permission removal(s) failed).', $drive_failures ) );
+				} else {
+					$order->add_order_note( 'WGDP: All entitlements revoked.' );
+				}
 			}
 
 			// Decrement sales counter for previously counted items.
