@@ -1555,6 +1555,16 @@ class WGDP_Entitlements {
 			}
 		}
 
+		// issue_otp_for_recipient_group() rejects an already-verified row outright, so the
+		// anchor passed to it must be a newly created/reactivated (pending) row, not simply
+		// the first resource processed — otherwise a recipient who already holds a verified
+		// entitlement for one resource can never be granted access to a resource added later,
+		// since that earlier verified row would be picked as primary and OTP issuance would
+		// fail immediately.
+		if ( ! empty( $new_or_reused_ids ) ) {
+			$primary_entitlement_id = $new_or_reused_ids[0];
+		}
+
 		if ( ! $primary_entitlement_id || count( $entitlement_ids ) !== count( $resources ) ) {
 			foreach ( $created_ids as $created_id ) {
 				$this->delete( $created_id );
