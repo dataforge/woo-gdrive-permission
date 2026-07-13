@@ -137,6 +137,13 @@ class WGDP_OTP {
 		);
 
 		if ( 0 === $rows_affected ) {
+			// Zero rows can mean either the attempt cap was hit, or a concurrent
+			// resend rotated claim_token_hash out from under this submission.
+			// Re-check which happened so the message matches reality.
+			$refreshed = $entitlements->get( $entitlement['id'] );
+			if ( $refreshed && $refreshed['claim_token_hash'] !== $token_hash ) {
+				return array( 'success' => false, 'error' => 'This link is no longer valid. Please check your email for the newest verification code.', 'entitlement' => $entitlement );
+			}
 			return array( 'success' => false, 'error' => 'Too many attempts. Please contact the store for a new verification code.', 'entitlement' => $entitlement );
 		}
 
