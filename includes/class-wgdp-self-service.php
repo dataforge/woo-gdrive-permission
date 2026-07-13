@@ -157,7 +157,7 @@ class WGDP_Self_Service {
 		$hash     = hash( 'sha256', $token );
 		$order_id = $order->get_id();
 
-		WGDP_DB::with_named_lock(
+		$saved = WGDP_DB::with_named_lock(
 			'wgdp_sst_' . absint( $order_id ),
 			5,
 			function() use ( $order_id, $hash ) {
@@ -183,7 +183,11 @@ class WGDP_Self_Service {
 			false
 		);
 
-		return $token;
+		// If the lock couldn't be acquired (or the fresh order vanished), the
+		// hash was never persisted — returning $token here would hand the
+		// customer a link that can never validate. Signal failure instead so
+		// callers can fall back to the legacy order-key link.
+		return $saved ? $token : false;
 	}
 
 	/**
@@ -210,10 +214,24 @@ class WGDP_Self_Service {
 	 * Build the current preferred self-service URL.
 	 */
 	private function build_self_service_url( $order ) {
+		$token = $this->issue_self_service_token( $order );
+
+		if ( false === $token ) {
+			// Token issuance failed (e.g. lock contention) — fall back to the
+			// legacy order-key link so the customer still gets a working URL.
+			return add_query_arg(
+				array(
+					'order_id' => $order->get_id(),
+					'key'      => $order->get_order_key(),
+				),
+				self::get_page_url()
+			);
+		}
+
 		return add_query_arg(
 			array(
 				'order_id' => $order->get_id(),
-				'sst'      => $this->issue_self_service_token( $order ),
+				'sst'      => $token,
 			),
 			self::get_page_url()
 		);
