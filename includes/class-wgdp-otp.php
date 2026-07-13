@@ -98,14 +98,17 @@ class WGDP_OTP {
 			return array( 'success' => false, 'error' => 'Invalid or expired link.', 'entitlement' => null );
 		}
 
+		// Check if entitlement was revoked/cancelled. Must run before the
+		// "already verified" check below, since revocation does not clear
+		// verification_status — a verified-then-revoked row would otherwise
+		// be reported as fine instead of revoked.
+		if ( 'revoked' === $entitlement['grant_status'] ) {
+			return array( 'success' => false, 'error' => 'This access has been revoked.', 'entitlement' => $entitlement );
+		}
+
 		// Check if already verified.
 		if ( 'verified' === $entitlement['verification_status'] ) {
 			return array( 'success' => false, 'error' => 'This access has already been verified.', 'entitlement' => $entitlement );
-		}
-
-		// Check if entitlement was revoked/cancelled.
-		if ( 'revoked' === $entitlement['grant_status'] ) {
-			return array( 'success' => false, 'error' => 'This access has been revoked.', 'entitlement' => $entitlement );
 		}
 
 		// Check claim token expiry.
