@@ -811,32 +811,77 @@ class WGDP_Entitlements {
 	 * order item untouched. When omitted, all unverified rows for the item
 	 * are revoked (legacy/full-item behavior).
 	 *
-	 * @return int Number of rows revoked.
+	 * @return array Snapshot rows (id, grant_status, revoked_at, revocation_reason)
+	 *               as they existed *before* revocation, for use with
+	 *               restore_revoked_rows() if a later step in the same
+	 *               transaction fails.
 	 */
 	public function revoke_unverified_for_item( $order_item_id, $recipient_email = '' ) {
 		global $wpdb;
 		$table = $this->table();
 
 		if ( '' !== $recipient_email ) {
-			return (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 				$wpdb->prepare(
-					"UPDATE {$table} SET grant_status = 'revoked', revoked_at = %s, revocation_reason = %s WHERE order_item_id = %d AND recipient_email = %s AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'",
-					current_time( 'mysql', true ),
-					self::REVOCATION_REASON_SELF_SERVICE_RETRY,
+					"SELECT id, grant_status, revoked_at, revocation_reason FROM {$table} WHERE order_item_id = %d AND recipient_email = %s AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 					$order_item_id,
 					$recipient_email
-				)
+				),
+				ARRAY_A
+			);
+		} else {
+			$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$wpdb->prepare(
+					"SELECT id, grant_status, revoked_at, revocation_reason FROM {$table} WHERE order_item_id = %d AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+					$order_item_id
+				),
+				ARRAY_A
 			);
 		}
 
-		return (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		if ( empty( $rows ) ) {
+			return array();
+		}
+
+		$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"UPDATE {$table} SET grant_status = 'revoked', revoked_at = %s, revocation_reason = %s WHERE order_item_id = %d AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'",
-				current_time( 'mysql', true ),
-				self::REVOCATION_REASON_SELF_SERVICE_RETRY,
-				$order_item_id
+				"UPDATE {$table} SET grant_status = 'revoked', revoked_at = %s, revocation_reason = %s WHERE id IN (" . implode( ',', array_fill( 0, count( $rows ), '%d' ) ) . ')', // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				array_merge(
+					array( current_time( 'mysql', true ), self::REVOCATION_REASON_SELF_SERVICE_RETRY ),
+					wp_list_pluck( $rows, 'id' )
+				)
 			)
 		);
+
+		return $rows;
+	}
+
+	/**
+	 * Undo revoke_unverified_for_item() for a set of rows.
+	 *
+	 * Used when a later step of the same assignment transaction fails after
+	 * unverified rows were already revoked to free up a slot, so the
+	 * original recipient's slot isn't lost.
+	 *
+	 * @param array $rows Snapshot rows returned by revoke_unverified_for_item().
+	 */
+	private function restore_revoked_rows( $rows ) {
+		if ( empty( $rows ) ) {
+			return;
+		}
+		global $wpdb;
+		$table = $this->table();
+		foreach ( $rows as $row ) {
+			$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$table,
+				array(
+					'grant_status'       => $row['grant_status'],
+					'revoked_at'         => $row['revoked_at'],
+					'revocation_reason'  => $row['revocation_reason'],
+				),
+				array( 'id' => $row['id'] )
+			);
+		}
 	}
 
 	/**
@@ -916,8 +961,9 @@ class WGDP_Entitlements {
 				return new WP_Error( 'wgdp_item_not_digital', 'This item does not qualify for digital access.' );
 			}
 
+			$revoked_rows = array();
 			if ( ! empty( $args['clear_unverified'] ) ) {
-				$this->revoke_unverified_for_item( $order_item_id, $args['clear_unverified_email'] ?? '' );
+				$revoked_rows = $this->revoke_unverified_for_item( $order_item_id, $args['clear_unverified_email'] ?? '' );
 			}
 
 			$quantity      = (int) $item->get_quantity();
@@ -926,6 +972,7 @@ class WGDP_Entitlements {
 			$already_has_slot = ! empty( $this->get_siblings( $order_item_id, $email ) );
 
 			if ( $effective_qty <= 0 ) {
+				$this->restore_revoked_rows( $revoked_rows );
 				return new WP_Error( 'wgdp_no_slots', 'No assignable digital access slots remain for this item.' );
 			}
 
@@ -936,17 +983,20 @@ class WGDP_Entitlements {
 					: $this->count_active_recipients_for_item( $order_item_id );
 
 				if ( $current_count >= $effective_qty ) {
+					$this->restore_revoked_rows( $revoked_rows );
 					return new WP_Error( 'wgdp_no_slots', 'No assignable digital access slots remain for this item.' );
 				}
 			}
 
 			$resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
 			if ( empty( $resources ) ) {
+				$this->restore_revoked_rows( $revoked_rows );
 				return new WP_Error( 'wgdp_no_resources', 'No Drive resources configured for this item.' );
 			}
 
 			$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
 			if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
+				$this->restore_revoked_rows( $revoked_rows );
 				return new WP_Error( 'wgdp_no_connected_account', 'No connected Google account for this item.' );
 			}
 
@@ -961,6 +1011,7 @@ class WGDP_Entitlements {
 			) );
 
 			if ( is_wp_error( $result ) ) {
+				$this->restore_revoked_rows( $revoked_rows );
 				return $result;
 			}
 
