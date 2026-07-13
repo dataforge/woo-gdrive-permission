@@ -565,9 +565,12 @@ class WGDP_Self_Service {
 			wp_send_json_error( 'No items submitted.' );
 		}
 
-		if ( ! $this->consume_rate_limit( 'wgdp_ss_order_' . $order_id, 10, HOUR_IN_SECONDS )
-			|| ! $this->consume_rate_limit( 'wgdp_ss_ip_' . $order_id . '_' . md5( $this->get_request_ip() ), 5, HOUR_IN_SECONDS )
-		) {
+		// Both limiters must be consumed unconditionally (not via || short-circuit):
+		// each is an independent quota that should count every attempt, regardless
+		// of whether the other check already failed.
+		$order_rate_ok = $this->consume_rate_limit( 'wgdp_ss_order_' . $order_id, 10, HOUR_IN_SECONDS );
+		$ip_rate_ok    = $this->consume_rate_limit( 'wgdp_ss_ip_' . $order_id . '_' . md5( $this->get_request_ip() ), 5, HOUR_IN_SECONDS );
+		if ( ! $order_rate_ok || ! $ip_rate_ok ) {
 			wp_send_json_error( 'Too many requests. Please wait before submitting again.' );
 		}
 
