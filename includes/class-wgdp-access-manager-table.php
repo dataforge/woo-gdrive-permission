@@ -554,6 +554,8 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		$product_name = isset( $_GET['am_product_name'] ) ? sanitize_text_field( wp_unslash( $_GET['am_product_name'] ) ) : '';
 		$order_id     = isset( $_GET['am_order'] ) ? absint( $_GET['am_order'] ) : 0;
 		$search       = isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '';
+		$orderby      = isset( $_GET['orderby'] ) ? sanitize_text_field( wp_unslash( $_GET['orderby'] ) ) : 'id';
+		$order        = isset( $_GET['order'] ) ? sanitize_text_field( wp_unslash( $_GET['order'] ) ) : 'DESC';
 
 		$ent = WGDP_Entitlements::instance();
 
@@ -575,8 +577,8 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			$query_args = array(
 				'per_page'     => $per_page,
 				'page'         => $page,
-				'orderby'      => isset( $_GET['orderby'] ) ? sanitize_text_field( wp_unslash( $_GET['orderby'] ) ) : 'id',
-				'order'        => isset( $_GET['order'] ) ? sanitize_text_field( wp_unslash( $_GET['order'] ) ) : 'DESC',
+				'orderby'      => $orderby,
+				'order'        => $order,
 					'search'       => $search,
 					'product_id'   => $product_id,
 					'product_name' => $product_name,
@@ -640,10 +642,21 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			if ( empty( $status ) && 1 === $page ) {
 				$this->inject_missing_email_items( $product_id, $product_name, $order_id, $search );
 
-				// Re-sort so injected rows appear in order ID descending (latest first).
-				usort( $this->items, function ( $a, $b ) {
-					return (int) $b['order_id'] - (int) $a['order_id'];
-				} );
+				// Re-sort the merged (queried + injected) rows according to the
+				// requested sort column/direction, since injecting unpaginated
+				// rows at the end would otherwise ignore the admin's chosen sort.
+				$sort_desc = ( 'ASC' !== strtoupper( $order ) );
+				if ( 'created_at' === $orderby ) {
+					usort( $this->items, function ( $a, $b ) use ( $sort_desc ) {
+						$cmp = strcmp( (string) $a['created_at'], (string) $b['created_at'] );
+						return $sort_desc ? -$cmp : $cmp;
+					} );
+				} else {
+					usort( $this->items, function ( $a, $b ) use ( $sort_desc ) {
+						$cmp = (int) $a['order_id'] - (int) $b['order_id'];
+						return $sort_desc ? -$cmp : $cmp;
+					} );
+				}
 			}
 		}
 	}

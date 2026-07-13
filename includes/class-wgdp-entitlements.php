@@ -1165,16 +1165,20 @@ class WGDP_Entitlements {
 
 		if ( $hpos_enabled ) {
 			return array(
-				'table'      => $wpdb->prefix . 'wc_orders',
-				'id_column'  => 'id',
-				'status_col' => 'status',
+				'table'            => $wpdb->prefix . 'wc_orders',
+				'id_column'        => 'id',
+				'status_col'       => 'status',
+				'billing_email_expr' => 'o.billing_email',
+				'billing_email_join' => '',
 			);
 		}
 
 		return array(
-			'table'      => $wpdb->posts,
-			'id_column'  => 'ID',
-			'status_col' => 'post_status',
+			'table'            => $wpdb->posts,
+			'id_column'        => 'ID',
+			'status_col'       => 'post_status',
+			'billing_email_expr' => 'billing_email_meta.meta_value',
+			'billing_email_join' => "LEFT JOIN {$wpdb->postmeta} billing_email_meta ON billing_email_meta.post_id = oi.order_id AND billing_email_meta.meta_key = '_billing_email'",
 		);
 	}
 
@@ -1198,10 +1202,12 @@ class WGDP_Entitlements {
 		$order_items         = $wpdb->prefix . 'woocommerce_order_items';
 		$order_itemmeta      = $wpdb->prefix . 'woocommerce_order_itemmeta';
 		$refund_totals_table = WGDP_DB::get_refund_totals_table_name();
-		$order_storage  = $this->get_order_storage_sql_parts();
-		$orders_table   = $order_storage['table'];
-		$order_id_col   = $order_storage['id_column'];
-		$order_status_col = $order_storage['status_col'];
+		$order_storage      = $this->get_order_storage_sql_parts();
+		$orders_table       = $order_storage['table'];
+		$order_id_col       = $order_storage['id_column'];
+		$order_status_col   = $order_storage['status_col'];
+		$billing_email_expr = $order_storage['billing_email_expr'];
+		$billing_email_join = $order_storage['billing_email_join'];
 
 		$extra_where  = '';
 		$extra_values = array();
@@ -1237,8 +1243,14 @@ class WGDP_Entitlements {
 		}
 
 		if ( ! empty( $args['search'] ) ) {
-			$extra_where   .= ' AND oi.order_id = %d';
-			$extra_values[] = absint( $args['search'] );
+			if ( is_numeric( $args['search'] ) ) {
+				$extra_where   .= ' AND oi.order_id = %d';
+				$extra_values[] = absint( $args['search'] );
+			} else {
+				$like = '%' . $wpdb->esc_like( $args['search'] ) . '%';
+				$extra_where   .= " AND {$billing_email_expr} LIKE %s";
+				$extra_values[] = $like;
+			}
 		}
 
 		// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
@@ -1255,6 +1267,7 @@ class WGDP_Entitlements {
 			INNER JOIN {$order_itemmeta} qty_meta  ON qty_meta.order_item_id = oi.order_item_id AND qty_meta.meta_key = '_qty'
 			LEFT JOIN {$wpdb->postmeta} digital_flag ON digital_flag.post_id = CAST(var_meta.meta_value AS UNSIGNED)
 			  AND digital_flag.meta_key = '_wgdp_includes_digital'
+			{$billing_email_join}
 			LEFT JOIN (
 				SELECT order_item_id, COUNT(DISTINCT recipient_email) AS active_count
 				FROM {$table} WHERE grant_status != 'revoked'
