@@ -227,14 +227,17 @@ class WGDP_Admin {
 					}
 					$count++;
 
-					// Collect product names per recipient for notification.
-					$notified_emails[ $row['recipient_email'] ]['row']                                                     = $notified_emails[ $row['recipient_email'] ]['row'] ?? $row;
-					$notified_emails[ $row['recipient_email'] ]['products'][ WGDP_Entitlements::get_product_name( $row ) ] = true;
+					// Collect product names per recipient+order for notification, so a bulk
+					// revoke spanning multiple orders for the same recipient doesn't merge
+					// products from different orders under one order number.
+					$notify_key = $row['recipient_email'] . '|' . ( $row['order_id'] ?? 0 );
+					$notified_emails[ $notify_key ]['row']                                                     = $notified_emails[ $notify_key ]['row'] ?? $row;
+					$notified_emails[ $notify_key ]['products'][ WGDP_Entitlements::get_product_name( $row ) ] = true;
 				}
 			}
-			foreach ( $notified_emails as $email => $data ) {
+			foreach ( $notified_emails as $data ) {
 				$product_name = implode( ', ', array_keys( $data['products'] ) );
-				WGDP_Notification_Email::send_access_revoked( $email, $product_name, $data['row']['order_id'] ?? 0 );
+				WGDP_Notification_Email::send_access_revoked( $data['row']['recipient_email'], $product_name, $data['row']['order_id'] ?? 0 );
 			}
 			delete_transient( 'wgdp_permission_counts' );
 			$msg = sprintf( 'Revoked %d entitlement(s).', $count );
