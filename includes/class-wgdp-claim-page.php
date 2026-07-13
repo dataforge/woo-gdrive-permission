@@ -579,16 +579,22 @@ class WGDP_Claim_Page {
 
 			$order = wc_get_order( $entitlement['order_id'] );
 			$item  = $order ? $order->get_item( $entitlement['order_item_id'] ) : null;
-			if ( $order && $item ) {
-				$mail_result = WGDP_Notification_Email::send_otp( $entitlement['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
-				if ( is_wp_error( $mail_result ) ) {
-					$this->post_result = $this->wrap_content( $this->form_content(
-						$token,
-						'Could not send a new verification code. Please contact the store for assistance.',
-						$entitlement
-					) );
-					return;
-				}
+			if ( ! $order || ! $item ) {
+				$this->post_result = $this->wrap_content( $this->form_content(
+					$token,
+					'Could not send a new verification code. Please contact the store for assistance.',
+					$entitlement
+				) );
+				return;
+			}
+			$mail_result = WGDP_Notification_Email::send_otp( $entitlement['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+			if ( is_wp_error( $mail_result ) ) {
+				$this->post_result = $this->wrap_content( $this->form_content(
+					$token,
+					'Could not send a new verification code. Please contact the store for assistance.',
+					$entitlement
+				) );
+				return;
 			}
 
 		$refreshed = $ent->get( $entitlement['id'] );
