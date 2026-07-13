@@ -117,6 +117,16 @@ class WGDP_Classic_Checkout {
 			// below while still being saved as a recipient.
 			$emails = array_values( $emails );
 
+			// Coerce each slot to a string. A crafted request can submit a nested
+			// array at a leaf position (e.g. wgdp_recipients[KEY][0][]=x), and
+			// trim()/sanitize_email() would fatal on a non-scalar argument.
+			$emails = array_map(
+				function ( $value ) {
+					return is_scalar( $value ) ? (string) $value : '';
+				},
+				$emails
+			);
+
 			$valid_emails = array();
 
 			for ( $i = 0; $i < $qty; $i++ ) {
@@ -201,6 +211,14 @@ class WGDP_Classic_Checkout {
 		// Reindex first so a sparse POST array (e.g. wgdp_recipients[KEY][999])
 		// slices positionally, matching validate_recipient_fields().
 		$raw_emails = array_values( $raw_emails );
+
+		// Coerce each slot to a string; see matching comment in validate_recipient_fields().
+		$raw_emails = array_map(
+			function ( $value ) {
+				return is_scalar( $value ) ? (string) $value : '';
+			},
+			$raw_emails
+		);
 
 		// Keep each email at its original slot position (rather than compacting
 		// past skipped/blank slots) so recipient_index — assigned positionally
