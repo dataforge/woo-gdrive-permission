@@ -89,7 +89,8 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 			$recipients = array();
 		}
 
-		$cart_key_queue = $this->get_cart_key_queue_by_product();
+		$cart_key_queue  = $this->get_cart_key_queue_by_product();
+		$legacy_key_used = array();
 
 		// Pass 1: validate every item and compute its positional recipient list
 		// before saving anything. Validating and saving in the same loop would
@@ -116,8 +117,14 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 				? $recipients[ $cart_key ]
 				: array();
 
-			if ( empty( $raw_emails ) && isset( $recipients[ $legacy_key ] ) && is_array( $recipients[ $legacy_key ] ) ) {
-				$raw_emails = $recipients[ $legacy_key ];
+			// The legacy_key format has no per-cart-line identity, so if two order
+			// items share the same product/variation (duplicate cart lines) only
+			// the first is allowed to claim it — otherwise both would silently
+			// receive the same recipient's email.
+			if ( empty( $raw_emails ) && empty( $legacy_key_used[ $legacy_key ] )
+				&& isset( $recipients[ $legacy_key ] ) && is_array( $recipients[ $legacy_key ] ) ) {
+				$raw_emails                     = $recipients[ $legacy_key ];
+				$legacy_key_used[ $legacy_key ] = true;
 			}
 
 			// Skip items with no recipients — emails are optional (matches classic checkout behavior).
