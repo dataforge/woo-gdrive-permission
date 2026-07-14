@@ -779,7 +779,7 @@ class WGDP_Self_Service {
 
 		// Mask local part: show first 2 and last 1, mask the rest.
 		$local_len = strlen( $local );
-		if ( $local_len <= 2 ) {
+		if ( $local_len <= 3 ) {
 			$masked_local = $local[0] . str_repeat( '*', max( 1, $local_len - 1 ) );
 		} else {
 			$masked_local = substr( $local, 0, 2 ) . str_repeat( '*', $local_len - 3 ) . substr( $local, -1 );
@@ -793,7 +793,7 @@ class WGDP_Self_Service {
 			$domain_name = substr( $domain, 0, $dot_pos );
 			$tld         = substr( $domain, $dot_pos ); // includes the dot.
 			$dn_len      = strlen( $domain_name );
-			if ( $dn_len <= 2 ) {
+			if ( $dn_len <= 3 ) {
 				$masked_domain = $domain_name[0] . str_repeat( '*', max( 1, $dn_len - 1 ) ) . $tld;
 			} else {
 				$masked_domain = substr( $domain_name, 0, 2 ) . str_repeat( '*', $dn_len - 3 ) . substr( $domain_name, -1 ) . $tld;
