@@ -365,6 +365,17 @@ class WGDP_Release_Gate {
 	 * Release a variation's digital content (one-way latch).
 	 */
 	public static function release_variation( $product_id, $variation_id ) {
+		// Only variations with their own gate (manual_release or min_sales_qty)
+		// have a latch that is_item_released() actually reads via
+		// get_release_latch_id(). A variation set to inherit_from_product is
+		// gated by the product's own mode/latch, so releasing it here would
+		// write to a meta key nothing checks while still force-granting its
+		// pending entitlements below — bypassing the product-level gate.
+		$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
+		if ( empty( $var_mode ) || 'inherit_from_product' === $var_mode ) {
+			return;
+		}
+
 		if ( '1' === get_post_meta( $variation_id, '_wgdp_is_released', true ) ) {
 			return;
 		}
@@ -612,6 +623,11 @@ class WGDP_Release_Gate {
 
 			foreach ( $rows as $row ) {
 				$after_id = max( $after_id, (int) $row['id'] );
+
+				if ( ! self::is_item_released( $product_id, $variation_id ) ) {
+					// Not actually released — skip but don't error.
+					continue;
+				}
 				if ( self::is_resource_retired_for_row( $row ) ) {
 					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
 					continue;
