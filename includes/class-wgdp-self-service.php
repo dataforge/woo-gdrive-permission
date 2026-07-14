@@ -635,11 +635,31 @@ class WGDP_Self_Service {
 				// email). If it's still unverified, reissue a fresh OTP/claim token
 				// and resend rather than silently no-op'ing — otherwise a retry after
 				// a transient mail failure can never succeed.
+				//
+				// When the item has multiple Drive resources, $result['primary_id']
+				// may resolve to a sibling row that's already verified (e.g. file A
+				// verified, file B still pending from a previous failed send) — in
+				// that case fall back to any still-pending, non-revoked sibling
+				// instead of silently no-op'ing on the verified row.
 				$existing_row = $ent->get( $result['primary_id'] );
-				if ( ! $existing_row || 'pending' !== $existing_row['verification_status'] || 'revoked' === $existing_row['grant_status'] ) {
+				$anchor_id    = $result['primary_id'];
+				if ( ! $existing_row || 'revoked' === $existing_row['grant_status'] ) {
 					continue;
 				}
-				$tokens = $ent->issue_otp_for_recipient_group( $result['primary_id'] );
+				if ( 'pending' !== $existing_row['verification_status'] ) {
+					$pending_sibling = null;
+					foreach ( $ent->get_siblings( $order_item_id, $email ) as $sibling ) {
+						if ( 'revoked' !== $sibling['grant_status'] && 'pending' === $sibling['verification_status'] ) {
+							$pending_sibling = $sibling;
+							break;
+						}
+					}
+					if ( ! $pending_sibling ) {
+						continue;
+					}
+					$anchor_id = (int) $pending_sibling['id'];
+				}
+				$tokens = $ent->issue_otp_for_recipient_group( $anchor_id );
 				if ( is_wp_error( $tokens ) ) {
 					continue;
 				}
