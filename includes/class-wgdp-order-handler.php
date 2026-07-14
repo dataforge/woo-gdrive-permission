@@ -104,6 +104,29 @@ class WGDP_Order_Handler {
 		return array_map( 'absint', $this->decode_order_json_meta( $order, '_wgdp_qty_refund_baseline_quantities' ) );
 	}
 
+	/**
+	 * Per-item counter routing recorded at increment time: order_item_id =>
+	 * ['to_product' => bool, 'to_variation' => bool]. Decrement paths must
+	 * trust this instead of re-deriving routing from current product/variation
+	 * settings, which may have changed since the sale was counted.
+	 */
+	private function get_counted_routing( WC_Order $order ) {
+		return $this->decode_order_json_meta( $order, '_wgdp_qty_counted_routing' );
+	}
+
+	/**
+	 * Look up the routing recorded for an order item at increment time. Falls
+	 * back to a live re-derivation only for orders counted before this
+	 * per-item routing record existed.
+	 */
+	private function get_routing_for_item( $counted_routing, $order_item_id, $product_id, $variation_id ) {
+		$routing = $counted_routing[ (int) $order_item_id ] ?? ( $counted_routing[ (string) $order_item_id ] ?? null );
+		if ( is_array( $routing ) ) {
+			return $routing;
+		}
+		return $this->compute_counter_routing( $product_id, $variation_id );
+	}
+
 	private function get_effective_item_quantity( WC_Order $order, $item ) {
 		$quantity     = (int) $item->get_quantity();
 		$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
@@ -121,32 +144,47 @@ class WGDP_Order_Handler {
 		return (int) $item->get_quantity();
 	}
 
-	private function add_counter_delta( &$product_deltas, &$variation_deltas, $product_id, $variation_id, $qty ) {
+	/**
+	 * Determine which counters a sale of this product/variation routes to,
+	 * based on current product/variation settings. Only call this at
+	 * increment time — decrement paths must reuse the routing recorded then
+	 * (see get_counted_routing()) rather than re-deriving it, since settings
+	 * may change between purchase and refund/cancellation.
+	 */
+	private function compute_counter_routing( $product_id, $variation_id ) {
+		$to_product = WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 );
+
+		$to_variation = false;
+		if ( $variation_id ) {
+			$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
+			// Maintain the variation-level counter whenever the variation's own
+			// min_sales_qty gating needs it, or whenever the sale is excluded from
+			// the product-level counter — otherwise those sales would never be
+			// tracked anywhere (see WGDP_Shortcodes::sold_count_shortcode()).
+			$to_variation = ( 'min_sales_qty' === $var_mode || ! $to_product );
+		}
+
+		return array( 'to_product' => $to_product, 'to_variation' => $to_variation );
+	}
+
+	private function add_counter_delta( &$product_deltas, &$variation_deltas, $product_id, $variation_id, $qty, $routing ) {
 		$qty = (int) $qty;
 		if ( $qty <= 0 ) {
 			return;
 		}
 
-		if ( WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id ?: 0 ) ) {
+		if ( ! empty( $routing['to_product'] ) ) {
 			if ( ! isset( $product_deltas[ $product_id ] ) ) {
 				$product_deltas[ $product_id ] = 0;
 			}
 			$product_deltas[ $product_id ] += $qty;
 		}
 
-		if ( $variation_id ) {
-			$var_mode              = get_post_meta( $variation_id, '_wgdp_release_mode', true );
-			$counts_toward_product = WGDP_Release_Gate::variation_counts_toward_product_threshold( $product_id, $variation_id );
-			// Maintain the variation-level counter whenever the variation's own
-			// min_sales_qty gating needs it, or whenever the sale is excluded from
-			// the product-level counter — otherwise those sales would never be
-			// tracked anywhere (see WGDP_Shortcodes::sold_count_shortcode()).
-			if ( 'min_sales_qty' === $var_mode || ! $counts_toward_product ) {
-				if ( ! isset( $variation_deltas[ $variation_id ] ) ) {
-					$variation_deltas[ $variation_id ] = array( 'product_id' => $product_id, 'qty' => 0 );
-				}
-				$variation_deltas[ $variation_id ]['qty'] += $qty;
+		if ( $variation_id && ! empty( $routing['to_variation'] ) ) {
+			if ( ! isset( $variation_deltas[ $variation_id ] ) ) {
+				$variation_deltas[ $variation_id ] = array( 'product_id' => $product_id, 'qty' => 0 );
 			}
+			$variation_deltas[ $variation_id ]['qty'] += $qty;
 		}
 	}
 
@@ -411,6 +449,7 @@ class WGDP_Order_Handler {
 			$counted_ids            = $this->get_counted_item_ids( $order );
 			$counted_quantities     = $this->get_counted_quantities( $order );
 			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
+			$counted_routing        = $this->get_counted_routing( $order );
 
 			$drive_failures  = 0;
 			$notified_emails = array(); // Track recipients to send one email each.
@@ -496,7 +535,8 @@ class WGDP_Order_Handler {
 					$already_removed = $refund_decremented_qty[ $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 );
 					$qty             = max( 0, $counted_qty - (int) $already_removed );
 
-					$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty );
+					$routing = $this->get_routing_for_item( $counted_routing, $order_item_id, $product_id, $variation_id );
+					$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty, $routing );
 				}
 				foreach ( $product_deltas as $pid => $qty ) {
 					WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
@@ -508,6 +548,7 @@ class WGDP_Order_Handler {
 				$order->delete_meta_data( '_wgdp_qty_counted_quantities' );
 				$order->delete_meta_data( '_wgdp_qty_refund_decremented_quantities' );
 				$order->delete_meta_data( '_wgdp_qty_refund_baseline_quantities' );
+				$order->delete_meta_data( '_wgdp_qty_counted_routing' );
 				$order->save();
 			}
 
@@ -556,6 +597,7 @@ class WGDP_Order_Handler {
 			$counted_quantities     = $this->get_counted_quantities( $order );
 			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
 			$refund_baseline_qty    = $this->get_refund_baseline_quantities( $order );
+			$counted_routing        = $this->get_counted_routing( $order );
 			$product_deltas         = array();
 			$variation_deltas       = array();
 
@@ -593,7 +635,8 @@ class WGDP_Order_Handler {
 					$refunded_since_count = max( 0, $total_refunded_qty - $baseline_refunded );
 					$newly_removed        = max( 0, min( $counted_qty, $refunded_since_count ) - $already_removed );
 					if ( $newly_removed > 0 ) {
-						$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $newly_removed );
+						$routing = $this->get_routing_for_item( $counted_routing, $order_item_id, $product_id, $variation_id );
+						$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $newly_removed, $routing );
 						$refund_decremented_qty[ (int) $order_item_id ] = $already_removed + $newly_removed;
 					}
 				}
@@ -796,6 +839,7 @@ class WGDP_Order_Handler {
 			$counted_quantities     = $this->get_counted_quantities( $order );
 			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
 			$refund_baseline_qty    = $this->get_refund_baseline_quantities( $order );
+			$counted_routing        = $this->get_counted_routing( $order );
 			$counted_qty            = $this->get_counted_quantity_for_item( $order, $item, $counted_quantities );
 			$product_deltas         = array();
 			$variation_deltas       = array();
@@ -806,7 +850,8 @@ class WGDP_Order_Handler {
 			$already_removed = $refund_decremented_qty[ $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 );
 			$remaining_qty   = max( 0, $counted_qty - (int) $already_removed );
 
-			$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $remaining_qty );
+			$routing = $this->get_routing_for_item( $counted_routing, $order_item_id, $product_id, $variation_id );
+			$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $remaining_qty, $routing );
 
 			foreach ( $product_deltas as $pid => $qty ) {
 				WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
@@ -824,13 +869,16 @@ class WGDP_Order_Handler {
 				$refund_decremented_qty[ $order_item_id ],
 				$refund_decremented_qty[ (string) $order_item_id ],
 				$refund_baseline_qty[ $order_item_id ],
-				$refund_baseline_qty[ (string) $order_item_id ]
+				$refund_baseline_qty[ (string) $order_item_id ],
+				$counted_routing[ $order_item_id ],
+				$counted_routing[ (string) $order_item_id ]
 			);
 
 			$order->update_meta_data( '_wgdp_qty_counted_items', wp_json_encode( $counted_ids ) );
 			$order->update_meta_data( '_wgdp_qty_counted_quantities', wp_json_encode( $counted_quantities ) );
 			$order->update_meta_data( '_wgdp_qty_refund_decremented_quantities', wp_json_encode( $refund_decremented_qty ) );
 			$order->update_meta_data( '_wgdp_qty_refund_baseline_quantities', wp_json_encode( $refund_baseline_qty ) );
+			$order->update_meta_data( '_wgdp_qty_counted_routing', wp_json_encode( $counted_routing ) );
 			$order->add_order_note( sprintf(
 				'WGDP: Removed order item #%d from digital release sales counters.',
 				$order_item_id
@@ -889,6 +937,7 @@ class WGDP_Order_Handler {
 			$counted_quantities     = $this->get_counted_quantities( $order );
 			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
 			$refund_baseline_qty    = $this->get_refund_baseline_quantities( $order );
+			$counted_routing        = $this->get_counted_routing( $order );
 
 			$product_deltas   = array(); // product_id => qty (only counting variations).
 			$variation_deltas = array(); // variation_id => ['product_id' => int, 'qty' => int].
@@ -928,12 +977,14 @@ class WGDP_Order_Handler {
 					continue;
 				}
 
-				$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty );
+				$routing = $this->compute_counter_routing( $product_id, $variation_id );
+				$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty, $routing );
 
 				$new_counted[] = $order_item_id;
 				$counted_quantities[ (int) $order_item_id ] = $qty;
 				$refund_decremented_qty[ (int) $order_item_id ] = 0;
 				$refund_baseline_qty[ (int) $order_item_id ] = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
+				$counted_routing[ (int) $order_item_id ] = $routing;
 			}
 
 			if ( empty( $product_deltas ) && empty( $variation_deltas ) && empty( $new_counted ) ) {
@@ -955,6 +1006,7 @@ class WGDP_Order_Handler {
 			$order->update_meta_data( '_wgdp_qty_counted_quantities', wp_json_encode( $counted_quantities ) );
 			$order->update_meta_data( '_wgdp_qty_refund_decremented_quantities', wp_json_encode( $refund_decremented_qty ) );
 			$order->update_meta_data( '_wgdp_qty_refund_baseline_quantities', wp_json_encode( $refund_baseline_qty ) );
+			$order->update_meta_data( '_wgdp_qty_counted_routing', wp_json_encode( $counted_routing ) );
 			$order->save();
 		} );
 
@@ -1037,6 +1089,7 @@ class WGDP_Order_Handler {
 					// No entitlements yet (might not be created) — not ready.
 					return;
 				}
+				$has_granted = false;
 				foreach ( $item_entitlements as $e ) {
 					if ( 'revoked' === $e['grant_status'] ) {
 						continue; // Revoked entitlements don't block completion.
@@ -1044,6 +1097,12 @@ class WGDP_Order_Handler {
 					if ( 'granted' !== $e['grant_status'] ) {
 						return; // Not yet granted.
 					}
+					$has_granted = true;
+				}
+				if ( ! $has_granted ) {
+					// Every entitlement for this item was revoked — the customer has
+					// no live access, so this item isn't actually delivered.
+					return;
 				}
 			} else {
 				// Non-digital item — order needs shipping.
