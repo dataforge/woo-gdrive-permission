@@ -989,7 +989,7 @@ class WGDP_Entitlements {
 			$effective_qty = max( 0, $quantity - $qty_refunded );
 			$already_has_slot = ! empty( $this->get_siblings( $order_item_id, $email ) );
 
-			if ( $effective_qty <= 0 ) {
+			if ( $effective_qty <= 0 && ! $already_has_slot ) {
 				$this->restore_revoked_rows( $revoked_rows );
 				return new WP_Error( 'wgdp_no_slots', 'No assignable digital access slots remain for this item.' );
 			}
