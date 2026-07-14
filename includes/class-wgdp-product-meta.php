@@ -630,8 +630,23 @@ class WGDP_Product_Meta {
 
 		// Counts toward product threshold.
 		if ( isset( $data['_wgdp_counts_toward_product_threshold'] ) ) {
-			$val = sanitize_text_field( $data['_wgdp_counts_toward_product_threshold'] );
-			update_post_meta( $variation_id, '_wgdp_counts_toward_product_threshold', 'yes' === $val ? 'yes' : 'no' );
+			$val     = sanitize_text_field( $data['_wgdp_counts_toward_product_threshold'] );
+			$new_val = 'yes' === $val ? 'yes' : 'no';
+			$old_val = get_post_meta( $variation_id, '_wgdp_counts_toward_product_threshold', true );
+			$old_val = '' === $old_val ? 'yes' : $old_val;
+
+			if ( $new_val !== $old_val ) {
+				update_post_meta( $variation_id, '_wgdp_counts_toward_product_threshold', $new_val );
+
+				// The product-level and variation-level sales counters partition
+				// sales based on this flag; flipping it makes both stored counters
+				// stale until recalculated, so recompute both from order data now
+				// rather than requiring the admin to click "Recalculate" manually.
+				WGDP_Release_Gate::recalculate_sales_counter( $product_id );
+				WGDP_Release_Gate::recalculate_variation_sales_counter( $product_id, $variation_id );
+			} else {
+				update_post_meta( $variation_id, '_wgdp_counts_toward_product_threshold', $new_val );
+			}
 		}
 	}
 
