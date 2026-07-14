@@ -196,6 +196,9 @@ class WGDP_OTP {
 					'siblings'    => $siblings,
 				);
 			}
+			if ( $refreshed && 'revoked' === $refreshed['grant_status'] ) {
+				return array( 'success' => false, 'error' => 'This access has been revoked. Please contact the store for assistance.', 'entitlement' => $refreshed );
+			}
 			return array( 'success' => false, 'error' => 'This access could not be verified. Please request a new verification email.', 'entitlement' => $refreshed );
 		}
 

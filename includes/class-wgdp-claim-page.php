@@ -291,12 +291,10 @@ class WGDP_Claim_Page {
 				}
 			}
 
-			// Send consolidated email if multiple files, and only if this request
-			// actually granted at least one of them just now (avoids sending a
-			// duplicate batch email when a concurrent request already handled it).
-			if ( count( $all_to_grant ) > 1 && $had_fresh_grant && ! empty( $granted_links ) ) {
-				$product_name = WGDP_Entitlements::get_product_name( $result['entitlement'], 'your purchase' );
-				// Resolve friendly names from resources.
+			// Resolve friendly names from resources, regardless of which concurrent
+			// request actually performed the fresh grant, so the success page never
+			// shows raw cloud_asset_id values to the loser of a race.
+			if ( count( $all_to_grant ) > 1 && ! empty( $granted_links ) ) {
 				$resources = WGDP_Product_Meta::get_drive_resources(
 					$result['entitlement']['product_id'],
 					$result['entitlement']['variation_id'] ?: 0
@@ -311,6 +309,13 @@ class WGDP_Claim_Page {
 					}
 				}
 				unset( $gl );
+			}
+
+			// Send consolidated email if multiple files, and only if this request
+			// actually granted at least one of them just now (avoids sending a
+			// duplicate batch email when a concurrent request already handled it).
+			if ( count( $all_to_grant ) > 1 && $had_fresh_grant && ! empty( $granted_links ) ) {
+				$product_name = WGDP_Entitlements::get_product_name( $result['entitlement'], 'your purchase' );
 				WGDP_Notification_Email::send_access_granted_batch(
 					$result['entitlement']['recipient_email'],
 					$granted_links,
@@ -328,7 +333,7 @@ class WGDP_Claim_Page {
 
 			if ( ! empty( $granted_links ) ) {
 				if ( count( $granted_links ) > 1 ) {
-					$this->post_result = $this->wrap_content( $this->success_content_multi( $granted_links, $result['entitlement'], $had_errors ) );
+					$this->post_result = $this->wrap_content( $this->success_content_multi( $granted_links, $result['entitlement'], $had_errors, $had_retired ) );
 				} else {
 					$this->post_result = $this->wrap_content( $this->success_content( $granted_links[0]['link'], $result['entitlement'] ) );
 				}
@@ -765,7 +770,7 @@ class WGDP_Claim_Page {
 	 * @param array $entitlement   The primary entitlement row.
 	 * @param bool  $had_errors    Whether some files had errors.
 	 */
-	private function success_content_multi( $granted_links, $entitlement, $had_errors ) {
+	private function success_content_multi( $granted_links, $entitlement, $had_errors, $had_retired = false ) {
 		$product_name = WGDP_Entitlements::get_product_name( $entitlement, 'your purchase' );
 		$email        = $entitlement['recipient_email'];
 
@@ -778,6 +783,10 @@ class WGDP_Claim_Page {
 
 		if ( $had_errors ) {
 			$html .= '<p style="color:#d63638;font-size:14px;text-align:center;">Some files encountered errors and will be retried automatically.</p>';
+		}
+
+		if ( $had_retired ) {
+			$html .= '<p style="color:#d63638;font-size:14px;text-align:center;">One or more files from your purchase are no longer available. Please contact the store for assistance.</p>';
 		}
 
 		$html .= '<div style="margin:24px 0;">';
