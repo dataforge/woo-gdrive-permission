@@ -219,6 +219,10 @@ class WGDP_Google_Drive {
 			return new WP_Error( 'wgdp_permission_error', $msg, array( 'status' => $code ) );
 		}
 
+		if ( empty( $body['id'] ) ) {
+			return new WP_Error( 'wgdp_permission_error', 'Drive returned a success response with no permission id.', array( 'status' => $code ) );
+		}
+
 		return $body;
 	}
 
@@ -272,12 +276,12 @@ class WGDP_Google_Drive {
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 
 		if ( $code === 404 ) {
-			return new WP_Error( 'wgdp_permission_not_found', 'Permission no longer exists on Google Drive.' );
+			return new WP_Error( 'wgdp_permission_not_found', 'Permission no longer exists on Google Drive.', array( 'status' => $code ) );
 		}
 
 		if ( $code !== 200 ) {
 			$msg = $body['error']['message'] ?? 'HTTP ' . $code;
-			return new WP_Error( 'wgdp_get_perm_error', $msg );
+			return new WP_Error( 'wgdp_get_perm_error', $msg, array( 'status' => $code ) );
 		}
 
 		return $body;
