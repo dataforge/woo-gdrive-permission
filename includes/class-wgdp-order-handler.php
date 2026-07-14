@@ -530,8 +530,9 @@ class WGDP_Order_Handler {
 		}
 
 		// Detect full refund by amount — status hasn't changed yet at this point.
-		$order_total    = (float) $order->get_total();
-		$total_refunded = (float) $order->get_total_refunded();
+		// Round to cents before comparing to avoid float-precision drift across multiple partial refunds.
+		$order_total    = round( (float) $order->get_total(), 2 );
+		$total_refunded = round( (float) $order->get_total_refunded(), 2 );
 		if ( $order_total > 0 && $total_refunded >= $order_total ) {
 			$this->revoke_all_entitlements( $order_id );
 			return;
