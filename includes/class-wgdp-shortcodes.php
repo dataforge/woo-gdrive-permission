@@ -115,6 +115,17 @@ class WGDP_Shortcodes {
 			$product_id = (int) get_the_ID();
 		}
 
+		// A variation ID alone is enough to resolve a min_sales_qty threshold
+		// (see get_effective_threshold_qty()), so derive the parent product ID
+		// from it before giving up — e.g. when the shortcode runs outside a
+		// single-product context (widget, email template, etc).
+		if ( ! $product_id && $variation_id ) {
+			$variation_obj = wc_get_product( $variation_id );
+			if ( $variation_obj ) {
+				$product_id = $variation_obj->get_parent_id();
+			}
+		}
+
 		if ( ! $product_id ) {
 			return '0';
 		}
