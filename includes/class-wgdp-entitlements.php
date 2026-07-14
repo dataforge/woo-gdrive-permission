@@ -527,7 +527,13 @@ class WGDP_Entitlements {
 						'otp_expires_at'         => null,
 						'otp_attempts'           => 0,
 						'claim_token_hash'       => null,
-						'claim_token_expires_at' => null,
+						// Give the sibling the same fresh expiry as the primary's just-issued
+						// claim token rather than NULL — a NULL here falls back to the row's
+						// original created_at in expire_stale()'s NULL-expiry fallback, which
+						// for a reactivated row is its old creation time, not now. That made
+						// reactivated siblings expire immediately, before the customer could
+						// even open the OTP email, silently blocking that resource's grant.
+						'claim_token_expires_at' => gmdate( 'Y-m-d H:i:s', time() + ( WGDP_OTP::CLAIM_TOKEN_EXPIRY_HOURS * 3600 ) ),
 						'verification_status'    => 'pending',
 					) );
 				}
@@ -820,10 +826,12 @@ class WGDP_Entitlements {
 		global $wpdb;
 		$table = $this->table();
 
+		$snapshot_cols = 'id, grant_status, revoked_at, revocation_reason, otp_hash, otp_expires_at, otp_attempts, claim_token_hash, claim_token_expires_at';
+
 		if ( '' !== $recipient_email ) {
 			$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 				$wpdb->prepare(
-					"SELECT id, grant_status, revoked_at, revocation_reason FROM {$table} WHERE order_item_id = %d AND recipient_email = %s AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+					"SELECT {$snapshot_cols} FROM {$table} WHERE order_item_id = %d AND recipient_email = %s AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 					$order_item_id,
 					$recipient_email
 				),
@@ -832,7 +840,7 @@ class WGDP_Entitlements {
 		} else {
 			$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 				$wpdb->prepare(
-					"SELECT id, grant_status, revoked_at, revocation_reason FROM {$table} WHERE order_item_id = %d AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+					"SELECT {$snapshot_cols} FROM {$table} WHERE order_item_id = %d AND verification_status IN ('pending', 'expired') AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 					$order_item_id
 				),
 				ARRAY_A
@@ -843,9 +851,14 @@ class WGDP_Entitlements {
 			return array();
 		}
 
+		// Clear OTP/claim-token state along with the revoke, matching write_revoked_row()'s
+		// behavior, so a revoked row doesn't keep carrying a live-looking claim token in the
+		// DB. The snapshot above preserves the pre-revoke values for restore_revoked_rows().
 		$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"UPDATE {$table} SET grant_status = 'revoked', revoked_at = %s, revocation_reason = %s WHERE id IN (" . implode( ',', array_fill( 0, count( $rows ), '%d' ) ) . ')', // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"UPDATE {$table} SET grant_status = 'revoked', revoked_at = %s, revocation_reason = %s,
+				 otp_hash = NULL, otp_expires_at = NULL, otp_attempts = 0, claim_token_hash = NULL, claim_token_expires_at = NULL
+				 WHERE id IN (" . implode( ',', array_fill( 0, count( $rows ), '%d' ) ) . ')', // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				array_merge(
 					array( current_time( 'mysql', true ), self::REVOCATION_REASON_SELF_SERVICE_RETRY ),
 					wp_list_pluck( $rows, 'id' )
@@ -875,9 +888,14 @@ class WGDP_Entitlements {
 			$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 				$table,
 				array(
-					'grant_status'       => $row['grant_status'],
-					'revoked_at'         => $row['revoked_at'],
-					'revocation_reason'  => $row['revocation_reason'],
+					'grant_status'           => $row['grant_status'],
+					'revoked_at'             => $row['revoked_at'],
+					'revocation_reason'      => $row['revocation_reason'],
+					'otp_hash'               => $row['otp_hash'],
+					'otp_expires_at'         => $row['otp_expires_at'],
+					'otp_attempts'           => $row['otp_attempts'],
+					'claim_token_hash'       => $row['claim_token_hash'],
+					'claim_token_expires_at' => $row['claim_token_expires_at'],
 				),
 				array( 'id' => $row['id'] )
 			);
