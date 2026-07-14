@@ -5,6 +5,15 @@ class WGDP_Google_Auth {
 
 	private static $instance = null;
 
+	/**
+	 * Set by get_all_accounts() when the stored accounts option is non-empty
+	 * but failed to decrypt (e.g. AUTH_KEY changed, corrupted option). Checked
+	 * by with_accounts_lock() to avoid mistaking "undecryptable" for "empty"
+	 * and overwriting the still-encrypted-but-unreadable data with a fresh,
+	 * near-empty accounts array.
+	 */
+	private $decrypt_failed = false;
+
 	const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 	const AUTH_ENDPOINT  = 'https://accounts.google.com/o/oauth2/v2/auth';
 	const SCOPE          = 'https://www.googleapis.com/auth/drive.file email';
@@ -161,6 +170,15 @@ class WGDP_Google_Auth {
 			return new WP_Error( 'wgdp_token_error', $error_msg );
 		}
 
+		// Cache the freshly-issued token immediately, before attempting to persist
+		// it to the accounts option. Google already granted this token — a lock
+		// failure below (contention, not a real auth problem) must not discard it.
+		$expires_in = isset( $body['expires_in'] ) ? (int) $body['expires_in'] : 3600;
+		$cache_ttl  = min( 55 * MINUTE_IN_SECONDS, $expires_in - 60 );
+		if ( $cache_ttl > 0 ) {
+			set_transient( 'wgdp_access_token_' . $account_id, $body['access_token'], $cache_ttl );
+		}
+
 		// Inside lock: update tokens, save.
 		$lock_result = $this->with_accounts_lock( function ( $accounts ) use ( $account_id, $body ) {
 			if ( ! isset( $accounts[ $account_id ] ) ) {
@@ -175,12 +193,21 @@ class WGDP_Google_Auth {
 		} );
 
 		if ( is_wp_error( $lock_result ) ) {
-			return $lock_result;
+			// The token itself is valid and already cached above — don't fail a
+			// customer-facing operation over lock contention on persisting the
+			// accounts option. The next successful refresh will catch it up.
+			error_log( sprintf(
+				'WGDP: Refreshed access token for account %s but failed to persist it (%s). Serving the token from cache; will retry persisting on next refresh.',
+				$account_id,
+				$lock_result->get_error_message()
+			) );
+			return $body['access_token'];
 		}
 
 		if ( null === $lock_result ) {
 			// Account was disconnected/deleted while the refresh was in flight —
 			// don't resurrect a token cache entry for an account we no longer track.
+			delete_transient( 'wgdp_access_token_' . $account_id );
 			return new WP_Error( 'wgdp_not_connected', 'Google account not connected.' );
 		}
 
@@ -188,13 +215,6 @@ class WGDP_Google_Auth {
 		// so clear any stale "expired/revoked" flag from an earlier failed attempt.
 		delete_transient( 'wgdp_token_error_' . $account_id );
 
-		// Cache for the shorter of 55 min or the token's actual lifetime (minus a
-		// 60s safety margin) so short-lived tokens are never served stale.
-		$expires_in = isset( $body['expires_in'] ) ? (int) $body['expires_in'] : 3600;
-		$cache_ttl  = min( 55 * MINUTE_IN_SECONDS, $expires_in - 60 );
-		if ( $cache_ttl > 0 ) {
-			set_transient( 'wgdp_access_token_' . $account_id, $body['access_token'], $cache_ttl );
-		}
 		return $body['access_token'];
 	}
 
@@ -586,11 +606,19 @@ class WGDP_Google_Auth {
 		) );
 
 		if ( is_wp_error( $response ) ) {
+			error_log( 'WGDP: Failed to fetch Google account email during connect: ' . $response->get_error_message() );
 			return '';
 		}
 
+		$code = wp_remote_retrieve_response_code( $response );
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
-		return $body['email'] ?? '';
+
+		if ( 200 !== $code || empty( $body['email'] ) ) {
+			error_log( sprintf( 'WGDP: Failed to fetch Google account email during connect: HTTP %d.', $code ) );
+			return '';
+		}
+
+		return $body['email'];
 	}
 
 	/**
@@ -610,7 +638,12 @@ class WGDP_Google_Auth {
 
 		try {
 			$accounts = $this->get_all_accounts();
-			$result   = $callback( $accounts );
+
+			if ( $this->decrypt_failed ) {
+				return new WP_Error( 'wgdp_decrypt_failed', 'Stored Google account data could not be decrypted (AUTH_KEY may have changed, or the option is corrupted). Refusing to modify accounts to avoid data loss; check the server error log.' );
+			}
+
+			$result = $callback( $accounts );
 
 			if ( null !== $result ) {
 				$this->save_all_accounts( $result );
@@ -650,6 +683,8 @@ class WGDP_Google_Auth {
 	 * Get all accounts (decrypted, with tokens). Private.
 	 */
 	private function get_all_accounts() {
+		$this->decrypt_failed = false;
+
 		$encrypted = get_option( 'wgdp_accounts', '' );
 		if ( empty( $encrypted ) ) {
 			return array();
@@ -657,6 +692,11 @@ class WGDP_Google_Auth {
 
 		$decrypted = $this->decrypt( $encrypted );
 		if ( empty( $decrypted ) ) {
+			// Stored data exists but couldn't be decrypted — do not conflate
+			// with "no accounts connected". Flag it so with_accounts_lock()
+			// refuses to persist a write that would overwrite it.
+			$this->decrypt_failed = true;
+			error_log( 'WGDP: Failed to decrypt stored Google accounts data. AUTH_KEY may have changed, or the wgdp_accounts option is corrupted.' );
 			return array();
 		}
 
