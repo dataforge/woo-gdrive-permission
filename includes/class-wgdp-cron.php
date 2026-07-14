@@ -357,11 +357,12 @@ class WGDP_Cron {
 		$account_id = $job['account_id'];
 
 		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
-			$wpdb->update( $table, array(
-				'status'       => 'failed',
-				'processed_at' => $now,
-				'last_error'   => 'No connected Google account is available for this product.',
-			), array( 'id' => $job['id'] ) );
+			// Conditional: don't clobber a 'pending' reset written by queue_backfill()
+			// while this batch was running (see cursor-advance comment below).
+			$wpdb->query( $wpdb->prepare(
+				"UPDATE {$table} SET status = 'failed', processed_at = %s, last_error = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				$now, 'No connected Google account is available for this product.', $job['id']
+			) );
 			return;
 		}
 
@@ -378,9 +379,11 @@ class WGDP_Cron {
 		}
 
 		if ( empty( $resources ) ) {
-			$wpdb->update( $table, array(
-				'status' => 'completed', 'processed_at' => $now,
-			), array( 'id' => $job['id'] ) );
+			// Conditional for the same reason as the account-check failure path above.
+			$wpdb->query( $wpdb->prepare(
+				"UPDATE {$table} SET status = 'completed', processed_at = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				$now, $job['id']
+			) );
 			return;
 		}
 
