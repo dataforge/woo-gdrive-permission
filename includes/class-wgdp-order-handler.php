@@ -492,10 +492,6 @@ class WGDP_Order_Handler {
 						continue;
 					}
 
-					if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-						continue;
-					}
-
 					$counted_qty     = $this->get_counted_quantity_for_item( $order, $item, $counted_quantities );
 					$already_removed = $refund_decremented_qty[ $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 );
 					$qty             = max( 0, $counted_qty - (int) $already_removed );
@@ -589,7 +585,7 @@ class WGDP_Order_Handler {
 				$product_id       = $order_item->get_product_id();
 				$variation_id     = $order_item->get_variation_id();
 				$item_was_counted = in_array( (int) $order_item_id, $counted_ids, true );
-				if ( $item_was_counted && WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
+				if ( $item_was_counted ) {
 					$counted_qty          = $this->get_counted_quantity_for_item( $order, $order_item, $counted_quantities );
 					$total_refunded_qty   = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
 					$already_removed      = (int) ( $refund_decremented_qty[ (int) $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 ) );
@@ -796,9 +792,6 @@ class WGDP_Order_Handler {
 
 			$product_id   = $item->get_product_id();
 			$variation_id = $item->get_variation_id();
-			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( $product_id, $variation_id ?: 0 ) ) {
-				return;
-			}
 
 			$counted_quantities     = $this->get_counted_quantities( $order );
 			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
