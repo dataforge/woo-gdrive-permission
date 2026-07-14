@@ -1570,6 +1570,22 @@ class WGDP_Entitlements {
 			$entitlement_id = 0;
 			$existing       = $this->get_existing_entitlement( $order_item_id, $resource_id, $email );
 
+			// A 'revocation_error' row is not a valid existing grant: its Drive permission
+			// removal already committed but failed and is queued for cron retry, so reusing
+			// it here would tell the caller the recipient is already assigned while the
+			// retry cron may delete their access moments later. Block instead, matching the
+			// same status's handling in WGDP_Admin's reassign-email guard.
+			if ( $existing && 'revocation_error' === $existing['grant_status'] ) {
+				foreach ( $created_ids as $created_id ) {
+					$this->delete( $created_id );
+				}
+				foreach ( $reactivated_rows as $reactivated_id => $snapshot ) {
+					unset( $snapshot['id'] );
+					$this->update( $reactivated_id, $snapshot );
+				}
+				return new WP_Error( 'wgdp_revocation_pending', 'Cannot assign this recipient while Drive access removal is pending retry.' );
+			}
+
 			if ( $existing && 'revoked' !== $existing['grant_status'] ) {
 				$entitlement_id = (int) $existing['id'];
 			}
