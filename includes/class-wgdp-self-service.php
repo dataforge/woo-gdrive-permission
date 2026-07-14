@@ -539,6 +539,13 @@ class WGDP_Self_Service {
 			wp_send_json_error( 'Security check failed.' );
 		}
 
+		// Throttle by IP before the order/token is even resolved, so guessing
+		// order keys or tokens against this endpoint can't run unthrottled —
+		// the per-order/per-IP limiters below only fire after auth succeeds.
+		if ( ! $this->consume_rate_limit( 'wgdp_ss_auth_' . md5( $this->get_request_ip() ), 20, HOUR_IN_SECONDS ) ) {
+			wp_send_json_error( 'Too many requests. Please wait before submitting again.' );
+		}
+
 		$auth = $this->resolve_request_order( $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		if ( is_wp_error( $auth ) ) {
 			wp_send_json_error( $auth->get_error_message() );
