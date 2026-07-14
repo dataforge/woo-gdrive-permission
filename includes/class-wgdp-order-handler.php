@@ -266,7 +266,17 @@ class WGDP_Order_Handler {
 						'reuse_revoked'   => false,
 					) );
 
-					if ( is_wp_error( $result ) || ! empty( $result['already_exists'] ) ) {
+					if ( is_wp_error( $result ) ) {
+						$order->add_order_note( sprintf(
+							'WGDP: Failed to create entitlements for %s on "%s" — %s',
+							$email,
+							$item->get_name(),
+							$result->get_error_message()
+						) );
+						continue;
+					}
+
+					if ( ! empty( $result['already_exists'] ) ) {
 						continue;
 					}
 
