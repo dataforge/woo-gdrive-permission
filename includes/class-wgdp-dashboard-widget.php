@@ -97,8 +97,8 @@ class WGDP_Dashboard_Widget {
 
 		$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"SELECT id, order_id, recipient_email, grant_error, created_at FROM {$table}
-				 WHERE grant_status = 'error'
+				"SELECT id, order_id, recipient_email, grant_error, revocation_error, grant_status, created_at FROM {$table}
+				 WHERE grant_status IN ( 'error', 'revocation_error' )
 				 ORDER BY updated_at DESC
 				 LIMIT %d",
 				$limit
@@ -108,12 +108,13 @@ class WGDP_Dashboard_Widget {
 
 		$failures = array();
 		foreach ( $rows as $row ) {
-			$order = wc_get_order( $row['order_id'] );
+			$order   = wc_get_order( $row['order_id'] );
+			$message = 'revocation_error' === $row['grant_status'] ? $row['revocation_error'] : $row['grant_error'];
 			$failures[] = array(
 				'order_id'        => $row['order_id'],
 				'edit_url'        => $order ? $order->get_edit_order_url() : '#',
 				'recipient_email' => $row['recipient_email'],
-				'error'           => $row['grant_error'] ?: 'Unknown error',
+				'error'           => $message ?: 'Unknown error',
 			);
 		}
 
