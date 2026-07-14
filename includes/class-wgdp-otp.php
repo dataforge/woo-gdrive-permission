@@ -163,6 +163,10 @@ class WGDP_OTP {
 			if ( $remaining > 0 ) {
 				$msg .= sprintf( ' %d attempt(s) remaining.', $remaining );
 			}
+			// Return the post-increment count, not the pre-increment $entitlement snapshot,
+			// so callers checking otp_attempts against MAX_OTP_ATTEMPTS (e.g. the claim page's
+			// lockout UI) see the up-to-date value instead of lagging by one submission.
+			$entitlement['otp_attempts'] = $current_attempts;
 			return array( 'success' => false, 'error' => $msg, 'entitlement' => $entitlement );
 		}
 

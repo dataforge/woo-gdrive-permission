@@ -164,11 +164,6 @@ class WGDP_Claim_Page {
 			return;
 		}
 
-		if ( ! empty( $entitlement['claim_token_expires_at'] ) && strtotime( $entitlement['claim_token_expires_at'] . ' +0000' ) < time() ) {
-			$this->post_result = $this->wrap_content( $this->error_content( 'This link has expired. Please contact the store for a new verification email.' ) );
-			return;
-		}
-
 		if ( 'granted' === $entitlement['grant_status'] ) {
 			// Check for siblings to show multi-file success.
 			$siblings = $ent->get_siblings( $entitlement['order_item_id'], $entitlement['recipient_email'], $entitlement['id'] );
@@ -200,6 +195,30 @@ class WGDP_Claim_Page {
 
 		if ( 'revoked' === $entitlement['grant_status'] ) {
 			$this->post_result = $this->wrap_content( $this->error_content( 'This access has been revoked.' ) );
+			return;
+		}
+
+		// Already verified but grant pending or failed. Check this before the claim-token
+		// expiry below: claim_token_expires_at is set once at OTP issuance and is never
+		// cleared/extended on verification, so an already-verified customer revisiting
+		// after the 24h window must still see their real status, not "link expired".
+		if ( 'verified' === $entitlement['verification_status'] && 'granted' !== $entitlement['grant_status'] ) {
+			if ( 'pending_release' === $entitlement['grant_status'] ) {
+				$this->post_result = $this->wrap_content( $this->pending_release_content() );
+			} elseif ( 'error' === $entitlement['grant_status'] ) {
+				$this->post_result = $this->wrap_content( $this->error_content(
+					'Your identity has been verified, but we encountered an error granting access. We will retry automatically. Please check back later.'
+				) );
+			} else {
+				$this->post_result = $this->wrap_content( $this->error_content(
+					'Your identity has been verified. Access is being provisioned and you will receive an email once it is ready.'
+				) );
+			}
+			return;
+		}
+
+		if ( ! empty( $entitlement['claim_token_expires_at'] ) && strtotime( $entitlement['claim_token_expires_at'] . ' +0000' ) < time() ) {
+			$this->post_result = $this->wrap_content( $this->error_content( 'This link has expired. Please contact the store for a new verification email.' ) );
 			return;
 		}
 
@@ -361,10 +380,6 @@ class WGDP_Claim_Page {
 			return $this->wrap_content( $this->error_content( 'This link is invalid or has expired.' ) );
 		}
 
-		if ( ! empty( $entitlement['claim_token_expires_at'] ) && strtotime( $entitlement['claim_token_expires_at'] . ' +0000' ) < time() ) {
-			return $this->wrap_content( $this->error_content( 'This link has expired. Please contact the store for a new verification email.' ) );
-		}
-
 		if ( 'granted' === $entitlement['grant_status'] ) {
 			// Check for siblings to show multi-file success.
 			$siblings = $ent->get_siblings( $entitlement['order_item_id'], $entitlement['recipient_email'], $entitlement['id'] );
@@ -396,7 +411,10 @@ class WGDP_Claim_Page {
 			return $this->wrap_content( $this->error_content( 'This access has been revoked.' ) );
 		}
 
-		// Already verified but grant pending or failed.
+		// Already verified but grant pending or failed. Check this before the claim-token
+		// expiry below: claim_token_expires_at is set once at OTP issuance and is never
+		// cleared/extended on verification, so an already-verified customer revisiting
+		// after the 24h window must still see their real status, not "link expired".
 		if ( 'verified' === $entitlement['verification_status'] && 'granted' !== $entitlement['grant_status'] ) {
 			if ( 'pending_release' === $entitlement['grant_status'] ) {
 				return $this->wrap_content( $this->pending_release_content() );
@@ -409,6 +427,10 @@ class WGDP_Claim_Page {
 					'Your identity has been verified. Access is being provisioned and you will receive an email once it is ready.'
 				) );
 			}
+		}
+
+		if ( ! empty( $entitlement['claim_token_expires_at'] ) && strtotime( $entitlement['claim_token_expires_at'] . ' +0000' ) < time() ) {
+			return $this->wrap_content( $this->error_content( 'This link has expired. Please contact the store for a new verification email.' ) );
 		}
 
 		return $this->wrap_content( $this->form_content( $token, '', $entitlement ) );
@@ -577,25 +599,29 @@ class WGDP_Claim_Page {
 			return;
 		}
 
-			$order = wc_get_order( $entitlement['order_id'] );
-			$item  = $order ? $order->get_item( $entitlement['order_item_id'] ) : null;
-			if ( ! $order || ! $item ) {
-				$this->post_result = $this->wrap_content( $this->form_content(
-					$token,
-					'Could not send a new verification code. Please contact the store for assistance.',
-					$entitlement
-				) );
-				return;
-			}
-			$mail_result = WGDP_Notification_Email::send_otp( $entitlement['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
-			if ( is_wp_error( $mail_result ) ) {
-				$this->post_result = $this->wrap_content( $this->form_content(
-					$token,
-					'Could not send a new verification code. Please contact the store for assistance.',
-					$entitlement
-				) );
-				return;
-			}
+		// From here on, $token is stale: issue_otp_for_recipient_group() already rotated
+		// the claim token in the DB. Any re-render must use $tokens['claim_token'] so the
+		// page's hidden field still matches a token the customer can actually use, even if
+		// the email below fails to send.
+		$order = wc_get_order( $entitlement['order_id'] );
+		$item  = $order ? $order->get_item( $entitlement['order_item_id'] ) : null;
+		if ( ! $order || ! $item ) {
+			$this->post_result = $this->wrap_content( $this->form_content(
+				$tokens['claim_token'],
+				'Could not send a new verification code. Please contact the store for assistance.',
+				$entitlement
+			) );
+			return;
+		}
+		$mail_result = WGDP_Notification_Email::send_otp( $entitlement['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
+		if ( is_wp_error( $mail_result ) ) {
+			$this->post_result = $this->wrap_content( $this->form_content(
+				$tokens['claim_token'],
+				'Could not send a new verification code. Please contact the store for assistance.',
+				$entitlement
+			) );
+			return;
+		}
 
 		$refreshed = $ent->get( $entitlement['id'] );
 		$this->post_result = $this->wrap_content( $this->form_content(
