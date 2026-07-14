@@ -823,23 +823,30 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			if ( isset( $seen_item_ids[ $ua['order_item_id'] ] ) ) {
 				continue;
 			}
-			$this->items[] = array(
-				'_unassigned'         => true,
-				'id'                  => 0,
-				'order_id'            => $ua['order_id'],
-				'order_item_id'       => $ua['order_item_id'],
-				'product_id'          => $ua['product_id'],
-				'variation_id'        => $ua['variation_id'] ?? 0,
-				'cloud_asset_id'      => '',
-				'recipient_email'     => '__unassigned_0',
-				'recipient_index'     => 1,
-				'verification_status' => '',
-				'grant_status'        => 'unassigned',
-				'created_at'          => $ua['created_at'] ?? '',
-				'grant_error'         => '',
-				'provider_permission_id' => '',
-				'account_id'          => '',
-			);
+
+			$qty         = isset( $ua['qty'] ) ? (int) $ua['qty'] : 1;
+			$assigned    = isset( $ua['assigned_count'] ) ? (int) $ua['assigned_count'] : 0;
+			$unassigned  = max( 1, $qty - $assigned );
+
+			for ( $seat_num = 1; $seat_num <= $unassigned; $seat_num++ ) {
+				$this->items[] = array(
+					'_unassigned'         => true,
+					'id'                  => 0,
+					'order_id'            => $ua['order_id'],
+					'order_item_id'       => $ua['order_item_id'],
+					'product_id'          => $ua['product_id'],
+					'variation_id'        => $ua['variation_id'] ?? 0,
+					'cloud_asset_id'      => '',
+					'recipient_email'     => '__unassigned_' . ( $seat_num - 1 ),
+					'recipient_index'     => $seat_num,
+					'verification_status' => '',
+					'grant_status'        => 'unassigned',
+					'created_at'          => $ua['created_at'] ?? '',
+					'grant_error'         => '',
+					'provider_permission_id' => '',
+					'account_id'          => '',
+				);
+			}
 		}
 	}
 
