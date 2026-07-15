@@ -489,10 +489,13 @@ class WGDP_Claim_Page {
 					);
 
 					if ( is_wp_error( $existing_permission ) ) {
-						if ( 'wgdp_permission_not_found' !== $existing_permission->get_error_code() ) {
-							return $existing_permission;
+						if ( 'wgdp_permission_not_found' === $existing_permission->get_error_code() ) {
+							$ent->mark_error( $existing['id'], 'Permission no longer exists on Google Drive.' );
 						}
-						$ent->mark_error( $existing['id'], 'Permission no longer exists on Google Drive.' );
+						// Any other error (transient network/API failure) leaves the
+						// sibling's dedup status unknown. Skip dedup and fall through to
+						// create a fresh permission for this entitlement rather than
+						// failing it over a lookup that wasn't even about its own grant.
 						return null;
 					}
 
