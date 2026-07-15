@@ -511,10 +511,12 @@ class WGDP_Order_Handler {
 			}
 
 			if ( $has_active_rows ) {
-				if ( $drive_failures > 0 ) {
-					$order->add_order_note( sprintf( 'WGDP: All entitlements revoked (%d Drive permission removal(s) failed).', $drive_failures ) );
-				} else {
+				if ( 0 === $drive_failures ) {
 					$order->add_order_note( 'WGDP: All entitlements revoked.' );
+				} elseif ( ! empty( $notified_emails ) ) {
+					$order->add_order_note( sprintf( 'WGDP: Entitlements partially revoked (%d Drive permission removal(s) failed; access remains live for those recipients).', $drive_failures ) );
+				} else {
+					$order->add_order_note( sprintf( 'WGDP: Entitlement revocation failed for all %d Drive permission(s) — access remains live. Recheck from the Access Manager.', $drive_failures ) );
 				}
 			}
 
@@ -522,6 +524,7 @@ class WGDP_Order_Handler {
 			if ( ! empty( $counted_ids ) ) {
 				$product_deltas   = array();
 				$variation_deltas = array();
+				$matched_ids      = array();
 				foreach ( $order->get_items() as $item ) {
 					$product_id    = $item->get_product_id();
 					$variation_id  = $item->get_variation_id();
@@ -530,12 +533,35 @@ class WGDP_Order_Handler {
 					if ( ! in_array( $order_item_id, $counted_ids, true ) ) {
 						continue;
 					}
+					$matched_ids[] = $order_item_id;
 
 					$counted_qty     = $this->get_counted_quantity_for_item( $order, $item, $counted_quantities );
 					$already_removed = $refund_decremented_qty[ $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 );
 					$qty             = max( 0, $counted_qty - (int) $already_removed );
 
 					$routing = $this->get_routing_for_item( $counted_routing, $order_item_id, $product_id, $variation_id );
+					$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty, $routing );
+				}
+
+				// Counted items that no longer exist on the order (e.g. deleted while
+				// the per-item lock was contended, which leaves decrement_sales_counter_
+				// for_deleted_order_item() unable to run) never match the loop above but
+				// stay in _wgdp_qty_counted_items. Recover their product/variation from
+				// the entitlement rows — which persist after the line item is gone — so
+				// the counter isn't left permanently inflated once this meta is wiped.
+				foreach ( array_diff( $counted_ids, $matched_ids ) as $stale_item_id ) {
+					$stale_rows = $ent->get_by_order_item( $stale_item_id );
+					if ( empty( $stale_rows ) ) {
+						continue;
+					}
+					$product_id   = (int) $stale_rows[0]['product_id'];
+					$variation_id = (int) $stale_rows[0]['variation_id'];
+
+					$counted_qty     = $counted_quantities[ $stale_item_id ] ?? ( $counted_quantities[ (string) $stale_item_id ] ?? 0 );
+					$already_removed = $refund_decremented_qty[ $stale_item_id ] ?? ( $refund_decremented_qty[ (string) $stale_item_id ] ?? 0 );
+					$qty             = max( 0, (int) $counted_qty - (int) $already_removed );
+
+					$routing = $this->get_routing_for_item( $counted_routing, $stale_item_id, $product_id, $variation_id );
 					$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty, $routing );
 				}
 				foreach ( $product_deltas as $pid => $qty ) {
