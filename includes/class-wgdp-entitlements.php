@@ -418,11 +418,27 @@ class WGDP_Entitlements {
 
 	/**
 	 * Mark an entitlement as pending release (verified but product not yet released).
+	 *
+	 * Conditional on the row not already being granted or revoked. Siblings
+	 * returned by get_siblings() can include rows already granted from an
+	 * earlier release window (e.g. a min_sales_qty threshold that later
+	 * regressed below the gate on a refund); without this guard a fresh
+	 * verification of another sibling would flip an already-granted row back
+	 * to 'pending_release', and re-processing it would create a duplicate
+	 * Drive permission (see grant_drive_access_for_entitlement()'s dedup,
+	 * which only recognizes 'granted' rows, not 'pending_release' ones).
+	 *
+	 * @return int|false Rows updated (0 if the row was already granted/revoked), or false on failure.
 	 */
 	public function mark_pending_release( $id ) {
-		return $this->update( $id, array(
-			'grant_status' => 'pending_release',
-		) );
+		global $wpdb;
+		$table = $this->table();
+		return $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"UPDATE {$table} SET grant_status = 'pending_release' WHERE id = %d AND grant_status NOT IN ( 'granted', 'revoked' )",
+				$id
+			)
+		);
 	}
 
 	/**
