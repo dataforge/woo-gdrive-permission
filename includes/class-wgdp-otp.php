@@ -147,6 +147,13 @@ class WGDP_OTP {
 			if ( $refreshed && $refreshed['claim_token_hash'] !== $token_hash ) {
 				return array( 'success' => false, 'error' => 'This link is no longer valid. Please check your email for the newest verification code.', 'entitlement' => $entitlement );
 			}
+			// Return the up-to-date attempt count (not the pre-increment $entitlement
+			// snapshot) so callers checking otp_attempts against MAX_OTP_ATTEMPTS (e.g.
+			// the claim page's lockout UI) correctly show the lockout state instead of
+			// the normal retry form.
+			if ( $refreshed ) {
+				$entitlement['otp_attempts'] = $refreshed['otp_attempts'];
+			}
 			return array( 'success' => false, 'error' => 'Too many attempts. Please contact the store for a new verification code.', 'entitlement' => $entitlement );
 		}
 
