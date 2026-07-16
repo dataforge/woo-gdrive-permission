@@ -363,6 +363,8 @@ class WGDP_Release_Gate {
 
 	/**
 	 * Release a variation's digital content (one-way latch).
+	 *
+	 * @return bool True if this call actually released the variation, false if it was a no-op.
 	 */
 	public static function release_variation( $product_id, $variation_id ) {
 		// Only variations with their own gate (manual_release or min_sales_qty)
@@ -373,11 +375,11 @@ class WGDP_Release_Gate {
 		// pending entitlements below — bypassing the product-level gate.
 		$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
 		if ( empty( $var_mode ) || 'inherit_from_product' === $var_mode ) {
-			return;
+			return false;
 		}
 
 		if ( '1' === get_post_meta( $variation_id, '_wgdp_is_released', true ) ) {
-			return;
+			return false;
 		}
 
 		update_post_meta( $variation_id, '_wgdp_is_released', '1' );
@@ -386,6 +388,8 @@ class WGDP_Release_Gate {
 		self::batch_grant_pending_release_for_variation( $product_id, $variation_id );
 
 		do_action( 'wgdp_variation_released', $product_id, $variation_id );
+
+		return true;
 	}
 
 	/**
@@ -777,7 +781,9 @@ class WGDP_Release_Gate {
 			wp_send_json_error( 'Invalid variation.' );
 		}
 
-		self::release_variation( $product_id, $variation_id );
+		if ( ! self::release_variation( $product_id, $variation_id ) ) {
+			wp_send_json_error( 'This variation inherits its release from the parent product (or is already released); release the product instead.' );
+		}
 		wp_send_json_success( 'Variation digital content released.' );
 	}
 
