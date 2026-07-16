@@ -114,7 +114,7 @@ class WGDP_Dashboard_Widget {
 				'order_id'        => $row['order_id'],
 				'edit_url'        => $order ? $order->get_edit_order_url() : '#',
 				'recipient_email' => $row['recipient_email'],
-				'error'           => $message ?: 'Unknown error',
+				'error'           => ( null === $message || '' === $message ) ? 'Unknown error' : $message,
 			);
 		}
 
