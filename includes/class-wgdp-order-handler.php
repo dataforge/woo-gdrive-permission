@@ -1109,6 +1109,13 @@ class WGDP_Order_Handler {
 					return;
 				}
 
+				// Fully-refunded item has nothing left to deliver — create_entitlements()
+				// never creates rows for it (effective qty <= 0), so it can't block
+				// completion on an empty entitlement list below.
+				if ( $this->get_effective_item_quantity( $order, $item ) <= 0 ) {
+					continue;
+				}
+
 				// Digital-only — verify all entitlements for this item are granted.
 				$item_entitlements = $ent->get_by_order_item( $item->get_id() );
 				if ( empty( $item_entitlements ) ) {
