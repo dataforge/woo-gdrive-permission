@@ -1981,6 +1981,12 @@ class WGDP_Entitlements {
 
 	/**
 	 * Check whether a revoked-only recipient still maps to a paid seat.
+	 *
+	 * recipient_index is a monotonically-increasing per-order-item counter that
+	 * is never reused when an earlier recipient is revoked/replaced, so its raw
+	 * value can exceed the current effective quantity even for the sole current
+	 * occupant of a seat. Rank the recipient among all still-relevant recipients
+	 * for this order item instead of comparing the raw index directly.
 	 */
 	private function recipient_index_within_effective_quantity( $order_id, $order_item_id, $recipient_index ) {
 		$order = wc_get_order( $order_id );
@@ -1996,8 +2002,27 @@ class WGDP_Entitlements {
 		$quantity      = (int) $item->get_quantity();
 		$qty_refunded  = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
 		$effective_qty = max( 0, $quantity - $qty_refunded );
+		if ( $effective_qty <= 0 || $recipient_index <= 0 ) {
+			return false;
+		}
 
-		return $recipient_index > 0 && $recipient_index <= $effective_qty;
+		global $wpdb;
+		$table = $this->table();
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$rank = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM (
+				SELECT MIN(recipient_index) AS min_idx
+				FROM {$table}
+				WHERE order_item_id = %d
+					AND ( grant_status != 'revoked' OR ( verification_status = 'verified' AND revocation_reason = %s ) )
+				GROUP BY recipient_email
+			) ranked WHERE min_idx <= %d", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			$order_item_id,
+			self::REVOCATION_REASON_ASSET_REMOVED,
+			$recipient_index
+		) );
+
+		return $rank <= $effective_qty;
 	}
 
 	/**
