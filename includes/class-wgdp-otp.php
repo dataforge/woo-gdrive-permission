@@ -162,9 +162,13 @@ class WGDP_OTP {
 			// Re-read the post-increment count rather than the pre-increment snapshot,
 			// so a concurrent wrong-OTP submission racing through the atomic increment
 			// above doesn't cause both requests to report the same "remaining" count.
-			$current_attempts = (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$current_attempts_raw = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 				$wpdb->prepare( "SELECT otp_attempts FROM {$table} WHERE id = %d", $entitlement['id'] ) // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			);
+			// A null result means the row is gone (e.g. deleted concurrently); treat
+			// that as attempts exhausted rather than letting (int) null coerce to 0,
+			// which would misreport the full attempt count as remaining.
+			$current_attempts = null === $current_attempts_raw ? self::MAX_OTP_ATTEMPTS : (int) $current_attempts_raw;
 			$remaining = self::MAX_OTP_ATTEMPTS - $current_attempts;
 			$msg = 'Invalid verification code.';
 			if ( $remaining > 0 ) {
