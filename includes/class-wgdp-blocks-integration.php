@@ -141,7 +141,7 @@ class WGDP_Blocks_Integration implements IntegrationInterface {
 			// position (count), not by the original array key.
 			$emails = array();
 			foreach ( $raw_emails as $position => $raw_email ) {
-				$raw_email = trim( $raw_email );
+				$raw_email = is_scalar( $raw_email ) ? trim( (string) $raw_email ) : '';
 				if ( '' === $raw_email ) {
 					continue;
 				}
