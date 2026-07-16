@@ -231,7 +231,12 @@ class WGDP_Entitlements {
 
 					$clear_claim = false;
 					if ( 'pending' === $row['verification_status'] && ! empty( $row['claim_token_hash'] ) ) {
-						$siblings = $this->get_siblings( $row['order_item_id'], $row['recipient_email'], $id );
+						// The row being revoked always loses its own copy of the
+						// token, whether or not a sibling ends up receiving it —
+						// otherwise a revoked row with no eligible sibling keeps a
+						// live, unexpired claim token sitting in the database.
+						$clear_claim = true;
+						$siblings    = $this->get_siblings( $row['order_item_id'], $row['recipient_email'], $id );
 						foreach ( $siblings as $sibling ) {
 							if ( 'pending' !== $sibling['verification_status'] || 'revoked' === $sibling['grant_status'] ) {
 								continue;
@@ -246,7 +251,6 @@ class WGDP_Entitlements {
 							) );
 
 							if ( false !== $updated ) {
-								$clear_claim = true;
 								break;
 							}
 						}
