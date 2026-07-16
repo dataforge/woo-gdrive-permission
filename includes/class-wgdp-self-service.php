@@ -635,7 +635,8 @@ class WGDP_Self_Service {
 			$order = $result['order'];
 			$item  = $result['item'];
 
-			$tokens = $result['tokens'];
+			$tokens    = $result['tokens'];
+			$anchor_id = $result['primary_id'];
 			if ( empty( $tokens ) ) {
 				// The recipient already had a non-revoked row for this item (e.g. the
 				// customer resubmitted the same email after a failed verification
@@ -649,7 +650,6 @@ class WGDP_Self_Service {
 				// that case fall back to any still-pending, non-revoked sibling
 				// instead of silently no-op'ing on the verified row.
 				$existing_row = $ent->get( $result['primary_id'] );
-				$anchor_id    = $result['primary_id'];
 				if ( ! $existing_row || 'revoked' === $existing_row['grant_status'] ) {
 					continue;
 				}
