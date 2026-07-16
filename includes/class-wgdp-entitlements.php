@@ -313,6 +313,13 @@ class WGDP_Entitlements {
 
 	/**
 	 * Mark an entitlement whose Drive permission could not be revoked.
+	 *
+	 * Conditional on the row not already being revoked, so a concurrent
+	 * mark_revoked() (called directly on this id via a different lock, e.g.
+	 * from cron/release-gate) that finalizes the row while a Drive delete is
+	 * still in flight cannot have its outcome overwritten back to
+	 * 'revocation_error' — which would make get_failed_revocations() retry a
+	 * permission that was already correctly handled.
 	 */
 	public function mark_revocation_error( $id, $reason, $error ) {
 		global $wpdb;
@@ -324,7 +331,7 @@ class WGDP_Entitlements {
 				     revocation_reason = %s,
 				     revocation_error = %s,
 				     revocation_retries = revocation_retries + 1
-				 WHERE id = %d",
+				 WHERE id = %d AND grant_status != 'revoked'",
 				$reason,
 				$error,
 				$id
@@ -363,7 +370,14 @@ class WGDP_Entitlements {
 					$data   = $result->get_error_data();
 					$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 0;
 					if ( 404 !== $status ) {
-						$this->mark_revocation_error( $row['id'], $reason, $result->get_error_message() );
+						$updated = $this->mark_revocation_error( $row['id'], $reason, $result->get_error_message() );
+						if ( empty( $updated ) ) {
+							// Row was already finalized as revoked by a concurrent
+							// mark_revoked() call while the Drive delete was in
+							// flight; that outcome is correct, so don't report an
+							// error for a row that's already in the right state.
+							return true;
+						}
 						return $result;
 					}
 				}
