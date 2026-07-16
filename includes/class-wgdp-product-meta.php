@@ -301,46 +301,57 @@ class WGDP_Product_Meta {
 			update_post_meta( $post_id, '_wgdp_account_id', sanitize_text_field( wp_unslash( $_POST['_wgdp_account_id'] ) ) );
 		}
 
-		// Multi-file resources.
-		$old_resources  = self::get_drive_resources( $post_id );
-		$old_active_ids = self::extract_active_resource_ids( $old_resources );
+		// The simple/external "Drive Files" panel is only hidden via CSS for
+		// variable products (WooCommerce admin JS toggles display:none, it does
+		// not remove the fields from the DOM), so its hidden inputs — including
+		// _wgdp_drive_resources_submitted — still POST on every save of a
+		// variable product. Only process product-level resources for product
+		// types that actually use that panel, or a variable product's inherited
+		// resources get wiped and revoked on the next unrelated save.
+		$product_type = isset( $_POST['product-type'] ) ? sanitize_text_field( wp_unslash( $_POST['product-type'] ) ) : 'simple';
 
-		$resources_submitted = isset( $_POST['_wgdp_drive_resources_submitted'] );
+		if ( in_array( $product_type, array( 'simple', 'external' ), true ) ) {
+			// Multi-file resources.
+			$old_resources  = self::get_drive_resources( $post_id );
+			$old_active_ids = self::extract_active_resource_ids( $old_resources );
 
-		if ( isset( $_POST['_wgdp_drive_resources'] ) && is_array( $_POST['_wgdp_drive_resources'] ) ) {
-			$raw       = wp_unslash( $_POST['_wgdp_drive_resources'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-			$resources = self::sanitize_resources_array( $raw );
-			update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
-			// Clean up legacy keys.
-			delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
-			delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
-			delete_post_meta( $post_id, '_wgdp_drive_resource_name' );
+			$resources_submitted = isset( $_POST['_wgdp_drive_resources_submitted'] );
 
-			// Detect new active resources and queue backfill.
-			$new_active_ids = self::extract_active_resource_ids( $resources );
-			$added_ids      = array_diff( $new_active_ids, $old_active_ids );
-			if ( ! empty( $added_ids ) ) {
-				$account_id = self::get_account_for_item( $post_id, 0 );
-				if ( $account_id ) {
-					self::queue_backfill( $post_id, 0, array_values( $added_ids ), $account_id );
+			if ( isset( $_POST['_wgdp_drive_resources'] ) && is_array( $_POST['_wgdp_drive_resources'] ) ) {
+				$raw       = wp_unslash( $_POST['_wgdp_drive_resources'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+				$resources = self::sanitize_resources_array( $raw );
+				update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
+				// Clean up legacy keys.
+				delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
+				delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
+				delete_post_meta( $post_id, '_wgdp_drive_resource_name' );
+
+				// Detect new active resources and queue backfill.
+				$new_active_ids = self::extract_active_resource_ids( $resources );
+				$added_ids      = array_diff( $new_active_ids, $old_active_ids );
+				if ( ! empty( $added_ids ) ) {
+					$account_id = self::get_account_for_item( $post_id, 0 );
+					if ( $account_id ) {
+						self::queue_backfill( $post_id, 0, array_values( $added_ids ), $account_id );
+					}
 				}
-			}
 
-			// Detect removed resources and auto-revoke.
-			$removed_ids = array_diff( $old_active_ids, $new_active_ids );
-			if ( ! empty( $removed_ids ) ) {
-				self::revoke_removed_assets( $post_id, 0, array_values( $removed_ids ), $old_resources );
-			}
-		} elseif ( $resources_submitted ) {
-			// Resources UI was submitted with an intentionally empty list.
-			update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
-			delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
-			delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
-			delete_post_meta( $post_id, '_wgdp_drive_resource_name' );
+				// Detect removed resources and auto-revoke.
+				$removed_ids = array_diff( $old_active_ids, $new_active_ids );
+				if ( ! empty( $removed_ids ) ) {
+					self::revoke_removed_assets( $post_id, 0, array_values( $removed_ids ), $old_resources );
+				}
+			} elseif ( $resources_submitted ) {
+				// Resources UI was submitted with an intentionally empty list.
+				update_post_meta( $post_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
+				delete_post_meta( $post_id, '_wgdp_drive_resource_id' );
+				delete_post_meta( $post_id, '_wgdp_drive_resource_type' );
+				delete_post_meta( $post_id, '_wgdp_drive_resource_name' );
 
-			// All resources removed — revoke all.
-			if ( ! empty( $old_active_ids ) ) {
-				self::revoke_removed_assets( $post_id, 0, array_values( $old_active_ids ), $old_resources );
+				// All resources removed — revoke all.
+				if ( ! empty( $old_active_ids ) ) {
+					self::revoke_removed_assets( $post_id, 0, array_values( $old_active_ids ), $old_resources );
+				}
 			}
 		}
 
