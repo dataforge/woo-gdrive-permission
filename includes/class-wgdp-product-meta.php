@@ -827,31 +827,42 @@ class WGDP_Product_Meta {
 	 * @return bool True if modified.
 	 */
 	public static function maybe_retire_resource( $product_id, $variation_id, $asset_id, $reason = 'retired_manual' ) {
-		$check_id = $variation_id ?: $product_id;
-		$json     = get_post_meta( $check_id, '_wgdp_drive_resources', true );
-		if ( empty( $json ) ) {
-			return false;
+		// Check variation first, then product, matching get_drive_resources()'s
+		// inheritance order so retirement lands on whichever post actually holds
+		// the resource (a variation may inherit its list from the parent product).
+		$check_ids = array();
+		if ( $variation_id ) {
+			$check_ids[] = $variation_id;
 		}
-		$resources = json_decode( $json, true );
-		if ( ! is_array( $resources ) ) {
-			return false;
-		}
+		$check_ids[] = $product_id;
 
-		$modified = false;
-		foreach ( $resources as &$r ) {
-			if ( $r['id'] === $asset_id && ( empty( $r['status'] ) || 'active' === $r['status'] ) ) {
-				$r['status'] = $reason;
-				$modified     = true;
-				break;
+		foreach ( $check_ids as $check_id ) {
+			$json = get_post_meta( $check_id, '_wgdp_drive_resources', true );
+			if ( empty( $json ) ) {
+				continue;
+			}
+			$resources = json_decode( $json, true );
+			if ( ! is_array( $resources ) || empty( $resources ) ) {
+				continue;
+			}
+
+			$modified = false;
+			foreach ( $resources as &$r ) {
+				if ( $r['id'] === $asset_id && ( empty( $r['status'] ) || 'active' === $r['status'] ) ) {
+					$r['status'] = $reason;
+					$modified     = true;
+					break;
+				}
+			}
+			unset( $r );
+
+			if ( $modified ) {
+				update_post_meta( $check_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
+				return true;
 			}
 		}
-		unset( $r );
 
-		if ( $modified ) {
-			update_post_meta( $check_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
-		}
-
-		return $modified;
+		return false;
 	}
 
 	/**
