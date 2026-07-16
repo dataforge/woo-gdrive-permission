@@ -402,11 +402,15 @@ class WGDP_Self_Service {
 				continue;
 			}
 
-			// Collect pending (unverified) emails for this item.
+			// Collect pending/expired (unverified) emails for this item. These rows still
+			// hold a slot under count_active_recipients_for_item() (used to enforce slots
+			// on submission), so they must be offered as replaceable via old_email here —
+			// otherwise a slot that looks open (confirmed count excludes them) permanently
+			// rejects new submissions once expire_stale() flips verification_status.
 			$pending_emails = array();
 			$entitlements   = $ent->get_by_order_item( $item->get_id() );
 			foreach ( $entitlements as $row ) {
-				if ( 'pending' === $row['verification_status'] && 'revoked' !== $row['grant_status'] && ! empty( $row['recipient_email'] ) ) {
+				if ( in_array( $row['verification_status'], array( 'pending', 'expired' ), true ) && 'revoked' !== $row['grant_status'] && ! empty( $row['recipient_email'] ) ) {
 					$pending_emails[ $row['recipient_email'] ] = true;
 				}
 			}
