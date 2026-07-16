@@ -74,6 +74,11 @@ class WGDP_Classic_Checkout {
 					? wp_unslash( $_POST['wgdp_recipients'][ $item['cart_key'] ][ $i ] )
 					: '';
 
+				// Coerce to a string; a crafted request can submit a nested array at
+				// a leaf position (e.g. wgdp_recipients[KEY][0][]=x), and passing that
+				// straight to woocommerce_form_field() would fatal in esc_attr() on redisplay.
+				$posted_value = is_scalar( $posted_value ) ? (string) $posted_value : '';
+
 				woocommerce_form_field( $field_key, array(
 					'type'        => 'email',
 					'label'       => $label,
