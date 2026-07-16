@@ -332,7 +332,11 @@ class WGDP_Claim_Page {
 			}
 
 			if ( ! empty( $granted_links ) ) {
-				if ( count( $granted_links ) > 1 ) {
+				// Use the multi-file template (which surfaces $had_errors/$had_retired)
+				// whenever the order had more than one item, even if only one of them
+				// actually succeeded — otherwise a partial failure is rendered as a
+				// plain, unqualified "Access Granted!" page.
+				if ( count( $all_to_grant ) > 1 ) {
 					$this->post_result = $this->wrap_content( $this->success_content_multi( $granted_links, $result['entitlement'], $had_errors, $had_retired ) );
 				} else {
 					$this->post_result = $this->wrap_content( $this->success_content( $granted_links[0]['link'], $result['entitlement'] ) );
