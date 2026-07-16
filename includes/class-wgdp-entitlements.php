@@ -171,7 +171,10 @@ class WGDP_Entitlements {
 	 * Normalize recipient emails before duplicate checks or storage.
 	 */
 	public static function normalize_email( $email ) {
-		return strtolower( sanitize_email( $email ) );
+		if ( ! is_scalar( $email ) ) {
+			return '';
+		}
+		return strtolower( sanitize_email( (string) $email ) );
 	}
 
 	/**
