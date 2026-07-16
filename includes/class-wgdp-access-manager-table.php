@@ -651,9 +651,17 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 						$cmp = strcmp( (string) $a['created_at'], (string) $b['created_at'] );
 						return $sort_desc ? -$cmp : $cmp;
 					} );
-				} else {
+				} elseif ( 'order_id' === $orderby ) {
 					usort( $this->items, function ( $a, $b ) use ( $sort_desc ) {
 						$cmp = (int) $a['order_id'] - (int) $b['order_id'];
+						return $sort_desc ? -$cmp : $cmp;
+					} );
+				} else {
+					// Default (and any other) orderby matches the query's own
+					// "id" ordering — sort by id rather than order_id so the
+					// merge doesn't silently override the requested order.
+					usort( $this->items, function ( $a, $b ) use ( $sort_desc ) {
+						$cmp = (int) $a['id'] - (int) $b['id'];
 						return $sort_desc ? -$cmp : $cmp;
 					} );
 				}
