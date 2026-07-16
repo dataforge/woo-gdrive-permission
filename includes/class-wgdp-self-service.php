@@ -684,7 +684,7 @@ class WGDP_Self_Service {
 				$mail_failures++;
 				$order->add_order_note( sprintf(
 					'WGDP: Entitlement #%d created for %s, but self-service verification email failed for "%s" — %s',
-					$result['primary_id'],
+					$anchor_id,
 					$email,
 					$item->get_name(),
 					$mail_result->get_error_message()
@@ -694,7 +694,7 @@ class WGDP_Self_Service {
 					'WGDP: Verification email sent to %s for "%s" (entitlement #%d) — self-service',
 					$email,
 					$item->get_name(),
-					$result['primary_id']
+					$anchor_id
 				) );
 				$created_count++;
 			}
