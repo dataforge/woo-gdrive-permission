@@ -137,6 +137,30 @@ class WGDP_Google_Auth {
 			return new WP_Error( 'wgdp_no_credentials', 'OAuth client credentials not configured.' );
 		}
 
+		// Self-heal: a prior refresh may have had Google rotate the refresh_token
+		// but then failed to persist it (lock contention/timeout), leaving a
+		// pending token cached below while the stored one is stale. Persist it
+		// now so we don't submit an already-superseded refresh_token to Google,
+		// which would otherwise look like a dead/revoked account.
+		// Stored encrypted (matching the at-rest guarantee of the accounts option)
+		// rather than as plaintext in the transient.
+		$pending_key           = 'wgdp_pending_refresh_token_' . $account_id;
+		$pending_encrypted     = get_transient( $pending_key );
+		$pending_refresh_token = $pending_encrypted ? $this->decrypt( $pending_encrypted ) : false;
+		if ( $pending_refresh_token && $pending_refresh_token !== $accounts[ $account_id ]['refresh_token'] ) {
+			$healed = $this->with_accounts_lock( function ( $locked_accounts ) use ( $account_id, $pending_refresh_token ) {
+				if ( ! isset( $locked_accounts[ $account_id ] ) ) {
+					return null;
+				}
+				$locked_accounts[ $account_id ]['refresh_token'] = $pending_refresh_token;
+				return $locked_accounts;
+			} );
+			if ( ! is_wp_error( $healed ) && null !== $healed ) {
+				delete_transient( $pending_key );
+				$accounts[ $account_id ]['refresh_token'] = $pending_refresh_token;
+			}
+		}
+
 		// HTTP refresh outside the lock.
 		$account  = $accounts[ $account_id ];
 		$response = wp_remote_post( self::TOKEN_ENDPOINT, array(
@@ -177,6 +201,16 @@ class WGDP_Google_Auth {
 				return new WP_Error( 'wgdp_refresh_race', 'Refresh token was rotated by a concurrent request; retry.' );
 			}
 
+			// Also check the pending-rotation transient: a concurrent refresh may
+			// have rotated the token but failed to persist it (lock contention),
+			// so the persisted value above still matches what we submitted even
+			// though it has already been superseded at Google's end.
+			$pending_encrypted_check = get_transient( $pending_key );
+			$pending_check           = $pending_encrypted_check ? $this->decrypt( $pending_encrypted_check ) : false;
+			if ( $pending_check && $pending_check !== $account['refresh_token'] ) {
+				return new WP_Error( 'wgdp_refresh_race', 'Refresh token was rotated by a concurrent request; retry.' );
+			}
+
 			$error_msg = $body['error_description'] ?? ( $body['error'] ?? 'Unknown error refreshing token.' );
 
 			// Flag the account for an admin notice when the refresh token is permanently dead.
@@ -198,6 +232,14 @@ class WGDP_Google_Auth {
 			set_transient( 'wgdp_access_token_' . $account_id, $body['access_token'], $cache_ttl );
 		}
 
+		// Same for a rotated refresh_token: cache it (encrypted) before the lock
+		// write, so a lock failure below doesn't strand Google's already-rotated
+		// token unrecoverably — the self-heal step above will pick it up and
+		// persist it on the next refresh call.
+		if ( ! empty( $body['refresh_token'] ) && $body['refresh_token'] !== $account['refresh_token'] ) {
+			set_transient( $pending_key, $this->encrypt( $body['refresh_token'] ), DAY_IN_SECONDS );
+		}
+
 		// Inside lock: update tokens, save.
 		$lock_result = $this->with_accounts_lock( function ( $accounts ) use ( $account_id, $body ) {
 			if ( ! isset( $accounts[ $account_id ] ) ) {
@@ -214,7 +256,8 @@ class WGDP_Google_Auth {
 		if ( is_wp_error( $lock_result ) ) {
 			// The token itself is valid and already cached above — don't fail a
 			// customer-facing operation over lock contention on persisting the
-			// accounts option. The next successful refresh will catch it up.
+			// accounts option. Any rotated refresh_token is also cached above
+			// (encrypted) and will be self-healed into storage on the next call.
 			error_log( sprintf(
 				'WGDP: Refreshed access token for account %s but failed to persist it (%s). Serving the token from cache; will retry persisting on next refresh.',
 				$account_id,
@@ -227,8 +270,12 @@ class WGDP_Google_Auth {
 			// Account was disconnected/deleted while the refresh was in flight —
 			// don't resurrect a token cache entry for an account we no longer track.
 			delete_transient( 'wgdp_access_token_' . $account_id );
+			delete_transient( $pending_key );
 			return new WP_Error( 'wgdp_not_connected', 'Google account not connected.' );
 		}
+
+		// Persisted successfully — no pending rotation left to self-heal.
+		delete_transient( $pending_key );
 
 		// A successful refresh means the refresh token is not (or no longer) dead,
 		// so clear any stale "expired/revoked" flag from an earlier failed attempt.
