@@ -320,4 +320,47 @@ class WGDP_DB {
 			);
 		}
 	}
+
+	/**
+	 * Refund one previously consumed rate-limit token for the current window.
+	 *
+	 * Used when a request that passed consume_rate_limit() turned out to be
+	 * wasted by an infrastructure failure (e.g. the email it was gating never
+	 * sent), so a legitimate caller isn't locked out for a transient error
+	 * that produced no side effect worth rate-limiting.
+	 *
+	 * @param string $key Logical rate-limit key, matching a prior consume_rate_limit() call.
+	 */
+	public static function release_rate_limit( $key ) {
+		global $wpdb;
+
+		self::pin_locks_to_primary();
+
+		$cache_key = 'wgdp_rl_' . md5( $key );
+		$lock_name = 'wgdp_rl_' . md5( $key );
+
+		$locked = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare( 'SELECT GET_LOCK(%s, 3)', $lock_name )
+		);
+
+		if ( '1' !== (string) $locked ) {
+			return;
+		}
+
+		try {
+			$now    = time();
+			$stored = get_transient( $cache_key );
+
+			if ( ! is_array( $stored ) || ! isset( $stored['reset'], $stored['count'] ) || (int) $stored['reset'] <= $now || (int) $stored['count'] <= 0 ) {
+				return;
+			}
+
+			$ttl = max( 1, (int) $stored['reset'] - $now );
+			set_transient( $cache_key, array( 'count' => (int) $stored['count'] - 1, 'reset' => (int) $stored['reset'] ), $ttl );
+		} finally {
+			$wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name )
+			);
+		}
+	}
 }

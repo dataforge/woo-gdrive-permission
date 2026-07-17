@@ -618,6 +618,9 @@ class WGDP_Claim_Page {
 		$order = wc_get_order( $entitlement['order_id'] );
 		$item  = $order ? $order->get_item( $entitlement['order_item_id'] ) : null;
 		if ( ! $order || ! $item ) {
+			// No email was actually sent, so this attempt shouldn't count against
+			// the customer's resend quota.
+			$this->release_rate_limit( $rate_key );
 			$this->post_result = $this->wrap_content( $this->form_content(
 				$tokens['claim_token'],
 				'Could not send a new verification code. Please contact the store for assistance.',
@@ -627,6 +630,9 @@ class WGDP_Claim_Page {
 		}
 		$mail_result = WGDP_Notification_Email::send_otp( $entitlement['recipient_email'], $tokens['otp'], $tokens['claim_token'], $order, $item );
 		if ( is_wp_error( $mail_result ) ) {
+			// Delivery failed, so refund the rate-limit token rather than punishing
+			// the customer for an infrastructure hiccup.
+			$this->release_rate_limit( $rate_key );
 			$this->post_result = $this->wrap_content( $this->form_content(
 				$tokens['claim_token'],
 				'Could not send a new verification code. Please contact the store for assistance.',
@@ -856,6 +862,15 @@ class WGDP_Claim_Page {
 	 */
 	private function consume_rate_limit( $key, $limit, $window ) {
 		return WGDP_DB::consume_rate_limit( $key, $limit, $window );
+	}
+
+	/**
+	 * Refund a rate-limit token consumed for a resend that never actually
+	 * delivered an email, so a transient infra failure doesn't lock out a
+	 * legitimate customer for the rest of the window.
+	 */
+	private function release_rate_limit( $key ) {
+		WGDP_DB::release_rate_limit( $key );
 	}
 
 }
