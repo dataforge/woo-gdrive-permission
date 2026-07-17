@@ -363,6 +363,7 @@ class WGDP_Cron {
 				"UPDATE {$table} SET status = 'failed', processed_at = %s, last_error = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				$now, 'No connected Google account is available for this product.', $job['id']
 			) );
+			$this->maybe_reschedule_backfill();
 			return;
 		}
 
@@ -384,6 +385,7 @@ class WGDP_Cron {
 				"UPDATE {$table} SET status = 'completed', processed_at = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				$now, $job['id']
 			) );
+			$this->maybe_reschedule_backfill();
 			return;
 		}
 
@@ -414,9 +416,33 @@ class WGDP_Cron {
 				"UPDATE {$table} SET status = 'completed', total_created = %d, processed_at = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				$new_total, $now, $job['id']
 			) );
+			$this->maybe_reschedule_backfill();
 		}
 
 		delete_transient( 'wgdp_permission_counts' );
+	}
+
+	/**
+	 * Schedule a follow-up backfill run if pending jobs remain.
+	 *
+	 * queue_backfill() fires one wp_schedule_single_event() per job it inserts,
+	 * but WordPress silently de-duplicates same-second single events sharing the
+	 * same hook and args — e.g. saving a variable product where several
+	 * variations each queue a new job in the same request. Only one of those
+	 * events survives, so process_backfill() must independently verify no other
+	 * pending job was left without a surviving event once it finishes the one
+	 * it claimed.
+	 */
+	private function maybe_reschedule_backfill() {
+		global $wpdb;
+		$table = WGDP_DB::get_backfill_table_name();
+
+		$has_pending = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			"SELECT 1 FROM {$table} WHERE status = 'pending' LIMIT 1" // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		);
+		if ( $has_pending ) {
+			wp_schedule_single_event( time() + 5, 'wgdp_process_backfill' );
+		}
 	}
 
 	/**
