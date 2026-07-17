@@ -301,7 +301,12 @@ class WGDP_Order_Handler {
 						'account_id'      => $account_id,
 						'resources'       => $resources,
 						'recipient_index' => $index + 1,
-						'reuse_revoked'   => false,
+						// A revoked row for this exact order_item_id/asset/email tuple still
+						// occupies the unique key, so a later re-trigger (e.g. a refund that
+						// revoked this recipient gets reversed and effective quantity is
+						// restored) must reactivate it — a plain INSERT would collide with
+						// that row and fail every time, permanently blocking recreation.
+						'reuse_revoked'   => true,
 					) );
 
 					if ( is_wp_error( $result ) ) {
