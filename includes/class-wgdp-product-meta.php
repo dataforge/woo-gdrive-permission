@@ -53,6 +53,14 @@ class WGDP_Product_Meta {
 	 * @return array Array of resource objects with id, type, name keys.
 	 */
 	public static function get_drive_resources( $product_id, $variation_id = 0 ) {
+		// A variation whose resources were explicitly cleared to an empty list
+		// (as opposed to never having its own list) must not fall through to
+		// the parent product's resources — that would silently re-inherit
+		// resources the admin deliberately removed from this variation.
+		if ( $variation_id && '1' === get_post_meta( $variation_id, '_wgdp_drive_resources_explicit_empty', true ) ) {
+			return array();
+		}
+
 		// Check variation first, then product.
 		$check_ids = array();
 		if ( $variation_id ) {
@@ -574,6 +582,11 @@ class WGDP_Product_Meta {
 			// a stale, no-longer-inherited copy and silently break inheritance.
 			if ( $had_own_resources || ! self::resources_match( $resources, $old_resources ) ) {
 				update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( $resources ) );
+				if ( empty( $resources ) ) {
+					update_post_meta( $variation_id, '_wgdp_drive_resources_explicit_empty', '1' );
+				} else {
+					delete_post_meta( $variation_id, '_wgdp_drive_resources_explicit_empty' );
+				}
 				delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
 				delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
 				delete_post_meta( $variation_id, '_wgdp_drive_resource_name' );
@@ -596,6 +609,7 @@ class WGDP_Product_Meta {
 			}
 		} elseif ( $resources_submitted ) {
 			update_post_meta( $variation_id, '_wgdp_drive_resources', wp_json_encode( array() ) );
+			update_post_meta( $variation_id, '_wgdp_drive_resources_explicit_empty', '1' );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_id' );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_type' );
 			delete_post_meta( $variation_id, '_wgdp_drive_resource_name' );
@@ -972,6 +986,10 @@ class WGDP_Product_Meta {
 	 * Check whether a variation defines its own resource set instead of inheriting.
 	 */
 	public static function variation_has_own_resources( $variation_id ) {
+		if ( '1' === get_post_meta( $variation_id, '_wgdp_drive_resources_explicit_empty', true ) ) {
+			return true;
+		}
+
 		$json = get_post_meta( $variation_id, '_wgdp_drive_resources', true );
 		if ( ! empty( $json ) ) {
 			$resources = json_decode( $json, true );
