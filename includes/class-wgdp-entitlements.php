@@ -1024,7 +1024,18 @@ class WGDP_Entitlements {
 			$quantity      = (int) $item->get_quantity();
 			$qty_refunded  = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
 			$effective_qty = max( 0, $quantity - $qty_refunded );
-			$already_has_slot = ! empty( $this->get_siblings( $order_item_id, $email ) );
+
+			// A 'revocation_error' sibling means the recipient's access is queued for
+			// teardown (the Drive delete failed and cron is retrying) — it must not be
+			// treated as a currently-held slot, or a fully-refunded recipient can be
+			// granted brand-new resources while their old grant is still stuck revoking.
+			$live_siblings = array_filter(
+				$this->get_siblings( $order_item_id, $email ),
+				function ( $sibling ) {
+					return 'revocation_error' !== $sibling['grant_status'];
+				}
+			);
+			$already_has_slot = ! empty( $live_siblings );
 
 			if ( $effective_qty <= 0 && ! $already_has_slot ) {
 				$this->restore_revoked_rows( $revoked_rows );
