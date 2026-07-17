@@ -1957,15 +1957,41 @@ class WGDP_Entitlements {
 			}
 
 			foreach ( $new_resources as $res ) {
-				// Skip if already exists (any status).
+				// A revoked row for this key (e.g. the resource was previously removed from
+				// the product and later re-added) is not a live grant — reactivate it instead
+				// of skipping, or the recipient is stuck without access forever since nothing
+				// else recreates a backfill row for an already-processed recipient.
 				$existing = $this->get_existing_entitlement( $last_item_id, $res['id'], $last_email );
-				if ( $existing ) {
+				if ( $existing && 'revoked' !== $existing['grant_status'] ) {
 					continue;
 				}
 
 				$is_verified         = (bool) $recipient['is_verified'];
 				$verification_status = $is_verified ? 'verified' : 'pending';
 				$grant_status        = $is_verified ? 'pending_release' : 'pending';
+
+				if ( $existing ) {
+					$updated = $this->update( (int) $existing['id'], array(
+						'account_id'              => $account_id,
+						'recipient_index'         => (int) $recipient['recipient_index'],
+						'verification_status'     => $verification_status,
+						'grant_status'            => $grant_status,
+						'provider_permission_id'  => null,
+						'granted_at'              => null,
+						'revoked_at'              => null,
+						'revocation_reason'       => null,
+						'revocation_error'        => null,
+						'revocation_retries'      => 0,
+						'grant_error'             => null,
+						'grant_retries'           => 0,
+						'claim_token_hash'        => null,
+						'claim_token_expires_at'  => gmdate( 'Y-m-d H:i:s', time() + ( WGDP_OTP::CLAIM_TOKEN_EXPIRY_HOURS * 3600 ) ),
+					) );
+					if ( false !== $updated ) {
+						$created++;
+					}
+					continue;
+				}
 
 				$new_id = $this->create( array(
 					'order_id'            => (int) $recipient['order_id'],
