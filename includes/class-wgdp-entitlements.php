@@ -1912,10 +1912,14 @@ class WGDP_Entitlements {
 		$values[] = $limit;
 
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		// has_active excludes 'revocation_error' as well as 'revoked': a row stuck
+		// retrying revocation (Drive delete failed) is queued for teardown, not a
+		// live grant, so it must not let backfill_new_resources() skip the quota
+		// check and hand a fully-refunded recipient brand-new resources.
 		$sql = "SELECT e.order_item_id, e.order_id, e.recipient_email, MIN(e.recipient_index) AS recipient_index, MAX(e.variation_id) AS recipient_variation_id, MAX(e.account_id) AS account_id,
 				MAX(CASE WHEN e.verification_status = 'verified' THEN 1 ELSE 0 END) AS is_verified,
 				MAX(CASE WHEN e.grant_status = 'granted' THEN 1 ELSE 0 END) AS has_granted,
-				MAX(CASE WHEN e.grant_status != 'revoked' THEN 1 ELSE 0 END) AS has_active
+				MAX(CASE WHEN e.grant_status NOT IN ('revoked', 'revocation_error') THEN 1 ELSE 0 END) AS has_active
 			FROM {$table} e
 			INNER JOIN {$orders_table} o ON o.{$order_id_col} = e.order_id
 			WHERE {$where}
