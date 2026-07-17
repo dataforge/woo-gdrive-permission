@@ -7,7 +7,6 @@ class WGDP_Self_Service {
 
 	const LINK_EXPIRY_DAYS = 30;
 	const TOKEN_META_KEY   = '_wgdp_self_service_tokens';
-	const MAX_ACTIVE_TOKENS = 10;
 
 	public static function instance() {
 		if ( null === self::$instance ) {
@@ -52,12 +51,18 @@ class WGDP_Self_Service {
 		if ( ! $page_id || ! is_page( $page_id ) ) {
 			return;
 		}
-			wp_add_inline_style( 'wp-block-library', '
-				body.page-id-' . $page_id . ' .entry-title,
-				body.page-id-' . $page_id . ' .wp-block-post-title { color: #fff !important; }
-				body.page-id-' . $page_id . ' .wgdp-provide-email-wrap { color: #f5f7fb; }
-				body.page-id-' . $page_id . ' .wgdp-provide-email-wrap input[type="email"] { background: #fff; color: #111827; }
-			' );
+
+		// Register our own handle rather than piggybacking on wp-block-library:
+		// that handle isn't enqueued on themes/pages that don't use Gutenberg
+		// blocks, which would silently drop this CSS.
+		wp_register_style( 'wgdp-self-service-inline', false, array(), WGDP_VERSION );
+		wp_enqueue_style( 'wgdp-self-service-inline' );
+		wp_add_inline_style( 'wgdp-self-service-inline', '
+			body.page-id-' . $page_id . ' .entry-title,
+			body.page-id-' . $page_id . ' .wp-block-post-title { color: #fff !important; }
+			body.page-id-' . $page_id . ' .wgdp-provide-email-wrap { color: #f5f7fb; }
+			body.page-id-' . $page_id . ' .wgdp-provide-email-wrap input[type="email"] { background: #fff; color: #111827; }
+		' );
 	}
 
 	/**
@@ -172,10 +177,6 @@ class WGDP_Self_Service {
 					'expires' => time() + self::LINK_EXPIRY_DAYS * DAY_IN_SECONDS,
 					'created' => time(),
 				);
-
-				if ( count( $records ) > self::MAX_ACTIVE_TOKENS ) {
-					$records = array_slice( $records, -self::MAX_ACTIVE_TOKENS );
-				}
 
 				$this->save_token_records( $fresh_order, $records );
 				return true;
