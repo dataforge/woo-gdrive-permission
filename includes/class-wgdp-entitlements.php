@@ -48,6 +48,7 @@ class WGDP_Entitlements {
 			'verification_status' => 'pending',
 			'grant_status'        => 'pending',
 			'origin'              => 'order',
+			'created_at'          => current_time( 'mysql', true ),
 		);
 
 		$data = wp_parse_args( $data, $defaults );
