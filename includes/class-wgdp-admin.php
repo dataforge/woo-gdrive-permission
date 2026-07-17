@@ -17,6 +17,7 @@ class WGDP_Admin {
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_notices', array( $this, 'maybe_show_setup_notice' ) );
 		add_action( 'admin_notices', array( $this, 'maybe_show_token_error_notice' ) );
+		add_action( 'admin_notices', array( $this, 'maybe_show_decrypt_failure_notice' ) );
 		add_action( 'admin_notices', array( $this, 'maybe_show_backfill_error_notice' ) );
 		add_action( 'wp_ajax_wgdp_dismiss_setup_notice', array( $this, 'dismiss_setup_notice' ) );
 
@@ -892,6 +893,30 @@ class WGDP_Admin {
 		echo 'Drive access grants will fail until you <a href="' . esc_url( $settings_url ) . '">disconnect and reconnect the account</a>.</p>';
 		echo '<p class="description">If this keeps happening, make sure your Google Cloud OAuth app is <strong>published</strong> (not in "Testing" mode) &mdash; ';
 		echo 'testing-mode refresh tokens expire after 7 days.</p>';
+		echo '</div>';
+	}
+
+	/**
+	 * Show an admin notice when the stored Google account data exists but
+	 * can't be decrypted (AUTH_KEY changed, or the option is corrupted).
+	 * Without this, every read path just sees an empty accounts array,
+	 * indistinguishable from "no account ever connected", so grants/revokes
+	 * fail silently forever with no indication of the real cause.
+	 */
+	public function maybe_show_decrypt_failure_notice() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			return;
+		}
+
+		if ( ! WGDP_Google_Auth::instance()->has_decrypt_failure() ) {
+			return;
+		}
+
+		$settings_url = admin_url( 'admin.php?page=wgdp&tab=settings' );
+		echo '<div class="notice notice-error">';
+		echo '<p><strong>Woo GDrive Permission:</strong> Stored Google account data could not be decrypted. ';
+		echo 'This usually happens when the site\'s AUTH_KEY secret changed (e.g. after a migration or restore) or the stored option was corrupted. ';
+		echo 'All Drive access grants and revokes will silently fail until you reconnect your Google account(s) on the <a href="' . esc_url( $settings_url ) . '">Settings tab</a>.</p>';
 		echo '</div>';
 	}
 

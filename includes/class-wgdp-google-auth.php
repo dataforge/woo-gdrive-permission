@@ -49,6 +49,19 @@ class WGDP_Google_Auth {
 	}
 
 	/**
+	 * Whether the stored wgdp_accounts option exists but could not be decrypted
+	 * (e.g. AUTH_KEY changed, corrupted option), as of the most recent read.
+	 * Every read path (has_accounts(), is_account_connected(), get_access_token(),
+	 * etc.) silently sees an empty accounts array in this state, which is
+	 * indistinguishable from "no account ever connected" — this flag lets
+	 * callers (admin notices) surface the real cause instead.
+	 */
+	public function has_decrypt_failure() {
+		$this->get_all_accounts();
+		return $this->decrypt_failed;
+	}
+
+	/**
 	 * Check if a specific account is connected.
 	 */
 	public function is_account_connected( $account_id ) {
@@ -144,17 +157,23 @@ class WGDP_Google_Auth {
 		$code = wp_remote_retrieve_response_code( $response );
 
 		if ( $code !== 200 || empty( $body['access_token'] ) ) {
-			// Before treating this as a real failure, check whether another process
-			// already rotated the refresh token (a concurrent refresh that won the
-			// race). In that case the token we submitted is stale-but-not-revoked,
-			// so don't flag the account and don't shadow the winner's update.
+			// Before treating this as a real failure, check whether a concurrent
+			// refresh already won the race. Check the cached access token first:
+			// a concurrent refresh caches its token (see below) before persisting
+			// the rotated refresh_token via with_accounts_lock(), so relying only
+			// on the refresh_token comparison below would miss a winner whose
+			// lock write simply hasn't landed yet.
+			$cached = get_transient( 'wgdp_access_token_' . $account_id );
+			if ( $cached ) {
+				return $cached;
+			}
+
+			// Also check whether the persisted refresh_token has already been
+			// rotated by a concurrent refresh. In that case the token we submitted
+			// is stale-but-not-revoked, so don't flag the account.
 			$current_accounts      = $this->get_all_accounts();
 			$current_refresh_token = $current_accounts[ $account_id ]['refresh_token'] ?? null;
 			if ( null !== $current_refresh_token && $current_refresh_token !== $account['refresh_token'] ) {
-				$cached = get_transient( 'wgdp_access_token_' . $account_id );
-				if ( $cached ) {
-					return $cached;
-				}
 				return new WP_Error( 'wgdp_refresh_race', 'Refresh token was rotated by a concurrent request; retry.' );
 			}
 
