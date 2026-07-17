@@ -584,9 +584,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					'product_name' => $product_name,
 					'order_id'     => $order_id,
 				);
-				if ( 'revoked' !== $status ) {
-					$query_args['hide_shadow_revoked'] = true;
-				}
+				$query_args['hide_shadow_revoked'] = true;
 				if ( empty( $status ) ) {
 					$query_args['exclude_grant_status'] = 'revoked';
 				}
