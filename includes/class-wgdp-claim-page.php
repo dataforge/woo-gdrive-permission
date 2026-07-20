@@ -603,6 +603,12 @@ class WGDP_Claim_Page {
 
 		$tokens = $ent->issue_otp_for_recipient_group( $entitlement['id'] );
 		if ( is_wp_error( $tokens ) ) {
+			// No email was sent. Refund the token unless this was a genuine
+			// business-logic rejection (already verified/revoked), matching the
+			// policy applied to the failure paths below.
+			if ( ! in_array( $tokens->get_error_code(), array( 'wgdp_entitlement_revoked', 'wgdp_entitlement_verified' ), true ) ) {
+				$this->release_rate_limit( $rate_key );
+			}
 			$this->post_result = $this->wrap_content( $this->form_content(
 				$token,
 				$tokens->get_error_message(),
