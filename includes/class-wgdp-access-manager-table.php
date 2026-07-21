@@ -560,7 +560,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		$product_name = isset( $_GET['am_product_name'] ) ? sanitize_text_field( wp_unslash( $_GET['am_product_name'] ) ) : '';
 		$order_id     = isset( $_GET['am_order'] ) ? absint( $_GET['am_order'] ) : 0;
 		$search       = isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '';
-		$orderby      = isset( $_GET['orderby'] ) ? sanitize_text_field( wp_unslash( $_GET['orderby'] ) ) : 'id';
+		$orderby      = isset( $_GET['orderby'] ) ? sanitize_text_field( wp_unslash( $_GET['orderby'] ) ) : 'created_at';
 		$order        = isset( $_GET['order'] ) ? sanitize_text_field( wp_unslash( $_GET['order'] ) ) : 'DESC';
 
 		$ent = WGDP_Entitlements::instance();
