@@ -4,23 +4,6 @@ defined( 'ABSPATH' ) || exit;
 class WGDP_Notification_Email {
 
 	/**
-	 * Send a recovery link when checkout did not collect a Google recipient.
-	 */
-	public static function send_provide_email_link( $email, $order, $url ) {
-		$order_id  = $order->get_id();
-		$site_name = get_bloginfo( 'name' );
-		$subject   = sprintf( 'Provide your Google email for order #%d', $order_id );
-
-		$content = '<h2 style="color:#333;margin:0 0 16px;">Provide Your Google Email</h2>'
-			. '<p style="color:#555;font-size:15px;line-height:1.6;">Your order includes digital content that needs a Google account email before access can be granted.</p>'
-			. '<p style="color:#555;font-size:15px;line-height:1.6;">Order: <strong>#' . esc_html( $order_id ) . '</strong></p>'
-			. '<p style="margin:24px 0;"><a href="' . esc_url( $url ) . '" style="display:inline-block;background:#7f54b3;color:#fff;text-decoration:none;padding:12px 24px;border-radius:4px;font-weight:600;">Provide Google Email</a></p>'
-			. '<p style="color:#888;font-size:13px;line-height:1.6;">Or copy this link into your browser:<br>' . esc_html( $url ) . '</p>';
-
-		return self::send( $email, $subject, self::get_html_wrapper( $content, $site_name ) );
-	}
-
-	/**
 	 * Send OTP verification email to a recipient.
 	 */
 	public static function send_otp( $email, $otp, $claim_token, $order, $item ) {
