@@ -1235,6 +1235,7 @@ class WGDP_Entitlements {
 				'table'            => $wpdb->prefix . 'wc_orders',
 				'id_column'        => 'id',
 				'status_col'       => 'status',
+				'created_at_expr'  => 'COALESCE(o.date_created_gmt, o.date_created)',
 				'billing_email_expr' => 'o.billing_email',
 				'billing_email_join' => '',
 			);
@@ -1244,6 +1245,7 @@ class WGDP_Entitlements {
 			'table'            => $wpdb->posts,
 			'id_column'        => 'ID',
 			'status_col'       => 'post_status',
+			'created_at_expr'  => "COALESCE(NULLIF(o.post_date_gmt, '0000-00-00 00:00:00'), o.post_date)",
 			'billing_email_expr' => 'billing_email_meta.meta_value',
 			'billing_email_join' => "LEFT JOIN {$wpdb->postmeta} billing_email_meta ON billing_email_meta.post_id = oi.order_id AND billing_email_meta.meta_key = '_billing_email'",
 		);
@@ -1273,6 +1275,7 @@ class WGDP_Entitlements {
 		$orders_table       = $order_storage['table'];
 		$order_id_col       = $order_storage['id_column'];
 		$order_status_col   = $order_storage['status_col'];
+		$order_created_at_expr = $order_storage['created_at_expr'];
 		$billing_email_expr = $order_storage['billing_email_expr'];
 		$billing_email_join = $order_storage['billing_email_join'];
 
@@ -1322,7 +1325,7 @@ class WGDP_Entitlements {
 
 		// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$base_sql = "
-			SELECT oi.order_item_id, oi.order_id,
+			SELECT oi.order_item_id, oi.order_id, {$order_created_at_expr} AS created_at,
 				CAST(prod_meta.meta_value AS UNSIGNED) AS product_id,
 				COALESCE(CAST(var_meta.meta_value AS UNSIGNED), 0) AS variation_id,
 				GREATEST(0, CAST(qty_meta.meta_value AS UNSIGNED) - COALESCE(refund_totals.refunded_qty, 0)) AS qty,
@@ -1387,10 +1390,11 @@ class WGDP_Entitlements {
 			$variation_id = (int) $row['variation_id'];
 
 			$resources  = WGDP_Product_Meta::get_drive_resources( $product_id, $variation_id ?: 0 );
+			$active_resources = WGDP_Product_Meta::get_active_drive_resources( $product_id, $variation_id ?: 0 );
 			$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
 
 			$row['resources']        = $resources;
-			$row['cloud_asset_id']   = ! empty( $resources ) ? $resources[0]['id'] : '';
+			$row['cloud_asset_id']   = ! empty( $active_resources ) ? $active_resources[0]['id'] : ( $resources[0]['id'] ?? '' );
 			$row['account_id']       = $account_id;
 			$row['unassigned_count'] = (int) $row['qty'] - (int) $row['assigned_count'];
 

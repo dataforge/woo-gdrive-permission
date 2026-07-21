@@ -47,6 +47,11 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 	 */
 	private $billing_email_cache = array();
 
+	/**
+	 * Cached order creation timestamps keyed by order ID, for synthetic rows.
+	 */
+	private $order_created_at_cache = array();
+
 	public function __construct( $display_mode = 'entitlements' ) {
 		$this->display_mode = $display_mode;
 		parent::__construct( array(
@@ -142,10 +147,11 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 	 * Date column.
 	 */
 	public function column_created_at( $item ) {
-		if ( ! empty( $item['_unassigned'] ) ) {
+		$created_at = (string) ( $item['created_at'] ?? '' );
+		if ( '' === $created_at ) {
 			return '<span style="color:#999;">—</span>';
 		}
-		return esc_html( date_i18n( 'Y-m-d H:i', strtotime( $item['created_at'] ) ) );
+		return esc_html( date_i18n( 'Y-m-d H:i', strtotime( $created_at ) ) );
 	}
 
 	/**
@@ -625,9 +631,6 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			$this->get_sortable_columns(),
 		);
 
-		// Resolve Drive names for all items.
-		$this->resolve_all_drive_names();
-
 		// Pre-populate seat and file caches and inject unassigned seat rows.
 		if ( 'entitlements' === $this->display_mode ) {
 			$this->preload_seat_and_file_data();
@@ -665,6 +668,10 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 				}
 			}
 		}
+
+		// Synthetic unassigned rows carry the live product asset too, so resolve
+		// names only after they have been merged into the result set.
+		$this->resolve_all_drive_names();
 	}
 
 	/**
@@ -759,6 +766,9 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			$qty          = $this->item_qty_cache[ $oi_id ] ?? 1;
 			$taken        = isset( $this->seat_position_cache[ $oi_id ] ) ? array_values( $this->seat_position_cache[ $oi_id ] ) : array();
 			$active_seats = count( $taken );
+			$prod_key     = (int) $template['product_id'] . '|' . (int) ( $template['variation_id'] ?? 0 );
+			$asset_ids    = $this->active_asset_ids_cache[ $prod_key ] ?? array();
+			$asset_id     = $asset_ids[0] ?? ( $template['cloud_asset_id'] ?? '' );
 
 			if ( $active_seats >= $qty ) {
 				continue;
@@ -783,12 +793,12 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					'order_item_id'       => $oi_id,
 					'product_id'          => $template['product_id'],
 					'variation_id'        => $template['variation_id'] ?? 0,
-					'cloud_asset_id'      => '',
+					'cloud_asset_id'      => $asset_id,
 					'recipient_email'     => '__unassigned_' . $filled,
 					'recipient_index'     => $seat_num,
 					'verification_status' => '',
 					'grant_status'        => 'unassigned',
-					'created_at'          => '',
+					'created_at'          => $this->get_order_created_at( $template['order_id'] ),
 					'grant_error'         => '',
 					'provider_permission_id' => '',
 					'account_id'          => '',
@@ -842,7 +852,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 					'order_item_id'       => $ua['order_item_id'],
 					'product_id'          => $ua['product_id'],
 					'variation_id'        => $ua['variation_id'] ?? 0,
-					'cloud_asset_id'      => '',
+					'cloud_asset_id'      => $ua['cloud_asset_id'] ?? '',
 					'recipient_email'     => '__unassigned_' . ( $seat_num - 1 ),
 					'recipient_index'     => $seat_num,
 					'verification_status' => '',
@@ -854,6 +864,24 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 				);
 			}
 		}
+	}
+
+	/**
+	 * Return an order's creation time in the same UTC MySQL format used by
+	 * entitlement rows. Synthetic rows represent an order seat, so displaying
+	 * the entitlement creation time would be misleading.
+	 */
+	private function get_order_created_at( $order_id ) {
+		$order_id = (int) $order_id;
+		if ( array_key_exists( $order_id, $this->order_created_at_cache ) ) {
+			return $this->order_created_at_cache[ $order_id ];
+		}
+
+		$order = wc_get_order( $order_id );
+		$date  = $order ? $order->get_date_created() : null;
+		$this->order_created_at_cache[ $order_id ] = $date ? gmdate( 'Y-m-d H:i:s', $date->getTimestamp() ) : '';
+
+		return $this->order_created_at_cache[ $order_id ];
 	}
 
 	/**

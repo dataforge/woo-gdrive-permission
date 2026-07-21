@@ -17,6 +17,11 @@ class WGDP_Self_Service {
 
 	private function __construct() {
 		add_action( 'woocommerce_email_after_order_table', array( $this, 'render_email_link' ), 20, 4 );
+		// WooCommerce emails normally render the link above. These hooks provide a
+		// durable fallback when a gateway or email customization suppresses that
+		// rendering path, which would otherwise strand an unassigned purchase.
+		add_action( 'woocommerce_order_status_processing', array( $this, 'maybe_send_missing_recipient_link' ), 100 );
+		add_action( 'woocommerce_order_status_completed', array( $this, 'maybe_send_missing_recipient_link' ), 100 );
 		add_action( 'init', array( $this, 'maybe_create_page' ) );
 		add_action( 'template_redirect', array( $this, 'send_security_headers' ) );
 		add_filter( 'the_content', array( $this, 'filter_page_content' ) );
@@ -456,6 +461,7 @@ class WGDP_Self_Service {
 		}
 
 		$url = $this->build_self_service_url( $order );
+		$this->mark_initial_link_sent( $order );
 
 		// Determine release mode messaging.
 		$has_min_sales = false;
@@ -495,6 +501,48 @@ class WGDP_Self_Service {
 			echo '<p style="margin:0 0 12px;">Your order includes digital content that requires a Google account email to receive access.</p>';
 		}
 		echo '<p style="margin:0 0 18px;"><a href="' . esc_url( $url ) . '" style="display:inline-block;background:#7f54b3;color:#fff;text-decoration:none;padding:10px 24px;border-radius:4px;font-weight:600;">Provide Google Email</a></p>';
+	}
+
+	/**
+	 * Deliver a standalone recovery email when the normal WooCommerce customer
+	 * email did not render the self-service link.
+	 */
+	public function maybe_send_missing_recipient_link( $order_id ) {
+		$order = wc_get_order( $order_id );
+		if ( ! $order || $order->get_meta( '_wgdp_initial_self_service_link_sent_at' ) ) {
+			return;
+		}
+
+		if ( empty( $this->get_unassigned_items( $order ) ) ) {
+			return;
+		}
+
+		$email = sanitize_email( $order->get_billing_email() );
+		if ( ! is_email( $email ) ) {
+			return;
+		}
+
+		$url    = $this->build_self_service_url( $order );
+		$result = WGDP_Notification_Email::send_provide_email_link( $email, $order, $url );
+		if ( is_wp_error( $result ) ) {
+			$order->add_order_note( 'WGDP: Could not send the Google-email recovery link — ' . $result->get_error_message() );
+			return;
+		}
+
+		$this->mark_initial_link_sent( $order );
+		$order->add_order_note( 'WGDP: Sent Google-email recovery link to the billing email.' );
+	}
+
+	/**
+	 * Mark the initial recovery link as delivered/rendered so the status-hook
+	 * fallback never duplicates a normal WooCommerce customer email.
+	 */
+	private function mark_initial_link_sent( $order ) {
+		if ( $order->get_meta( '_wgdp_initial_self_service_link_sent_at' ) ) {
+			return;
+		}
+		$order->update_meta_data( '_wgdp_initial_self_service_link_sent_at', time() );
+		$order->save_meta_data();
 	}
 
 	/**
