@@ -22,6 +22,7 @@ class WGDP_Self_Service {
 		// rendering path, which would otherwise strand an unassigned purchase.
 		add_action( 'woocommerce_order_status_processing', array( $this, 'maybe_send_missing_recipient_link' ), 100 );
 		add_action( 'woocommerce_order_status_completed', array( $this, 'maybe_send_missing_recipient_link' ), 100 );
+		add_action( 'woocommerce_after_resend_order_email', array( $this, 'maybe_send_missing_recipient_link_after_resend' ), 10, 2 );
 		add_action( 'init', array( $this, 'maybe_create_page' ) );
 		add_action( 'template_redirect', array( $this, 'send_security_headers' ) );
 		add_filter( 'the_content', array( $this, 'filter_page_content' ) );
@@ -531,6 +532,20 @@ class WGDP_Self_Service {
 
 		$this->mark_initial_link_sent( $order );
 		$order->add_order_note( 'WGDP: Sent Google-email recovery link to the billing email.' );
+	}
+
+	/**
+	 * WooCommerce's manual "Send order details to customer" action can use an
+	 * email-editor template that does not render woocommerce_email_after_order_table.
+	 * Send the recovery email after that action if the normal template did not
+	 * already mark a link as rendered.
+	 */
+	public function maybe_send_missing_recipient_link_after_resend( $order, $email_id ) {
+		if ( ! $order instanceof WC_Order || ! in_array( $email_id, array( 'customer_invoice', 'customer_processing_order', 'customer_completed_order' ), true ) ) {
+			return;
+		}
+
+		$this->maybe_send_missing_recipient_link( $order->get_id() );
 	}
 
 	/**
