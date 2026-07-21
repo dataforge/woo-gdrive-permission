@@ -16,7 +16,6 @@ class WGDP_Self_Service {
 	}
 
 	private function __construct() {
-		add_action( 'woocommerce_email_after_order_table', array( $this, 'render_email_link' ), 20, 4 );
 		add_filter( 'woocommerce_email_additional_content_customer_invoice', array( $this, 'append_recovery_link_to_email_content' ), 10, 3 );
 		add_filter( 'woocommerce_email_additional_content_customer_processing_order', array( $this, 'append_recovery_link_to_email_content' ), 10, 3 );
 		add_filter( 'woocommerce_email_additional_content_customer_completed_order', array( $this, 'append_recovery_link_to_email_content' ), 10, 3 );
@@ -436,39 +435,13 @@ class WGDP_Self_Service {
 	}
 
 	/**
-	 * Render a link in order emails for customers to provide their Google email.
+	 * Build the customer-facing sentence explaining why we need a Google email,
+	 * based on the release mode of the unassigned items.
 	 *
-	 * @param WC_Order    $order         The order object.
-	 * @param bool        $sent_to_admin Whether the email is sent to an admin.
-	 * @param bool        $plain_text    Whether the email is plain text.
-	 * @param WC_Email    $email         The email object.
+	 * @param array $unassigned Unassigned item rows from get_unassigned_items().
+	 * @return string Plain sentence, no markup.
 	 */
-	public function render_email_link( $order, $sent_to_admin, $plain_text, $email ) {
-		if ( $sent_to_admin ) {
-			return;
-		}
-
-		$allowed_emails = array( 'customer_processing_order', 'customer_completed_order', 'customer_invoice' );
-		if ( ! in_array( $email->id, $allowed_emails, true ) ) {
-			return;
-		}
-
-		// WooCommerce's email editor does not always render this template action.
-		// The additional-content filter below is supported by both template paths,
-		// and keeps the recovery link inside the same customer email.
-		return;
-
-		// Kept below for reference while migrating older template integrations.
-
-		$unassigned = $this->get_unassigned_items( $order );
-		if ( empty( $unassigned ) ) {
-			return;
-		}
-
-		$url = $this->build_self_service_url( $order );
-		$this->mark_initial_link_sent( $order );
-
-		// Determine release mode messaging.
+	private function get_recovery_intro_text( $unassigned ) {
 		$has_min_sales = false;
 		$has_manual    = false;
 		foreach ( $unassigned as $ua ) {
@@ -480,64 +453,49 @@ class WGDP_Self_Service {
 			}
 		}
 
-		if ( $plain_text ) {
-			echo "\n\n";
-			echo "------------------------------------------------------------\n";
-			echo "PROVIDE YOUR GOOGLE EMAIL FOR DIGITAL ACCESS\n";
-			echo "------------------------------------------------------------\n\n";
-			if ( $has_min_sales ) {
-				echo "Your order includes digital content. Access will be granted once the product reaches its minimum sales goal.\n";
-			} elseif ( $has_manual ) {
-				echo "Your order includes digital content. Access will be granted once it becomes available.\n";
-			} else {
-				echo "Your order includes digital content that requires a Google account email to receive access.\n";
-			}
-			echo "Click the link below to provide your Google email:\n\n";
-			echo esc_url( $url ) . "\n\n";
-			return;
-		}
-
-		echo '<h2 style="color:#7f54b3;margin:18px 0 12px;">Provide Your Google Email for Digital Access</h2>';
 		if ( $has_min_sales ) {
-			echo '<p style="margin:0 0 12px;">If you would like digital access, provide your Google account email below. Access will be granted once the product reaches its minimum sales goal.</p>';
-		} elseif ( $has_manual ) {
-			echo '<p style="margin:0 0 12px;">If you would like digital access, provide your Google account email below. Access will be granted once it becomes available.</p>';
-		} else {
-			echo '<p style="margin:0 0 12px;">Your order includes digital content that requires a Google account email to receive access.</p>';
+			return 'Your order includes digital content. Provide your Google account email below; access will be granted once the product reaches its minimum sales goal.';
 		}
-		echo '<p style="margin:0 0 18px;"><a href="' . esc_url( $url ) . '" style="display:inline-block;background:#7f54b3;color:#fff;text-decoration:none;padding:10px 24px;border-radius:4px;font-weight:600;">Provide Google Email</a></p>';
+		if ( $has_manual ) {
+			return 'Your order includes digital content. Provide your Google account email below; access will be granted once it becomes available.';
+		}
+		return 'Your order includes digital content that requires a Google account email to receive access.';
 	}
 
 	/**
 	 * Append the recovery link to WooCommerce's existing customer email.
-	 * No separate message is sent.
+	 *
+	 * This runs on woocommerce_email_additional_content_{$email->id}, which is
+	 * rendered by both the HTML and plain-text templates (and by the block-based
+	 * email editor), unlike woocommerce_email_after_order_table. No separate
+	 * message is ever sent.
+	 *
+	 * @param string   $content Existing additional content.
+	 * @param WC_Order $order   Order the email is about.
+	 * @param WC_Email $email   Email being rendered.
+	 * @return string
 	 */
 	public function append_recovery_link_to_email_content( $content, $order, $email ) {
-		if ( ! $order instanceof WC_Order || empty( $this->get_unassigned_items( $order ) ) ) {
+		if ( ! $order instanceof WC_Order ) {
 			return $content;
 		}
 
-		$url = $this->build_self_service_url( $order );
-		$this->mark_initial_link_sent( $order );
-
-		if ( method_exists( $email, 'get_email_type' ) && 'plain' === $email->get_email_type() ) {
-			return trim( $content ) . "\n\nProvide your Google email for digital access:\n" . esc_url_raw( $url );
+		$unassigned = $this->get_unassigned_items( $order );
+		if ( empty( $unassigned ) ) {
+			return $content;
 		}
 
+		$url   = $this->build_self_service_url( $order );
+		$intro = $this->get_recovery_intro_text( $unassigned );
+
+		// The plain-text templates render this same string through
+		// wp_strip_all_tags(), so the URL is emitted as visible text rather than
+		// relying only on the anchor href — otherwise the plain-text variant
+		// would strip the link away entirely.
 		return $content
-			. '<p style="margin:24px 0 0;color:#555;font-size:15px;line-height:1.6;">Your order includes digital content that needs a Google account email before access can be granted.</p>'
-			. '<p style="margin:12px 0 0;"><a href="' . esc_url( $url ) . '" style="display:inline-block;background:#7f54b3;color:#fff;text-decoration:none;padding:10px 24px;border-radius:4px;font-weight:600;">Provide Google Email</a></p>';
-	}
-
-	/**
-	 * Record that the recovery link was rendered inside a customer email.
-	 */
-	private function mark_initial_link_sent( $order ) {
-		if ( $order->get_meta( '_wgdp_initial_self_service_link_sent_at' ) ) {
-			return;
-		}
-		$order->update_meta_data( '_wgdp_initial_self_service_link_sent_at', time() );
-		$order->save_meta_data();
+			. '<p style="margin:24px 0 0;color:#555;font-size:15px;line-height:1.6;">' . esc_html( $intro ) . '</p>'
+			. '<p style="margin:12px 0 0;"><a href="' . esc_url( $url ) . '" style="display:inline-block;background:#7f54b3;color:#fff;text-decoration:none;padding:10px 24px;border-radius:4px;font-weight:600;">Provide Google Email</a></p>'
+			. '<p style="margin:12px 0 0;color:#888;font-size:13px;line-height:1.6;">Provide your Google email for digital access: ' . esc_html( $url ) . '</p>';
 	}
 
 	/**

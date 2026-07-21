@@ -1235,7 +1235,10 @@ class WGDP_Entitlements {
 				'table'            => $wpdb->prefix . 'wc_orders',
 				'id_column'        => 'id',
 				'status_col'       => 'status',
-				'created_at_expr'  => 'COALESCE(o.date_created_gmt, o.date_created)',
+				// The HPOS orders table has date_created_gmt only — there is no
+				// date_created column, and referencing it makes the whole query
+				// fail (silently returning zero unassigned rows).
+				'created_at_expr'  => 'o.date_created_gmt',
 				'billing_email_expr' => 'o.billing_email',
 				'billing_email_join' => '',
 			);
