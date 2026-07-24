@@ -148,7 +148,10 @@ class WGDP_Updater {
             return $result;
         }
 
-        $remote_version = (string) preg_replace( '/^v/', '', (string) $release->tag_name );
+        $remote_version = self::normalize_version( $release->tag_name );
+        if ( '' === $remote_version ) {
+            return $result;
+        }
 
         $info                = new stdClass();
         $info->name          = 'Woo GDrive Permission';
@@ -207,7 +210,7 @@ class WGDP_Updater {
     }
 
     private static function fetch_latest_release() {
-        $force = ! empty( $_GET['force-check'] ) || ( defined( 'DOING_CRON' ) && DOING_CRON ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $force = ! empty( $_GET['force-check'] ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         if ( ! $force ) {
             $cached = get_transient( self::CACHE_KEY );
             if ( false !== $cached ) {

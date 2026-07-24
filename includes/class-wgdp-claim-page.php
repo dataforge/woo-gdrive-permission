@@ -29,10 +29,12 @@ class WGDP_Claim_Page {
 			return;
 		}
 
+		// The wrapper below carries its own dark background (see wrap_content()), so its
+		// light text stays readable regardless of the surrounding theme's colors. We
+		// deliberately don't touch .entry-title/.wp-block-post-title here — those render
+		// on the theme's own background and already use whatever color the theme chose
+		// for readability there.
 		wp_add_inline_style( 'wp-block-library', '
-			body.page-id-' . $page_id . ' .entry-title,
-			body.page-id-' . $page_id . ' .wp-block-post-title { color: #fff !important; }
-			body.page-id-' . $page_id . ' .wgdp-claim-wrap { color: #f5f7fb; }
 			body.page-id-' . $page_id . ' .wgdp-claim-wrap input[name="otp"] { background: #fff; color: #111827; }
 		' );
 	}
@@ -836,7 +838,11 @@ class WGDP_Claim_Page {
 	 * Wrap content in a styled container.
 	 */
 	private function wrap_content( $content ) {
-		return '<div class="wgdp-claim-wrap" style="max-width:480px;margin:0 auto;padding:32px 0;color:#f5f7fb;">' . $content . '</div>';
+		// The card carries its own dark background so the light text inside it stays
+		// readable no matter what background color the surrounding theme uses — the
+		// previous version set only text color and assumed a dark page background,
+		// which rendered white-on-white on light themes.
+		return '<div class="wgdp-claim-wrap" style="max-width:480px;margin:0 auto;padding:32px 24px;background:#1f2937;border-radius:8px;color:#f5f7fb;">' . $content . '</div>';
 	}
 
 	/**

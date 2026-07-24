@@ -280,13 +280,12 @@ class WGDP_Release_Gate {
 	 */
 	public static function recalculate_sales_counter( $product_id ) {
 		self::with_paid_qty_lock( $product_id, function () use ( $product_id ) {
-			$total  = 0;
-			$orders = self::get_orders_with_counted_items();
+			$total = 0;
 
-			foreach ( $orders as $order ) {
+			self::each_order_with_counted_items( function ( $order ) use ( $product_id, &$total ) {
 				$counted_ids = self::get_counted_item_ids( $order );
 				if ( empty( $counted_ids ) ) {
-					continue;
+					return;
 				}
 				foreach ( $order->get_items() as $item ) {
 					if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
@@ -310,7 +309,7 @@ class WGDP_Release_Gate {
 					$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
 					$total       += max( 0, $qty_ordered - $qty_refunded );
 				}
-			}
+			} );
 
 			update_post_meta( $product_id, '_wgdp_paid_qty_total', max( 0, $total ) );
 		} );
@@ -401,13 +400,12 @@ class WGDP_Release_Gate {
 		}
 
 		self::with_variation_paid_qty_lock( $variation_id, function () use ( $product_id, $variation_id ) {
-			$total  = 0;
-			$orders = self::get_orders_with_counted_items();
+			$total = 0;
 
-			foreach ( $orders as $order ) {
+			self::each_order_with_counted_items( function ( $order ) use ( $product_id, $variation_id, &$total ) {
 				$counted_ids = self::get_counted_item_ids( $order );
 				if ( empty( $counted_ids ) ) {
-					continue;
+					return;
 				}
 				foreach ( $order->get_items() as $item ) {
 					if ( ! in_array( (int) $item->get_id(), $counted_ids, true ) ) {
@@ -427,7 +425,7 @@ class WGDP_Release_Gate {
 					$qty_refunded = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
 					$total       += max( 0, $qty_ordered - $qty_refunded );
 				}
-			}
+			} );
 
 			update_post_meta( $variation_id, '_wgdp_variation_paid_qty_total', max( 0, $total ) );
 		} );
@@ -436,25 +434,49 @@ class WGDP_Release_Gate {
 	}
 
 	/**
-	 * Fetch paid orders that have WGDP per-item sales counter markers.
+	 * Walk paid orders that have WGDP per-item sales counter markers, in batches.
 	 *
 	 * Using WooCommerce's order API keeps recalculation compatible with both HPOS
-	 * and legacy post-backed order storage.
+	 * and legacy post-backed order storage. Orders are paged rather than loaded
+	 * with limit => -1 so a store with tens of thousands of counted orders never
+	 * holds them all as hydrated WC_Order objects at once.
 	 *
-	 * @return WC_Order[]
+	 * @param callable $callback Invoked once per WC_Order.
 	 */
-	private static function get_orders_with_counted_items() {
-		return wc_get_orders( array(
-			'status'     => array( 'processing', 'completed' ),
-			'limit'      => -1,
-			'return'     => 'objects',
-			'meta_query' => array(
-				array(
-					'key'     => '_wgdp_qty_counted_items',
-					'compare' => 'EXISTS',
+	private static function each_order_with_counted_items( $callback ) {
+		$batch_size = 200;
+		$max_pages  = 500;
+		$paged      = 1;
+
+		do {
+			$orders = wc_get_orders( array(
+				'status'     => array( 'processing', 'completed' ),
+				'limit'      => $batch_size,
+				'paged'      => $paged,
+				'orderby'    => 'ID',
+				'order'      => 'ASC',
+				'return'     => 'objects',
+				'meta_query' => array(
+					array(
+						'key'     => '_wgdp_qty_counted_items',
+						'compare' => 'EXISTS',
+					),
 				),
-			),
-		) );
+			) );
+
+			foreach ( $orders as $order ) {
+				$callback( $order );
+			}
+
+			$paged++;
+
+			// Backstop: if the datastore ever silently ignores paged/orderby (e.g. an
+			// HPOS/legacy-storage mismatch), every iteration would return the same
+			// batch forever. Bail out rather than spinning until the PHP time limit.
+			if ( $paged > $max_pages ) {
+				break;
+			}
+		} while ( count( $orders ) === $batch_size );
 	}
 
 	/**

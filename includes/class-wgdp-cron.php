@@ -16,6 +16,23 @@ class WGDP_Cron {
 		add_action( 'wgdp_retry_failed_grants', array( $this, 'retry_failed_grants' ) );
 		add_action( 'wgdp_expire_stale_entitlements', array( $this, 'expire_stale_entitlements' ) );
 		add_action( 'wgdp_process_backfill', array( $this, 'process_backfill' ) );
+		add_action( 'wgdp_recalculate_sales_counters', array( $this, 'recalculate_sales_counters' ), 10, 2 );
+	}
+
+	/**
+	 * Background job: recalculate the product- and variation-level sales
+	 * counters. Queued (rather than run inline) because it scans the full
+	 * order history for the product, which is too slow for a synchronous
+	 * AJAX request.
+	 *
+	 * @param int $product_id   Product ID.
+	 * @param int $variation_id Variation ID.
+	 */
+	public function recalculate_sales_counters( $product_id, $variation_id ) {
+		WGDP_Release_Gate::recalculate_sales_counter( $product_id );
+		if ( $variation_id ) {
+			WGDP_Release_Gate::recalculate_variation_sales_counter( $product_id, $variation_id );
+		}
 	}
 
 	/**
@@ -482,6 +499,7 @@ class WGDP_Cron {
 		wp_clear_scheduled_hook( 'wgdp_expire_stale_entitlements' );
 		// Also clear any pending single-event backfill jobs so they don't fire after deactivation.
 		wp_clear_scheduled_hook( 'wgdp_process_backfill' );
+		wp_clear_scheduled_hook( 'wgdp_recalculate_sales_counters' );
 	}
 
 }

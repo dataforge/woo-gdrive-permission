@@ -186,6 +186,53 @@ class WGDP_DB {
 	}
 
 	/**
+	 * Delete the cached refund total for an order item.
+	 *
+	 * Called when the order item itself is deleted so the table doesn't grow
+	 * monotonically and a later order-item-id reuse (restored/re-imported DB)
+	 * can't inherit a stale refunded_qty.
+	 *
+	 * @param int $order_item_id Order item id.
+	 */
+	public static function delete_refund_total( $order_item_id ) {
+		global $wpdb;
+
+		$refund_totals_table = self::get_refund_totals_table_name();
+
+		$wpdb->delete( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$refund_totals_table,
+			array( 'order_item_id' => absint( $order_item_id ) ),
+			array( '%d' )
+		);
+	}
+
+	/**
+	 * Delete cached refund totals for a set of order items in one query.
+	 *
+	 * Used when a whole order is deleted — WooCommerce bulk-deletes its order
+	 * items without firing a per-item hook, so this covers the rows the
+	 * per-item delete_refund_total() path would otherwise miss.
+	 *
+	 * @param int[] $order_item_ids Order item ids.
+	 */
+	public static function delete_refund_totals_for_order_items( array $order_item_ids ) {
+		global $wpdb;
+
+		$order_item_ids = array_filter( array_map( 'absint', $order_item_ids ) );
+		if ( empty( $order_item_ids ) ) {
+			return;
+		}
+
+		$refund_totals_table = self::get_refund_totals_table_name();
+		$placeholders        = implode( ',', array_fill( 0, count( $order_item_ids ), '%d' ) );
+
+		$wpdb->query( $wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
+			"DELETE FROM {$refund_totals_table} WHERE order_item_id IN ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$order_item_ids
+		) );
+	}
+
+	/**
 	 * Check if a DB upgrade is needed and run it.
 	 */
 	public static function maybe_upgrade() {

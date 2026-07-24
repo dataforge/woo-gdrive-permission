@@ -665,10 +665,12 @@ class WGDP_Product_Meta {
 
 				// The product-level and variation-level sales counters partition
 				// sales based on this flag; flipping it makes both stored counters
-				// stale until recalculated, so recompute both from order data now
-				// rather than requiring the admin to click "Recalculate" manually.
-				WGDP_Release_Gate::recalculate_sales_counter( $product_id );
-				WGDP_Release_Gate::recalculate_variation_sales_counter( $product_id, $variation_id );
+				// stale until recalculated. Recomputing scans the product's full
+				// order history, which is too slow to run inline inside this
+				// AJAX request, so queue it as a background job instead.
+				if ( ! wp_next_scheduled( 'wgdp_recalculate_sales_counters', array( $product_id, $variation_id ) ) ) {
+					wp_schedule_single_event( time() + 5, 'wgdp_recalculate_sales_counters', array( $product_id, $variation_id ) );
+				}
 			} else {
 				update_post_meta( $variation_id, '_wgdp_counts_toward_product_threshold', $new_val );
 			}

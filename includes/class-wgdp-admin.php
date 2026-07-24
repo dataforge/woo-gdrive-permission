@@ -66,10 +66,12 @@ class WGDP_Admin {
 		);
 
 		// Handle settings save before rendering.
-		if ( 'settings' === $current_tab && 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['wgdp_save_settings_nonce'] ) ) {
+		if ( 'settings' === $current_tab && isset( $_SERVER['REQUEST_METHOD'] ) && 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['wgdp_save_settings_nonce'] ) ) {
 			if ( wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['wgdp_save_settings_nonce'] ) ), 'wgdp_save_settings' ) && self::current_user_can_manage_settings() ) {
 				$this->save_settings();
 				echo '<div class="notice notice-success"><p>Settings saved.</p></div>';
+			} else {
+				echo '<div class="notice notice-error"><p>Settings were not saved: your session expired. Please try again.</p></div>';
 			}
 		}
 
@@ -199,7 +201,7 @@ class WGDP_Admin {
 					if ( is_wp_error( $result ) ) {
 						$ent->mark_error( $id, $result->get_error_message() );
 						$errors++;
-					} else {
+					} elseif ( null !== $result ) {
 						$count++;
 						WGDP_Order_Handler::instance()->maybe_auto_complete_order( $row['order_id'] );
 					}
@@ -1054,7 +1056,9 @@ class WGDP_Admin {
 
 			$file = $drive->get_file( $asset_id, $account_id );
 			if ( is_wp_error( $file ) ) {
-				$results[ $asset_id ] = array( 'name' => substr( $asset_id, 0, 12 ) . '...', 'webViewLink' => '' );
+				$info = array( 'name' => substr( $asset_id, 0, 12 ) . '...', 'webViewLink' => '' );
+				$results[ $asset_id ] = $info;
+				set_transient( 'wgdp_drive_name_' . $asset_id, $info, 3 * MINUTE_IN_SECONDS );
 			} else {
 				$info = array(
 					'name'        => $file['name'] ?? substr( $asset_id, 0, 12 ) . '...',
@@ -1404,7 +1408,7 @@ class WGDP_Admin {
 				if ( is_wp_error( $grant_result ) ) {
 					$ent->mark_error( $r['id'], $grant_result->get_error_message() );
 					$last_error = $grant_result->get_error_message();
-				} else {
+				} elseif ( null !== $grant_result ) {
 					$granted_count++;
 				}
 			}
@@ -1521,13 +1525,18 @@ class WGDP_Admin {
 
 			$new_ids[] = $new_id;
 
-			// Grant immediately.
+			// Grant immediately. $new_row can be false if the row vanished between the
+			// write above and this re-read; skip it rather than passing false into a
+			// function that dereferences $entitlement['id'].
 			$new_row = $ent->get( $new_id );
+			if ( ! $new_row ) {
+				continue;
+			}
 			$result  = WGDP_Claim_Page::grant_drive_access_for_entitlement( $new_row, true );
 			if ( is_wp_error( $result ) ) {
 				$ent->mark_error( $new_id, $result->get_error_message() );
 				$last_error = $result->get_error_message();
-			} else {
+			} elseif ( null !== $result ) {
 				$granted_count++;
 			}
 		}
@@ -1539,7 +1548,7 @@ class WGDP_Admin {
 			$granted_links = array();
 			foreach ( $new_ids as $nid ) {
 				$refreshed = $ent->get( $nid );
-				if ( 'granted' === $refreshed['grant_status'] ) {
+				if ( $refreshed && 'granted' === $refreshed['grant_status'] ) {
 					$resource_type = WGDP_Entitlements::get_resource_type( $refreshed );
 					$mime          = 'folder' === $resource_type ? 'application/vnd.google-apps.folder' : '';
 					$res_name      = $refreshed['cloud_asset_id'];
@@ -1787,7 +1796,7 @@ class WGDP_Admin {
 		$granted_links = array();
 		foreach ( $retried_rows as $r ) {
 			$refreshed = $ent->get( $r['id'] );
-			if ( 'granted' === $refreshed['grant_status'] ) {
+			if ( $refreshed && 'granted' === $refreshed['grant_status'] ) {
 				$resource_type = WGDP_Entitlements::get_resource_type( $refreshed );
 				$mime          = 'folder' === $resource_type ? 'application/vnd.google-apps.folder' : '';
 				$granted_links[] = array(

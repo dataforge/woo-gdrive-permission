@@ -24,6 +24,8 @@ class WGDP_Order_Handler {
 		// Partial refund.
 		add_action( 'woocommerce_order_refunded', array( $this, 'handle_partial_refund' ), 10, 2 );
 		add_action( 'woocommerce_before_delete_order_item', array( $this, 'revoke_entitlements_for_deleted_order_item' ) );
+		add_action( 'woocommerce_refund_deleted', array( $this, 'resync_refund_totals_after_deletion' ), 10, 2 );
+		add_action( 'woocommerce_before_delete_order', array( $this, 'delete_refund_totals_for_order' ) );
 
 		// Sales counter.
 		add_action( 'woocommerce_order_status_processing', array( $this, 'update_sales_counter' ), 20 );
@@ -173,6 +175,23 @@ class WGDP_Order_Handler {
 			return;
 		}
 
+		$this->add_signed_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $qty, $routing );
+	}
+
+	/**
+	 * Same accumulation as add_counter_delta() but allows negative amounts —
+	 * needed by reconcile_item_refund_decrement() when a refund is deleted and
+	 * a previously-applied decrement must be partially or fully reversed.
+	 * $product_deltas / $variation_deltas are always applied via
+	 * increment_paid_qty( $pid, -$qty ), so a negative entry here becomes a
+	 * positive addition back to the counter.
+	 */
+	private function add_signed_counter_delta( &$product_deltas, &$variation_deltas, $product_id, $variation_id, $qty, $routing ) {
+		$qty = (int) $qty;
+		if ( 0 === $qty ) {
+			return;
+		}
+
 		if ( ! empty( $routing['to_product'] ) ) {
 			if ( ! isset( $product_deltas[ $product_id ] ) ) {
 				$product_deltas[ $product_id ] = 0;
@@ -186,6 +205,59 @@ class WGDP_Order_Handler {
 			}
 			$variation_deltas[ $variation_id ]['qty'] += $qty;
 		}
+	}
+
+	/**
+	 * Reconcile an item's sales-counter refund-decrement bookkeeping against
+	 * its current total refunded quantity.
+	 *
+	 * Used both when a new refund lands (total refunded quantity can only grow,
+	 * so this only ever decrements further) and when a refund is deleted (total
+	 * refunded quantity can drop, requiring the counter to be re-incremented
+	 * back toward its original value). Mutates $refund_decremented_qty in place
+	 * and accumulates the signed adjustment into $product_deltas /
+	 * $variation_deltas for the caller to apply via increment_paid_qty().
+	 *
+	 * @param WC_Order      $order                  The order.
+	 * @param WC_Order_Item $order_item             The (non-refund) order item.
+	 * @param int[]         $counted_ids            Order item ids counted toward the sales counter.
+	 * @param array         $counted_quantities     order_item_id => quantity counted.
+	 * @param array         $refund_baseline_qty    order_item_id => refunded qty at count time.
+	 * @param array         $refund_decremented_qty order_item_id => qty already decremented (mutated).
+	 * @param array         $counted_routing        order_item_id => routing recorded at count time.
+	 * @param array         $product_deltas         product_id => signed qty (mutated).
+	 * @param array         $variation_deltas       variation_id => ['product_id' => .., 'qty' => signed qty] (mutated).
+	 */
+	private function reconcile_item_refund_decrement(
+		WC_Order $order, $order_item, array $counted_ids, array $counted_quantities,
+		array $refund_baseline_qty, array &$refund_decremented_qty, array $counted_routing,
+		array &$product_deltas, array &$variation_deltas
+	) {
+		$order_item_id = (int) $order_item->get_id();
+		if ( ! in_array( $order_item_id, $counted_ids, true ) ) {
+			return;
+		}
+
+		$product_id   = $order_item->get_product_id();
+		$variation_id = $order_item->get_variation_id();
+
+		$counted_qty          = $this->get_counted_quantity_for_item( $order, $order_item, $counted_quantities );
+		$total_refunded_qty   = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
+		$already_removed      = (int) ( $refund_decremented_qty[ $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 ) );
+		$baseline_refunded    = (int) ( $refund_baseline_qty[ $order_item_id ] ?? ( $refund_baseline_qty[ (string) $order_item_id ] ?? 0 ) );
+		$refunded_since_count = max( 0, $total_refunded_qty - $baseline_refunded );
+		$correct_removed      = max( 0, min( $counted_qty, $refunded_since_count ) );
+
+		$delta = $correct_removed - $already_removed;
+		if ( 0 === $delta ) {
+			return;
+		}
+
+		$routing = $this->get_routing_for_item( $counted_routing, $order_item_id, $product_id, $variation_id );
+		$this->add_signed_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $delta, $routing );
+
+		$refund_decremented_qty[ $order_item_id ] = $correct_removed;
+		unset( $refund_decremented_qty[ (string) $order_item_id ] );
 	}
 
 	/**
@@ -602,6 +674,17 @@ class WGDP_Order_Handler {
 			return;
 		}
 
+		// Keep the refund-totals cache in sync for every refunded item before any
+		// early return below — the unassigned-order-items list relies on this cache
+		// regardless of whether the order ends up fully refunded/cancelled.
+		foreach ( $refund->get_items() as $refund_item ) {
+			$order_item_id = $refund_item->get_meta( '_refunded_item_id' );
+			if ( ! $order_item_id || ! $order->get_item( $order_item_id ) ) {
+				continue;
+			}
+			WGDP_DB::set_refund_total( $order_item_id, abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) ) );
+		}
+
 		// If order is fully refunded/cancelled, revoke_all_entitlements handles it via status hook.
 		if ( in_array( $order->get_status(), array( 'refunded', 'cancelled' ), true ) ) {
 			return;
@@ -649,28 +732,12 @@ class WGDP_Order_Handler {
 					continue;
 				}
 
-				// Keep the refund-totals cache in sync for every refunded item, regardless
-				// of whether it counts toward the release-gate threshold below — the
-				// unassigned-order-items list query relies on this cache for all items.
-				WGDP_DB::set_refund_total( $order_item_id, abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) ) );
-
 				// Decrement sales counter for qualifying refunded items.
-				$product_id       = $order_item->get_product_id();
-				$variation_id     = $order_item->get_variation_id();
-				$item_was_counted = in_array( (int) $order_item_id, $counted_ids, true );
-				if ( $item_was_counted ) {
-					$counted_qty          = $this->get_counted_quantity_for_item( $order, $order_item, $counted_quantities );
-					$total_refunded_qty   = abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) );
-					$already_removed      = (int) ( $refund_decremented_qty[ (int) $order_item_id ] ?? ( $refund_decremented_qty[ (string) $order_item_id ] ?? 0 ) );
-					$baseline_refunded    = (int) ( $refund_baseline_qty[ (int) $order_item_id ] ?? ( $refund_baseline_qty[ (string) $order_item_id ] ?? 0 ) );
-					$refunded_since_count = max( 0, $total_refunded_qty - $baseline_refunded );
-					$newly_removed        = max( 0, min( $counted_qty, $refunded_since_count ) - $already_removed );
-					if ( $newly_removed > 0 ) {
-						$routing = $this->get_routing_for_item( $counted_routing, $order_item_id, $product_id, $variation_id );
-						$this->add_counter_delta( $product_deltas, $variation_deltas, $product_id, $variation_id, $newly_removed, $routing );
-						$refund_decremented_qty[ (int) $order_item_id ] = $already_removed + $newly_removed;
-					}
-				}
+				$this->reconcile_item_refund_decrement(
+					$order, $order_item, $counted_ids, $counted_quantities,
+					$refund_baseline_qty, $refund_decremented_qty, $counted_routing,
+					$product_deltas, $variation_deltas
+				);
 
 				// Calculate: remaining = original qty - total refunded qty.
 				$remaining = $this->get_effective_item_quantity( $order, $order_item );
@@ -756,6 +823,102 @@ class WGDP_Order_Handler {
 	}
 
 	/**
+	 * Re-sync refund bookkeeping after a refund is deleted (a common "undo a
+	 * mistake" admin action).
+	 *
+	 * The refund itself is already gone by the time this fires, so we can't tell
+	 * which line items it covered — instead recompute everything for every item
+	 * still on the order from WooCommerce's own refund records:
+	 *  - the wgdp_refund_totals cache (used by the Missing Email list), and
+	 *  - the release-gate sales counter + _wgdp_qty_refund_decremented_quantities,
+	 *    which handle_partial_refund() decremented when the (now-deleted) refund
+	 *    was created and never reverses on its own.
+	 *
+	 * Deliberately out of scope: re-granting entitlements that were revoked by
+	 * the deleted refund. That's a manual, reviewable action from the Access
+	 * Manager rather than something to automate silently here.
+	 *
+	 * @param int $refund_id Deleted refund order ID (unused).
+	 * @param int $order_id  Parent order ID.
+	 */
+	public function resync_refund_totals_after_deletion( $refund_id, $order_id ) {
+		// WC_Order::get_refunds() (which get_qty_refunded_for_item() reads) is served
+		// from the 'orders' object cache and may still reflect the pre-deletion refund
+		// list at this point — whether it's been invalidated yet is datastore- and
+		// version-dependent. Bust the whole group before reading: this only runs on the
+		// rare refund-deletion path, so the extra cache misses are cheap insurance
+		// against resyncing back to the stale (inflated) totals.
+		if ( class_exists( 'WC_Cache_Helper' ) && method_exists( 'WC_Cache_Helper', 'invalidate_cache_group' ) ) {
+			WC_Cache_Helper::invalidate_cache_group( 'orders' );
+		}
+
+		$order = wc_get_order( $order_id );
+		if ( ! $order ) {
+			return;
+		}
+
+		$result = $this->with_sales_counter_lock( $order_id, function () use ( $order_id ) {
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) {
+				return;
+			}
+
+			$counted_ids            = $this->get_counted_item_ids( $order );
+			$counted_quantities     = $this->get_counted_quantities( $order );
+			$refund_decremented_qty = $this->get_refund_decremented_quantities( $order );
+			$refund_baseline_qty    = $this->get_refund_baseline_quantities( $order );
+			$counted_routing        = $this->get_counted_routing( $order );
+			$product_deltas         = array();
+			$variation_deltas       = array();
+
+			foreach ( $order->get_items() as $order_item_id => $order_item ) {
+				WGDP_DB::set_refund_total( $order_item_id, abs( (int) $order->get_qty_refunded_for_item( $order_item_id ) ) );
+
+				$this->reconcile_item_refund_decrement(
+					$order, $order_item, $counted_ids, $counted_quantities,
+					$refund_baseline_qty, $refund_decremented_qty, $counted_routing,
+					$product_deltas, $variation_deltas
+				);
+			}
+
+			foreach ( $product_deltas as $pid => $qty ) {
+				WGDP_Release_Gate::increment_paid_qty( $pid, -$qty );
+			}
+			foreach ( $variation_deltas as $vid => $info ) {
+				WGDP_Release_Gate::increment_variation_paid_qty( $info['product_id'], $vid, -$info['qty'] );
+			}
+
+			$order->update_meta_data( '_wgdp_qty_refund_decremented_quantities', wp_json_encode( $refund_decremented_qty ) );
+			$order->save();
+
+			delete_transient( 'wgdp_permission_counts' );
+		} );
+
+		if ( is_wp_error( $result ) ) {
+			$order->add_order_note( 'WGDP: Could not lock this order to reconcile the sales counter after a refund was deleted. Please recheck from the Access Manager.' );
+		}
+	}
+
+	/**
+	 * Clean up cached refund totals when a whole order is deleted.
+	 *
+	 * WooCommerce bulk-deletes an order's items directly in the datastore when
+	 * the order itself is deleted, without firing woocommerce_before_delete_order_item
+	 * per item — so the per-item cleanup in revoke_entitlements_for_deleted_order_item()
+	 * never runs for this path. Sweep them here instead.
+	 *
+	 * @param int $order_id Order ID being deleted.
+	 */
+	public function delete_refund_totals_for_order( $order_id ) {
+		$order = wc_get_order( $order_id );
+		if ( ! $order ) {
+			return;
+		}
+
+		WGDP_DB::delete_refund_totals_for_order_items( array_keys( $order->get_items() ) );
+	}
+
+	/**
 	 * Revoke Drive access when an order line item is deleted in admin.
 	 *
 	 * WooCommerce deletes the item row after this hook, so entitlement rows still
@@ -768,6 +931,12 @@ class WGDP_Order_Handler {
 		if ( ! $order_item_id ) {
 			return;
 		}
+
+		// The order item row is going away regardless of whether entitlement
+		// revocation below succeeds, so the cached refund total for it is moot —
+		// drop it now rather than leaving an orphan row that could be inherited
+		// by a future order_item_id (e.g. after a restored/re-imported DB).
+		WGDP_DB::delete_refund_total( $order_item_id );
 
 		$item     = class_exists( 'WC_Order_Factory' ) ? WC_Order_Factory::get_order_item( $order_item_id ) : null;
 		$order_id = $item && method_exists( $item, 'get_order_id' ) ? absint( $item->get_order_id() ) : 0;

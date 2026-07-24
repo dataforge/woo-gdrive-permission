@@ -1340,6 +1340,8 @@ class WGDP_Entitlements {
 			INNER JOIN {$order_itemmeta} qty_meta  ON qty_meta.order_item_id = oi.order_item_id AND qty_meta.meta_key = '_qty'
 			LEFT JOIN {$wpdb->postmeta} digital_flag ON digital_flag.post_id = CAST(var_meta.meta_value AS UNSIGNED)
 			  AND digital_flag.meta_key = '_wgdp_includes_digital'
+			LEFT JOIN {$wpdb->postmeta} explicit_empty_flag ON explicit_empty_flag.post_id = CAST(var_meta.meta_value AS UNSIGNED)
+			  AND explicit_empty_flag.meta_key = '_wgdp_drive_resources_explicit_empty'
 			{$billing_email_join}
 			LEFT JOIN (
 				SELECT order_item_id, COUNT(DISTINCT recipient_email) AS active_count
@@ -1365,6 +1367,7 @@ class WGDP_Entitlements {
 			    COALESCE(CAST(var_meta.meta_value AS UNSIGNED), 0) = 0
 			    OR digital_flag.meta_value IS NULL OR digital_flag.meta_value = '' OR digital_flag.meta_value = 'yes'
 			  )
+			  AND explicit_empty_flag.meta_value IS NULL
 			  {$extra_where}
 			  AND GREATEST(0, CAST(qty_meta.meta_value AS UNSIGNED) - COALESCE(refund_totals.refunded_qty, 0)) > COALESCE(ent_counts.active_count, 0)
 		";
@@ -1412,82 +1415,66 @@ class WGDP_Entitlements {
 
 	/**
 	 * Count unassigned order items (lightweight count for summary cards).
+	 *
+	 * Reuses the same refund-cache-based qualification SQL as
+	 * get_unassigned_order_items() so the two never disagree.
 	 */
 	public function count_unassigned_order_items() {
 		global $wpdb;
 
-		$table          = $this->table();
-		$order_items    = $wpdb->prefix . 'woocommerce_order_items';
-		$order_itemmeta = $wpdb->prefix . 'woocommerce_order_itemmeta';
-		$order_storage  = $this->get_order_storage_sql_parts();
-		$orders_table   = $order_storage['table'];
-		$order_id_col   = $order_storage['id_column'];
-		$order_status_col = $order_storage['status_col'];
+		$table               = $this->table();
+		$order_items         = $wpdb->prefix . 'woocommerce_order_items';
+		$order_itemmeta      = $wpdb->prefix . 'woocommerce_order_itemmeta';
+		$refund_totals_table = WGDP_DB::get_refund_totals_table_name();
+		$order_storage       = $this->get_order_storage_sql_parts();
+		$orders_table        = $order_storage['table'];
+		$order_id_col        = $order_storage['id_column'];
+		$order_status_col    = $order_storage['status_col'];
 
-		// Only count items whose product (or variation) has a Drive resource configured
-		// and the variation qualifies for digital access (_wgdp_includes_digital != 'no').
 		// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$sql = "
-			SELECT oi.order_item_id, oi.order_id,
-				CAST(prod_meta.meta_value AS UNSIGNED) AS product_id,
-				COALESCE(CAST(var_meta.meta_value AS UNSIGNED), 0) AS variation_id,
-				CAST(qty_meta.meta_value AS UNSIGNED) AS qty,
-				COALESCE(ent_counts.active_count, 0) AS assigned_count
-			FROM {$order_items} oi
-			INNER JOIN {$orders_table} o ON o.{$order_id_col} = oi.order_id
-			INNER JOIN {$order_itemmeta} prod_meta ON prod_meta.order_item_id = oi.order_item_id AND prod_meta.meta_key = '_product_id'
-			LEFT JOIN  {$order_itemmeta} var_meta  ON var_meta.order_item_id = oi.order_item_id AND var_meta.meta_key = '_variation_id'
-			INNER JOIN {$order_itemmeta} qty_meta  ON qty_meta.order_item_id = oi.order_item_id AND qty_meta.meta_key = '_qty'
-			LEFT JOIN (
-				SELECT order_item_id, COUNT(DISTINCT recipient_email) AS active_count
-				FROM {$table} WHERE grant_status != 'revoked'
-				GROUP BY order_item_id
-			) ent_counts ON ent_counts.order_item_id = oi.order_item_id
-			LEFT JOIN {$wpdb->postmeta} dig_meta
-				ON dig_meta.post_id = CAST(var_meta.meta_value AS UNSIGNED)
-				AND dig_meta.meta_key = '_wgdp_includes_digital'
-			WHERE oi.order_item_type = 'line_item'
-			  AND o.{$order_status_col} IN ('wc-processing', 'wc-completed')
-			  AND (
-			    EXISTS (
-			      SELECT 1 FROM {$wpdb->postmeta}
-			      WHERE post_id = COALESCE(NULLIF(CAST(var_meta.meta_value AS UNSIGNED), 0), CAST(prod_meta.meta_value AS UNSIGNED))
-			        AND meta_key IN ('_wgdp_drive_resource_id', '_wgdp_drive_resources') AND meta_value != '' AND meta_value != '[]'
-			    )
-			    OR EXISTS (
-			      SELECT 1 FROM {$wpdb->postmeta}
-			      WHERE post_id = CAST(prod_meta.meta_value AS UNSIGNED)
-			        AND meta_key IN ('_wgdp_drive_resource_id', '_wgdp_drive_resources') AND meta_value != '' AND meta_value != '[]'
-			    )
-			  )
-			  AND (
-			    COALESCE(NULLIF(CAST(var_meta.meta_value AS UNSIGNED), 0), 0) = 0
-			    OR COALESCE(dig_meta.meta_value, '') != 'no'
-			  )
-			  AND CAST(qty_meta.meta_value AS UNSIGNED) > COALESCE(ent_counts.active_count, 0)
+			SELECT COUNT(*) FROM (
+				SELECT oi.order_item_id
+				FROM {$order_items} oi
+				INNER JOIN {$orders_table} o ON o.{$order_id_col} = oi.order_id
+				INNER JOIN {$order_itemmeta} prod_meta ON prod_meta.order_item_id = oi.order_item_id AND prod_meta.meta_key = '_product_id'
+				LEFT JOIN  {$order_itemmeta} var_meta  ON var_meta.order_item_id = oi.order_item_id AND var_meta.meta_key = '_variation_id'
+				INNER JOIN {$order_itemmeta} qty_meta  ON qty_meta.order_item_id = oi.order_item_id AND qty_meta.meta_key = '_qty'
+				LEFT JOIN {$wpdb->postmeta} digital_flag ON digital_flag.post_id = CAST(var_meta.meta_value AS UNSIGNED)
+				  AND digital_flag.meta_key = '_wgdp_includes_digital'
+				LEFT JOIN {$wpdb->postmeta} explicit_empty_flag ON explicit_empty_flag.post_id = CAST(var_meta.meta_value AS UNSIGNED)
+				  AND explicit_empty_flag.meta_key = '_wgdp_drive_resources_explicit_empty'
+				LEFT JOIN (
+					SELECT order_item_id, COUNT(DISTINCT recipient_email) AS active_count
+					FROM {$table} WHERE grant_status != 'revoked'
+					GROUP BY order_item_id
+				) ent_counts ON ent_counts.order_item_id = oi.order_item_id
+				LEFT JOIN {$refund_totals_table} refund_totals ON refund_totals.order_item_id = oi.order_item_id
+				WHERE oi.order_item_type = 'line_item'
+				  AND o.{$order_status_col} IN ('wc-processing', 'wc-completed')
+				  AND (
+				    EXISTS (
+				      SELECT 1 FROM {$wpdb->postmeta}
+				      WHERE post_id = COALESCE(NULLIF(CAST(var_meta.meta_value AS UNSIGNED), 0), CAST(prod_meta.meta_value AS UNSIGNED))
+				        AND meta_key IN ('_wgdp_drive_resource_id', '_wgdp_drive_resources') AND meta_value != '' AND meta_value != '[]'
+				    )
+				    OR EXISTS (
+				      SELECT 1 FROM {$wpdb->postmeta}
+				      WHERE post_id = CAST(prod_meta.meta_value AS UNSIGNED)
+				        AND meta_key IN ('_wgdp_drive_resource_id', '_wgdp_drive_resources') AND meta_value != '' AND meta_value != '[]'
+				    )
+				  )
+				  AND (
+				    COALESCE(CAST(var_meta.meta_value AS UNSIGNED), 0) = 0
+				    OR digital_flag.meta_value IS NULL OR digital_flag.meta_value = '' OR digital_flag.meta_value = 'yes'
+				  )
+				  AND explicit_empty_flag.meta_value IS NULL
+				  AND GREATEST(0, CAST(qty_meta.meta_value AS UNSIGNED) - COALESCE(refund_totals.refunded_qty, 0)) > COALESCE(ent_counts.active_count, 0)
+			) AS sub
 		";
 		// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
-		$rows  = $wpdb->get_results( $sql, ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
-		$count = 0;
-		foreach ( $rows as $row ) {
-			if ( ! WGDP_Product_Meta::variation_qualifies_for_digital( (int) $row['product_id'], (int) $row['variation_id'] ) ) {
-				continue;
-			}
-
-			$order = wc_get_order( (int) $row['order_id'] );
-			if ( ! $order ) {
-				continue;
-			}
-
-			$qty_refunded  = abs( (int) $order->get_qty_refunded_for_item( (int) $row['order_item_id'] ) );
-			$effective_qty = max( 0, (int) $row['qty'] - $qty_refunded );
-			if ( $effective_qty > (int) $row['assigned_count'] ) {
-				$count++;
-			}
-		}
-
-		return $count;
+		return (int) $wpdb->get_var( $sql ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
 	}
 
 	/**

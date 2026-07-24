@@ -5,8 +5,14 @@ class WGDP_Self_Service {
 
 	private static $instance = null;
 
-	const LINK_EXPIRY_DAYS = 30;
-	const TOKEN_META_KEY   = '_wgdp_self_service_tokens';
+	const LINK_EXPIRY_DAYS   = 30;
+	const TOKEN_META_KEY     = '_wgdp_self_service_tokens';
+	// Kept short: this transient briefly holds the plaintext token (everywhere
+	// else it exists only as a SHA-256 hash in order meta) so a burst of
+	// overlapping status-transition emails for the same order can reuse one
+	// token instead of minting a new one each time. Long enough to cover that
+	// burst, short enough to keep the plaintext-at-rest window minimal.
+	const TOKEN_REUSE_WINDOW = 2 * MINUTE_IN_SECONDS;
 
 	public static function instance() {
 		if ( null === self::$instance ) {
@@ -57,12 +63,14 @@ class WGDP_Self_Service {
 		// Register our own handle rather than piggybacking on wp-block-library:
 		// that handle isn't enqueued on themes/pages that don't use Gutenberg
 		// blocks, which would silently drop this CSS.
+		// The wrapper below carries its own dark background (see wrap_content()), so its
+		// light text stays readable regardless of the surrounding theme's colors. We
+		// deliberately don't touch .entry-title/.wp-block-post-title here — those render
+		// on the theme's own background and already use whatever color the theme chose
+		// for readability there.
 		wp_register_style( 'wgdp-self-service-inline', false, array(), WGDP_VERSION );
 		wp_enqueue_style( 'wgdp-self-service-inline' );
 		wp_add_inline_style( 'wgdp-self-service-inline', '
-			body.page-id-' . $page_id . ' .entry-title,
-			body.page-id-' . $page_id . ' .wp-block-post-title { color: #fff !important; }
-			body.page-id-' . $page_id . ' .wgdp-provide-email-wrap { color: #f5f7fb; }
 			body.page-id-' . $page_id . ' .wgdp-provide-email-wrap input[type="email"] { background: #fff; color: #111827; }
 		' );
 	}
@@ -158,11 +166,23 @@ class WGDP_Self_Service {
 	 * concurrent issuances for the same order (e.g. overlapping status-change
 	 * emails) could otherwise each read the same meta snapshot and the later
 	 * save would silently drop the other's token.
+	 *
+	 * Repeated calls for the same order in quick succession (repeated "Resend
+	 * Order Email" clicks, overlapping status-transition emails) reuse a
+	 * short-lived cached token instead of minting a new one and paying the DB
+	 * lock + meta write each time — the plaintext is kept only in a transient
+	 * that expires well before the persisted token record does.
 	 */
 	private function issue_self_service_token( $order ) {
+		$order_id    = $order->get_id();
+		$reuse_key   = 'wgdp_sst_active_' . absint( $order_id );
+		$reuse_token = get_transient( $reuse_key );
+		if ( is_string( $reuse_token ) && '' !== $reuse_token && $this->validate_self_service_token( $order, $reuse_token ) ) {
+			return $reuse_token;
+		}
+
 		$token    = rtrim( strtr( base64_encode( random_bytes( 32 ) ), '+/', '-_' ), '=' );
 		$hash     = hash( 'sha256', $token );
-		$order_id = $order->get_id();
 
 		$saved = WGDP_DB::with_named_lock(
 			'wgdp_sst_' . absint( $order_id ),
@@ -190,7 +210,13 @@ class WGDP_Self_Service {
 		// hash was never persisted — returning $token here would hand the
 		// customer a link that can never validate. Signal failure instead so
 		// callers can fall back to the legacy order-key link.
-		return $saved ? $token : false;
+		if ( ! $saved ) {
+			return false;
+		}
+
+		set_transient( $reuse_key, $token, self::TOKEN_REUSE_WINDOW );
+
+		return $token;
 	}
 
 	/**
@@ -399,9 +425,9 @@ class WGDP_Self_Service {
 			$quantity        = $item->get_quantity();
 			$qty_refunded    = abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) );
 			$effective_qty   = max( 0, $quantity - $qty_refunded );
-			$active_count    = $ent->count_confirmed_recipients_for_item( $item->get_id() );
+			$confirmed_count = $ent->count_confirmed_recipients_for_item( $item->get_id() );
 
-			if ( $effective_qty <= 0 || $active_count >= $effective_qty ) {
+			if ( $effective_qty <= 0 || $confirmed_count >= $effective_qty ) {
 				continue;
 			}
 
@@ -417,6 +443,16 @@ class WGDP_Self_Service {
 					$pending_emails[ $row['recipient_email'] ] = true;
 				}
 			}
+			$pending_emails = array_keys( $pending_emails );
+
+			// The submission handler enforces the slot cap with count_active_recipients_for_item()
+			// (pending + verified + granted), not the confirmed-only count above. Replacing a
+			// pending email via old_email doesn't consume additional capacity, so every pending
+			// row can be offered as a replace slot; brand-new blank slots are capped at the
+			// remaining additive capacity so the form never offers a slot the handler will reject.
+			$active_count       = $ent->count_active_recipients_for_item( $item->get_id() );
+			$additive_capacity  = max( 0, $effective_qty - $active_count );
+			$slots_remaining    = count( $pending_emails ) + $additive_capacity;
 
 			$unassigned[] = array(
 				'item'            => $item,
@@ -425,9 +461,9 @@ class WGDP_Self_Service {
 				'product_id'      => $product_id,
 				'variation_id'    => $variation_id,
 				'quantity'        => $effective_qty,
-				'active_count'    => $active_count,
-				'slots_remaining' => $effective_qty - $active_count,
-				'pending_emails'  => array_keys( $pending_emails ),
+				'active_count'    => $confirmed_count,
+				'slots_remaining' => $slots_remaining,
+				'pending_emails'  => $pending_emails,
 			);
 		}
 
@@ -594,6 +630,10 @@ class WGDP_Self_Service {
 		$cleared_items = array();
 
 		foreach ( $items as $submission ) {
+			if ( ! is_array( $submission ) ) {
+				continue;
+			}
+
 			$order_item_id = absint( $submission['order_item_id'] ?? 0 );
 			$email         = WGDP_Entitlements::normalize_email( $submission['email'] ?? '' );
 			$old_email     = WGDP_Entitlements::normalize_email( $submission['old_email'] ?? '' );
@@ -728,7 +768,11 @@ class WGDP_Self_Service {
 	 * Wrap content in a styled container.
 	 */
 	private function wrap_content( $content ) {
-		return '<div class="wgdp-provide-email-wrap" style="max-width:560px;margin:0 auto;padding:32px 0;color:#f5f7fb;">' . $content . '</div>';
+		// The card carries its own dark background so the light text inside it stays
+		// readable no matter what background color the surrounding theme uses — the
+		// previous version set only text color and assumed a dark page background,
+		// which rendered white-on-white on light themes.
+		return '<div class="wgdp-provide-email-wrap" style="max-width:560px;margin:0 auto;padding:32px 24px;background:#1f2937;border-radius:8px;color:#f5f7fb;">' . $content . '</div>';
 	}
 
 	/**
@@ -809,6 +853,10 @@ class WGDP_Self_Service {
 
 		$local  = $parts[0];
 		$domain = $parts[1];
+
+		if ( '' === $local || '' === $domain ) {
+			return '***';
+		}
 
 		// Mask local part: show first 2 and last 1, mask the rest.
 		$local_len = strlen( $local );
