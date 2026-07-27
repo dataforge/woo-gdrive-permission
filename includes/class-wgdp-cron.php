@@ -89,6 +89,25 @@ class WGDP_Cron {
 	}
 
 	/**
+	 * Build the recipient list for a notification: the Google account recipient
+	 * plus the order's billing email, if it differs, so the purchaser is always
+	 * informed (e.g. on a gift order where the recipient isn't the purchaser).
+	 */
+	private function recipients_with_billing_fallback( $email, $order_id ) {
+		$recipients = array( $email );
+
+		$order = wc_get_order( $order_id );
+		if ( $order ) {
+			$billing_email = strtolower( trim( $order->get_billing_email() ) );
+			if ( $billing_email && $billing_email !== strtolower( trim( $email ) ) ) {
+				$recipients[] = $billing_email;
+			}
+		}
+
+		return $recipients;
+	}
+
+	/**
 	 * Send emails grouped by origin.
 	 *
 	 * Sends to both the Google account recipient and the order's billing email
@@ -96,16 +115,7 @@ class WGDP_Cron {
 	 */
 	private function send_grouped_emails( $granted_by_recipient ) {
 		foreach ( $granted_by_recipient as $group ) {
-			$recipients = array( $group['email'] );
-
-			// Also notify the billing email if it differs from the Google account.
-			$order = wc_get_order( $group['order_id'] );
-			if ( $order ) {
-				$billing_email = strtolower( trim( $order->get_billing_email() ) );
-				if ( $billing_email && $billing_email !== strtolower( trim( $group['email'] ) ) ) {
-					$recipients[] = $billing_email;
-				}
-			}
+			$recipients = $this->recipients_with_billing_fallback( $group['email'], $group['order_id'] );
 
 			foreach ( $recipients as $to ) {
 				if ( 'backfill' === $group['origin'] ) {
@@ -312,7 +322,10 @@ class WGDP_Cron {
 		// Send emails grouped by origin.
 		$this->send_grouped_emails( $granted_by_recipient );
 		foreach ( $revoked_by_recipient as $group ) {
-			WGDP_Notification_Email::send_access_revoked( $group['email'], $group['product_name'], $group['order_id'] );
+			$recipients = $this->recipients_with_billing_fallback( $group['email'], $group['order_id'] );
+			foreach ( $recipients as $to ) {
+				WGDP_Notification_Email::send_access_revoked( $to, $group['product_name'], $group['order_id'] );
+			}
 		}
 
 		delete_transient( 'wgdp_permission_counts' );
@@ -374,11 +387,17 @@ class WGDP_Cron {
 		$account_id = $job['account_id'];
 
 		if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
+			// A disconnected account is typically transient (expired/revoked OAuth
+			// token, brief outage) and self-recovers once reconnected. Retry via the
+			// same attempts/stale-reclaim mechanism used above rather than failing
+			// the job outright — otherwise a disconnection at the wrong moment
+			// permanently strands the backfill with no path to resurrect it, since
+			// queue_backfill() only reuses jobs with status 'pending'/'processing'.
 			// Conditional: don't clobber a 'pending' reset written by queue_backfill()
 			// while this batch was running (see cursor-advance comment below).
 			$wpdb->query( $wpdb->prepare(
-				"UPDATE {$table} SET status = 'failed', processed_at = %s, last_error = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				$now, 'No connected Google account is available for this product.', $job['id']
+				"UPDATE {$table} SET status = 'pending', started_at = NULL, attempts = attempts + 1, last_error = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				'No connected Google account is available for this product.', $job['id']
 			) );
 			$this->maybe_reschedule_backfill();
 			return;
