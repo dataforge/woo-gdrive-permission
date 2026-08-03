@@ -1631,6 +1631,16 @@ class WGDP_Entitlements {
 
 			if ( $existing && 'revoked' !== $existing['grant_status'] ) {
 				$entitlement_id = (int) $existing['id'];
+
+				// If the product has since been reconnected to a different Google
+				// account, refresh the stale account_id on rows that never actually
+				// completed a grant — otherwise cron retries (and admin "retry
+				// grant") keep targeting the old, possibly disconnected account
+				// forever. Granted rows are left untouched since their live Drive
+				// permission was created under the original account.
+				if ( 'granted' !== $existing['grant_status'] && (string) $existing['account_id'] !== (string) $account_id ) {
+					$this->update( $entitlement_id, array( 'account_id' => $account_id ) );
+				}
 			}
 
 			if ( ! $entitlement_id && $reuse_revoked ) {
