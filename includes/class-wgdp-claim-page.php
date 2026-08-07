@@ -29,12 +29,17 @@ class WGDP_Claim_Page {
 			return;
 		}
 
-		// The wrapper below carries its own dark background (see wrap_content()), so its
-		// light text stays readable regardless of the surrounding theme's colors. We
-		// deliberately don't touch .entry-title/.wp-block-post-title here — those render
-		// on the theme's own background and already use whatever color the theme chose
-		// for readability there.
-		wp_add_inline_style( 'wp-block-library', '
+		// Register our own handle rather than piggybacking on wp-block-library:
+		// that handle isn't enqueued on themes/pages that don't use Gutenberg
+		// blocks, which would silently drop this CSS. The wrapper below carries
+		// its own dark background (see wrap_content()), so its light text stays
+		// readable regardless of the surrounding theme's colors. We deliberately
+		// don't touch .entry-title/.wp-block-post-title here — those render on
+		// the theme's own background and already use whatever color the theme
+		// chose for readability there.
+		wp_register_style( 'wgdp-claim-page-inline', false, array(), WGDP_VERSION );
+		wp_enqueue_style( 'wgdp-claim-page-inline' );
+		wp_add_inline_style( 'wgdp-claim-page-inline', '
 			body.page-id-' . $page_id . ' .wgdp-claim-wrap input[name="otp"] { background: #fff; color: #111827; }
 		' );
 	}

@@ -487,6 +487,31 @@ class WGDP_Cron {
 	public function expire_stale_entitlements() {
 		WGDP_Entitlements::instance()->expire_stale();
 		delete_transient( 'wgdp_permission_counts' );
+
+		$this->prune_backfill_history();
+	}
+
+	/**
+	 * Prune completed/failed backfill jobs older than the retention window.
+	 *
+	 * Backfill jobs transition to 'completed'/'failed' but were never deleted,
+	 * so long-lived stores accumulate history forever. Runs under a named lock
+	 * so concurrent runs (e.g. overlapping hourly ticks on a busy store) can't
+	 * double-delete or race the sweep.
+	 */
+	private function prune_backfill_history() {
+		global $wpdb;
+		$table = WGDP_DB::get_backfill_table_name();
+
+		WGDP_DB::with_named_lock( 'wgdp_backfill_prune', 5, function () use ( $wpdb, $table ) {
+			$retention_days = max( 1, (int) apply_filters( 'wgdp_backfill_retention_days', 30 ) );
+			$cutoff         = gmdate( 'Y-m-d H:i:s', time() - $retention_days * DAY_IN_SECONDS );
+
+			$wpdb->query( $wpdb->prepare(
+				"DELETE FROM {$table} WHERE status IN ('completed', 'failed') AND processed_at IS NOT NULL AND processed_at < %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				$cutoff
+			) );
+		}, false );
 	}
 
 	/**

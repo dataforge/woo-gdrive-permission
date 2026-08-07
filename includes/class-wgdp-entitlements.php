@@ -489,7 +489,7 @@ class WGDP_Entitlements {
 		global $wpdb;
 		$table = $this->table();
 		$sql   = $wpdb->prepare(
-			"SELECT * FROM {$table} WHERE order_item_id = %d AND recipient_email = %s AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			"SELECT * FROM {$table} WHERE order_item_id = %d AND recipient_email = %s AND grant_status != 'revoked' ORDER BY id ASC", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			$order_item_id,
 			$recipient_email
 		);
@@ -606,7 +606,7 @@ class WGDP_Entitlements {
 		$table = $this->table();
 		return (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"SELECT COUNT(DISTINCT recipient_email) FROM {$table} WHERE order_item_id = %d AND grant_status != 'revoked'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"SELECT COUNT(DISTINCT recipient_email) FROM {$table} WHERE order_item_id = %d AND grant_status NOT IN ('revoked', 'revocation_error')", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				$order_item_id
 			)
 		);
@@ -623,7 +623,7 @@ class WGDP_Entitlements {
 		$table = $this->table();
 		return (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
-				"SELECT COUNT(DISTINCT recipient_email) FROM {$table} WHERE order_item_id = %d AND grant_status != 'revoked' AND (verification_status = 'verified' OR grant_status = 'granted')", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"SELECT COUNT(DISTINCT recipient_email) FROM {$table} WHERE order_item_id = %d AND grant_status NOT IN ('revoked', 'revocation_error') AND (verification_status = 'verified' OR grant_status = 'granted')", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				$order_item_id
 			)
 		);
@@ -833,7 +833,7 @@ class WGDP_Entitlements {
 				     MIN(CASE WHEN verification_status IN ('pending', 'expired') THEN 0 ELSE 1 END) AS priority,
 				     MAX(recipient_index) AS max_index
 				   FROM {$table}
-				   WHERE order_item_id = %d AND grant_status != 'revoked'
+				   WHERE order_item_id = %d AND grant_status NOT IN ('revoked', 'revocation_error')
 				   GROUP BY recipient_email
 				 ) sub
 				 ORDER BY priority, max_index DESC
@@ -1345,7 +1345,7 @@ class WGDP_Entitlements {
 			{$billing_email_join}
 			LEFT JOIN (
 				SELECT order_item_id, COUNT(DISTINCT recipient_email) AS active_count
-				FROM {$table} WHERE grant_status != 'revoked'
+				FROM {$table} WHERE grant_status NOT IN ('revoked', 'revocation_error')
 				GROUP BY order_item_id
 			) ent_counts ON ent_counts.order_item_id = oi.order_item_id
 			LEFT JOIN {$refund_totals_table} refund_totals ON refund_totals.order_item_id = oi.order_item_id
@@ -1446,7 +1446,7 @@ class WGDP_Entitlements {
 				  AND explicit_empty_flag.meta_key = '_wgdp_drive_resources_explicit_empty'
 				LEFT JOIN (
 					SELECT order_item_id, COUNT(DISTINCT recipient_email) AS active_count
-					FROM {$table} WHERE grant_status != 'revoked'
+					FROM {$table} WHERE grant_status NOT IN ('revoked', 'revocation_error')
 					GROUP BY order_item_id
 				) ent_counts ON ent_counts.order_item_id = oi.order_item_id
 				LEFT JOIN {$refund_totals_table} refund_totals ON refund_totals.order_item_id = oi.order_item_id

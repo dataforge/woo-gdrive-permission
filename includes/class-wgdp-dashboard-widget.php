@@ -93,6 +93,17 @@ class WGDP_Dashboard_Widget {
 
 	private function get_recent_failures( $limit = 5 ) {
 		global $wpdb;
+
+		// Cache the failure list with a short TTL (mirroring get_permission_counts())
+		// so every dashboard load doesn't scan the whole entitlements table and call
+		// wc_get_order() per row. Short TTL keeps the widget reasonably fresh without
+		// a per-mutation invalidation pass.
+		$cache_key = 'wgdp_recent_failures_' . absint( $limit );
+		$cached    = get_transient( $cache_key );
+		if ( is_array( $cached ) ) {
+			return $cached;
+		}
+
 		$table = WGDP_DB::get_table_name();
 
 		$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
@@ -118,6 +129,7 @@ class WGDP_Dashboard_Widget {
 			);
 		}
 
+		set_transient( $cache_key, $failures, 2 * MINUTE_IN_SECONDS );
 		return $failures;
 	}
 }

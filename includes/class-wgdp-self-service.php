@@ -617,8 +617,10 @@ class WGDP_Self_Service {
 		// Both limiters must be consumed unconditionally (not via || short-circuit):
 		// each is an independent quota that should count every attempt, regardless
 		// of whether the other check already failed.
-		$order_rate_ok = $this->consume_rate_limit( 'wgdp_ss_order_' . $order_id, 10, HOUR_IN_SECONDS );
-		$ip_rate_ok    = $this->consume_rate_limit( 'wgdp_ss_ip_' . $order_id . '_' . md5( $this->get_request_ip() ), 5, HOUR_IN_SECONDS );
+		$order_rate_key = 'wgdp_ss_order_' . $order_id;
+		$ip_rate_key    = 'wgdp_ss_ip_' . $order_id . '_' . md5( $this->get_request_ip() );
+		$order_rate_ok = $this->consume_rate_limit( $order_rate_key, 10, HOUR_IN_SECONDS );
+		$ip_rate_ok    = $this->consume_rate_limit( $ip_rate_key, 5, HOUR_IN_SECONDS );
 		if ( ! $order_rate_ok || ! $ip_rate_ok ) {
 			wp_send_json_error( 'Too many requests. Please wait before submitting again.' );
 		}
@@ -760,6 +762,13 @@ class WGDP_Self_Service {
 			delete_transient( 'wgdp_permission_counts' );
 			wp_send_json_error( 'Digital access was reserved, but the verification email could not be sent. Please contact the store for assistance.' );
 		} else {
+			// No entitlements were created and no email was sent — nothing was
+			// reserved or delivered, so refund both rate-limit tokens consumed
+			// above. Otherwise a single failed submission (typo, no free slots,
+			// item mismatch) burns a per-order and a per-IP attempt and can lock
+			// the customer out of self-service for the rest of the hour.
+			$this->release_rate_limit( $order_rate_key );
+			$this->release_rate_limit( $ip_rate_key );
 			wp_send_json_error( 'No entitlements were created. Slots may already be filled or emails were invalid.' );
 		}
 	}
@@ -892,10 +901,44 @@ class WGDP_Self_Service {
 	}
 
 	/**
+	 * Refund a previously consumed self-service rate-limit token.
+	 *
+	 * Used when a submission that consumed the per-order/per-IP tokens turned
+	 * out to be a wasted attempt with no side effect (no entitlement created,
+	 * no email delivered), matching the OTP-resend refund policy on the claim
+	 * page so a single typo can't lock the customer out for the hour.
+	 *
+	 * @param string $key Logical rate-limit key, matching a prior consume_rate_limit() call.
+	 */
+	private function release_rate_limit( $key ) {
+		WGDP_DB::release_rate_limit( $key );
+	}
+
+	/**
 	 * Best-effort client IP for coarse mail-abuse throttling.
+	 *
+	 * Trusts the direct connection's REMOTE_ADDR by default. When the site sits
+	 * behind a proxy/CDN (so every visitor shares the server's REMOTE_ADDR), the
+	 * operator can list trusted proxy IPs via the 'wgdp_trusted_proxies' filter;
+	 * only then is the client IP read from the X-Forwarded-For chain, walking
+	 * right-to-left past any configured proxies. The header is never honored for
+	 * untrusted direct peers, since it is trivially client-spoofable.
 	 */
 	private function get_request_ip() {
 		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
+
+		$trusted_proxies = (array) apply_filters( 'wgdp_trusted_proxies', array() );
+		if ( $ip && in_array( $ip, $trusted_proxies, true ) && isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
+			$chain = array_map( 'trim', explode( ',', sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) ) );
+			$chain = array_reverse( array_values( array_filter( $chain ) ) );
+			foreach ( $chain as $hop ) {
+				if ( ! in_array( $hop, $trusted_proxies, true ) ) {
+					$ip = $hop;
+					break;
+				}
+			}
+		}
+
 		return $ip ?: 'unknown';
 	}
 

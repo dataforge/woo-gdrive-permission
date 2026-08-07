@@ -477,6 +477,28 @@ class WGDP_Google_Auth {
 	}
 
 	/**
+	 * Clear all stored Google account data.
+	 *
+	 * Recovery path for the undecryptable-credentials state (AUTH_KEY changed
+	 * after a migration/restore, or the option was corrupted). In that state the
+	 * data is permanently unreachable: every read path sees an empty array, and
+	 * with_accounts_lock() deliberately refuses to write to avoid overwriting
+	 * the still-encrypted blob — so reconnecting a fresh account is impossible
+	 * until it is cleared. Only an admin who understands the old data is lost
+	 * invokes this; it is a no-op when the stored data actually decrypts.
+	 *
+	 * @return bool True if the option existed and was deleted.
+	 */
+	public function reset_accounts() {
+		if ( ! self::current_user_can_manage_credentials() ) {
+			return false;
+		}
+
+		$this->decrypt_failed = false;
+		return delete_option( 'wgdp_accounts' );
+	}
+
+	/**
 	 * Get the email of a specific account.
 	 */
 	public function get_account_email( $account_id ) {

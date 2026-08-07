@@ -178,8 +178,8 @@ class WGDP_DB {
 		$refund_totals_table = self::get_refund_totals_table_name();
 
 		$wpdb->query( $wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
-			"INSERT INTO {$refund_totals_table} (order_item_id, refunded_qty) VALUES (%d, %d)
-			 ON DUPLICATE KEY UPDATE refunded_qty = VALUES(refunded_qty)",
+			"INSERT INTO {$refund_totals_table} (order_item_id, refunded_qty) VALUES (%d, %d) AS new
+			 ON DUPLICATE KEY UPDATE refunded_qty = new.refunded_qty",
 			absint( $order_item_id ),
 			absint( $total_refunded_qty )
 		) );

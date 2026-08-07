@@ -619,12 +619,6 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 
 		$this->items = $result['items'];
 
-		$this->set_pagination_args( array(
-			'total_items' => $result['total'],
-			'per_page'    => $per_page,
-			'total_pages' => ceil( $result['total'] / $per_page ),
-		) );
-
 		$this->_column_headers = array(
 			$this->get_columns(),
 			array(),
@@ -632,16 +626,20 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		);
 
 		// Pre-populate seat and file caches and inject unassigned seat rows.
+		// The injections append synthetic rows the paginated query can't see, so
+		// their count is folded back into total_items below — otherwise the
+		// displayed row count would exceed the reported total.
+		$injected_count = 0;
 		if ( 'entitlements' === $this->display_mode ) {
 			$this->preload_seat_and_file_data();
-			$this->inject_unassigned_seats();
+			$injected_count += $this->inject_unassigned_seats();
 
 			// When no status filter is active, also include fully-unassigned
 			// order items (no entitlements at all) so they appear in the default view.
 			// Only inject on page 1 — the injected batch isn't paginated, so
 			// repeating it on every page would duplicate rows across pages.
 			if ( empty( $status ) && 1 === $page ) {
-				$this->inject_missing_email_items( $product_id, $product_name, $order_id, $search );
+				$injected_count += $this->inject_missing_email_items( $product_id, $product_name, $order_id, $search );
 
 				// Re-sort the merged (queried + injected) rows according to the
 				// requested sort column/direction, since injecting unpaginated
@@ -668,6 +666,13 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 				}
 			}
 		}
+
+		$total_items = $result['total'] + $injected_count;
+		$this->set_pagination_args( array(
+			'total_items' => $total_items,
+			'per_page'    => $per_page,
+			'total_pages' => ceil( $total_items / $per_page ),
+		) );
 
 		// Synthetic unassigned rows carry the live product asset too, so resolve
 		// names only after they have been merged into the result set.
@@ -750,6 +755,8 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 
 	/**
 	 * Inject synthetic rows for unassigned seats into the items list.
+	 *
+	 * @return int Number of synthetic rows injected.
 	 */
 	private function inject_unassigned_seats() {
 		// Collect order item IDs visible on this page.
@@ -810,11 +817,15 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 		if ( ! empty( $new_rows ) ) {
 			$this->items = array_merge( $this->items, $new_rows );
 		}
+
+		return count( $new_rows );
 	}
 
 	/**
 	 * Inject fully-unassigned order items (no entitlements at all) into the
 	 * default "show all" view so they are visible without clicking "Missing Email".
+	 *
+	 * @return int Number of synthetic rows injected.
 	 */
 	private function inject_missing_email_items( $product_id, $product_name, $order_id, $search ) {
 		$ent = WGDP_Entitlements::instance();
@@ -834,6 +845,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			'search'       => $search,
 		) );
 
+		$injected = 0;
 		foreach ( $result['items'] as $ua ) {
 			// Skip if this order item already has rows on the page.
 			if ( isset( $seen_item_ids[ $ua['order_item_id'] ] ) ) {
@@ -845,6 +857,7 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 			$unassigned  = max( 1, $qty - $assigned );
 
 			for ( $seat_num = 1; $seat_num <= $unassigned; $seat_num++ ) {
+				$injected++;
 				$this->items[] = array(
 					'_unassigned'         => true,
 					'id'                  => 0,
@@ -864,6 +877,8 @@ class WGDP_Access_Manager_Table extends WP_List_Table {
 				);
 			}
 		}
+
+		return $injected;
 	}
 
 	/**

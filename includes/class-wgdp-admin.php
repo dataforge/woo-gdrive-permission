@@ -75,6 +75,22 @@ class WGDP_Admin {
 			}
 		}
 
+		// Handle the "reset stored credentials" recovery action: clears the
+		// undecryptable wgdp_accounts option so a fresh account can be connected
+		// after an AUTH_KEY change. Gated on capability + its own nonce.
+		if ( 'settings' === $current_tab && isset( $_SERVER['REQUEST_METHOD'] ) && 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['wgdp_reset_accounts_nonce'] ) ) {
+			if ( wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['wgdp_reset_accounts_nonce'] ) ), 'wgdp_reset_accounts' ) && self::current_user_can_manage_settings() ) {
+				$reset = WGDP_Google_Auth::instance()->reset_accounts();
+				if ( $reset ) {
+					echo '<div class="notice notice-warning"><p>Stored Google account data was cleared. You can now connect a Google account below.</p></div>';
+				} else {
+					echo '<div class="notice notice-info"><p>No undecryptable stored account data to clear — you can connect a Google account below.</p></div>';
+				}
+			} else {
+				echo '<div class="notice notice-error"><p>Stored credentials were not reset: your session expired. Please try again.</p></div>';
+			}
+		}
+
 		echo '<div class="wrap">';
 		echo '<h1>Woo Gdrive Permission</h1>';
 
@@ -619,6 +635,17 @@ class WGDP_Admin {
 		</p>
 
 		</form>
+
+		<?php if ( WGDP_Google_Auth::instance()->has_decrypt_failure() ) : ?>
+			<div class="notice notice-error" style="margin:20px 0;max-width:800px;">
+				<p><strong>Stored account data is unrecoverable.</strong> The plugin could not decrypt your saved Google account data — this usually happens when the site's AUTH_KEY changed (e.g. after a migration or restore) or the stored option was corrupted. The old data cannot be recovered, and connecting a new account is blocked until it is cleared.</p>
+				<p>If you want to start fresh, clear the stored data below, then re-enter your credentials and connect a new account. This cannot be undone.</p>
+				<form method="post" action="">
+					<?php wp_nonce_field( 'wgdp_reset_accounts', 'wgdp_reset_accounts_nonce' ); ?>
+					<button type="submit" class="button" style="color:#b32d2e;" onclick="return confirm('Clear all stored Google account data? This cannot be undone. Make sure you have your Client ID / Client Secret handy to reconnect.');">Reset stored credentials</button>
+				</form>
+			</div>
+		<?php endif; ?>
 
 		<!-- Shortcode Reference -->
 		<div class="wgdp-shortcode-ref" style="background:#fff;border:1px solid #c3c4c7;border-left:4px solid #2271b1;padding:15px 20px;margin:20px 0;">
@@ -1470,9 +1497,17 @@ class WGDP_Admin {
 			return new WP_Error( 'wgdp_no_account', 'No connected Google account for this product.' );
 		}
 
-		// Revoke the stale error entitlements.
+		// Revoke the stale error entitlements. Error rows normally carry no
+		// provider_permission_id, so mark_revoked() is safe and cheap — but an
+		// orphan row that did create a Drive permission yet failed to record it
+		// would otherwise be left granting access. Route those through the full
+		// revoke_with_drive_delete() path so the Drive side is actually removed.
 		foreach ( $stale_rows as $r ) {
-			$ent->mark_revoked( $r['id'], WGDP_Entitlements::REVOCATION_REASON_REPROVISION );
+			if ( ! empty( $r['provider_permission_id'] ) ) {
+				$ent->revoke_with_drive_delete( $r, WGDP_Entitlements::REVOCATION_REASON_REPROVISION );
+			} else {
+				$ent->mark_revoked( $r['id'], WGDP_Entitlements::REVOCATION_REASON_REPROVISION );
+			}
 		}
 
 		// Create new entitlements for current resources, pre-verified.
