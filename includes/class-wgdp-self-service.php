@@ -630,6 +630,7 @@ class WGDP_Self_Service {
 		$created_count = 0;
 		$mail_failures = 0;
 		$cleared_items = array();
+		$account_issue = false;
 
 		foreach ( $items as $submission ) {
 			if ( ! is_array( $submission ) ) {
@@ -677,6 +678,15 @@ class WGDP_Self_Service {
 			) );
 
 			if ( is_wp_error( $result ) ) {
+				if ( WGDP_Google_Auth::is_account_error( $result ) ) {
+					$account_issue = true;
+					// Fire a single admin alert per submission (not per item).
+					WGDP_Notification_Email::send_admin_google_alert(
+						'',
+						sprintf( 'process a self-service email submission for order #%d', $order_id ),
+						'ss_' . $order_id
+					);
+				}
 				continue;
 			}
 			$cleared_items[ $clear_key ] = true;
@@ -761,6 +771,14 @@ class WGDP_Self_Service {
 		} elseif ( $mail_failures > 0 ) {
 			delete_transient( 'wgdp_permission_counts' );
 			wp_send_json_error( 'Digital access was reserved, but the verification email could not be sent. Please contact the store for assistance.' );
+		} elseif ( $account_issue ) {
+			// The Google account is unreachable, so no entitlement could be
+			// created. Reassure the customer their order is fine and will be
+			// processed, and refund the rate-limit tokens — a retry later (after
+			// the admin fixes the account) shouldn't be blocked by this attempt.
+			$this->release_rate_limit( $order_rate_key );
+			$this->release_rate_limit( $ip_rate_key );
+			wp_send_json_error( 'Your order has been received and is safe. We are experiencing a temporary issue connecting to Google Drive, so access cannot be set up right now. We will continue processing your order and you will receive further instructions by email. No action is needed from you.' );
 		} else {
 			// No entitlements were created and no email was sent — nothing was
 			// reserved or delivered, so refund both rate-limit tokens consumed

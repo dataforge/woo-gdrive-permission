@@ -339,9 +339,16 @@ class WGDP_Order_Handler {
 			$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
 			if ( empty( $account_id ) || ! $auth->is_account_connected( $account_id ) ) {
 				$order->add_order_note( sprintf(
-					'WGDP: No connected account for item "%s". Entitlements not created.',
+					'WGDP: No connected Google account for item "%s". Entitlements not created — the customer\'s order is on hold for manual assignment.',
 					$item->get_name()
 				) );
+				// Alert the admin so a disconnect never strands customers silently
+				// (one email per order; multiple items group into a single alert).
+				WGDP_Notification_Email::send_admin_google_alert(
+					$account_id,
+					sprintf( 'create entitlements for order #%d ("%s")', $order_id, $item->get_name() ),
+					'order_' . $order_id
+				);
 				continue;
 			}
 

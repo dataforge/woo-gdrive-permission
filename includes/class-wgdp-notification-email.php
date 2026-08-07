@@ -4,6 +4,14 @@ defined( 'ABSPATH' ) || exit;
 class WGDP_Notification_Email {
 
 	/**
+	 * Same-request dedupe set for admin Google-account alerts.
+	 *
+	 * @var array
+	 */
+	private static $google_alert_sent = array();
+
+
+	/**
 	 * Send OTP verification email to a recipient.
 	 */
 	public static function send_otp( $email, $otp, $claim_token, $order, $item ) {
@@ -230,6 +238,56 @@ class WGDP_Notification_Email {
 			return $billing;
 		}
 		return null;
+	}
+
+	/**
+	 * Send an alert email to the site admin when a Drive operation requested by
+	 * a customer fails because the connected Google account is unavailable
+	 * (disconnected, expired/revoked token, missing credentials, or undecryptable
+	 * stored data).
+	 *
+	 * Fires on every customer-facing failure so the admin can check promptly
+	 * rather than discovering it via an order note later. A short same-request
+	 * dedupe (via $dedupe_key) prevents flooding from multi-file grants and
+	 * webhook double-fires; distinct events across requests/time always email.
+	 *
+	 * @param string $account_id Google account id, or '' when unknown.
+	 * @param string $context    Short description of what failed (e.g. "order #1234").
+	 * @param string $dedupe_key Optional key to suppress duplicates within one request.
+	 * @return bool|WP_Error False when suppressed/no admin email; true or WP_Error from wp_mail.
+	 */
+	public static function send_admin_google_alert( $account_id, $context, $dedupe_key = '' ) {
+		if ( '' !== $dedupe_key ) {
+			if ( isset( self::$google_alert_sent[ $dedupe_key ] ) ) {
+				return false;
+			}
+			self::$google_alert_sent[ $dedupe_key ] = true;
+		}
+
+		$admin_email = get_option( 'admin_email' );
+		if ( ! is_email( $admin_email ) ) {
+			return false;
+		}
+
+		$site_name    = get_bloginfo( 'name' );
+		$settings_url = admin_url( 'admin.php?page=wgdp&tab=settings' );
+		$subject      = sprintf( '[%s] Google Drive account issue — %s', $site_name, $context );
+
+		$content = '<h2 style="color:#333;margin:0 0 16px;">Google Drive account problem</h2>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;">Woo GDrive Permission could not use your connected Google account to ' . esc_html( $context ) . '.</p>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;">Drive access grants and revokes will not work until this is fixed. This is usually caused by:</p>'
+			. '<ul style="color:#555;font-size:15px;line-height:1.6;">'
+			. '<li>The Google account being disconnected, or its refresh token being expired or revoked.</li>'
+			. '<li>The OAuth Client ID / Client Secret being missing or incorrect.</li>'
+			. '<li>The stored account data no longer being decryptable (e.g. the site\'s AUTH_KEY changed).</li>'
+			. '</ul>'
+			. '<div style="text-align:center;margin:24px 0;">'
+			. '<a href="' . esc_url( $settings_url ) . '" style="display:inline-block;background:#b32d2e;color:#fff;text-decoration:none;padding:12px 32px;border-radius:4px;font-size:16px;font-weight:600;">Check Google account settings</a>'
+			. '</div>'
+			. '<p style="color:#888;font-size:14px;">Once the account is reconnected, grants and revokes resume automatically. This email is sent per failing request; multiple items on one order or a multi-file grant are grouped into a single alert.</p>';
+
+		$html = self::get_html_wrapper( $content, $site_name );
+		return self::send( $admin_email, $subject, $html );
 	}
 
 	/**

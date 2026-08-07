@@ -389,8 +389,8 @@ class WGDP_Admin {
 						<code style="display:inline-block;margin:6px 0;padding:4px 8px;background:#f0f6fc;border:1px solid #c3c4c7;border-radius:3px;user-select:all;"><?php echo esc_html( $auth->get_redirect_uri() ); ?></code>
 					</li>
 					<li>Click <strong>Create</strong>.</li>
-					<li>A dialog will show your <strong>Client ID</strong> and <strong>Client Secret</strong> &mdash; copy both and store them securely.<br>
-						<em style="color:#d63638;">The Client Secret cannot be viewed again after closing this dialog. If you lose it, you can generate a new one by opening the client and clicking "+ Add secret" &mdash; the old secret will still work until you delete it.</em></li>
+					<li>The confirmation shows your <strong>Client ID</strong> and <strong>Client Secret</strong> &mdash; copy both and store them securely.<br>
+						<em style="color:#d63638;">Google no longer lets you view or download the Client Secret after this point (the value appears masked). If you lose it, open the client and click <strong>"Add secret"</strong> to generate a new one, then use the <strong>copy</strong> button next to it &mdash; the old secret still works until you disable it. Running two secrets at once increases risk, so once the new one is saved in the plugin, disable and delete the old one.</em></li>
 				</ol>
 			</details>
 

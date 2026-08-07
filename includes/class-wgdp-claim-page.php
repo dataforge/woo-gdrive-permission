@@ -264,6 +264,7 @@ class WGDP_Claim_Page {
 			$had_fresh_grant = false;
 			$had_errors      = false;
 			$had_retired     = false;
+			$had_account_err = false;
 
 			foreach ( $all_to_grant as $eg ) {
 				// Skip retired resources.
@@ -278,6 +279,16 @@ class WGDP_Claim_Page {
 				if ( is_wp_error( $grant_result ) ) {
 					$ent->mark_error( $eg['id'], $grant_result->get_error_message() );
 					$had_errors = true;
+					if ( WGDP_Google_Auth::is_account_error( $grant_result ) ) {
+						$had_account_err = true;
+						// Alert the admin (one email per claim request) so a
+						// disconnect is surfaced immediately, not via a silent retry.
+						WGDP_Notification_Email::send_admin_google_alert(
+							$eg['account_id'] ?? '',
+							sprintf( 'grant access for entitlement #%d (order #%d, %s)', $eg['id'], $eg['order_id'], $eg['recipient_email'] ),
+							'claim_' . $result['entitlement']['order_item_id'] . '_' . $result['entitlement']['recipient_email']
+						);
+					}
 				} else {
 					// true means freshly granted by this call; null means a concurrent
 					// request already granted it — don't count that toward sending a
@@ -354,6 +365,10 @@ class WGDP_Claim_Page {
 				if ( $had_retired && ! $had_errors ) {
 					$this->post_result = $this->wrap_content( $this->error_content(
 						'Your identity has been verified, but this Drive file is no longer available. Please contact the store for assistance.'
+					) );
+				} elseif ( $had_account_err ) {
+					$this->post_result = $this->wrap_content( $this->error_content(
+						'Your identity has been verified. We are experiencing a temporary issue connecting to Google Drive, so your access cannot be granted at this moment. We will continue processing this automatically and you will receive further instructions by email. No action is needed from you.'
 					) );
 				} else {
 					$this->post_result = $this->wrap_content( $this->error_content(

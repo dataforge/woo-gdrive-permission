@@ -80,6 +80,34 @@ class WGDP_Google_Auth {
 	}
 
 	/**
+	 * Whether a WP_Error represents a Google-account connectivity problem (as
+	 * opposed to a transient API/network failure that an automatic retry could
+	 * clear). Used to surface clearer customer messages and to fire the admin
+	 * alert, since these need an admin action rather than a silent retry.
+	 *
+	 * @param mixed $error WP_Error to inspect.
+	 * @return bool
+	 */
+	public static function is_account_error( $error ) {
+		if ( ! is_wp_error( $error ) ) {
+			return false;
+		}
+		$codes = array(
+			'wgdp_not_connected',
+			'wgdp_no_credentials',
+			'wgdp_no_connected_account',
+			'wgdp_no_account',
+			'wgdp_decrypt_failed',
+		);
+		foreach ( $error->get_error_codes() as $code ) {
+			if ( in_array( $code, $codes, true ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Get a valid access token for a specific account, auto-refreshing if expired.
 	 */
 	public function get_access_token( $account_id ) {
