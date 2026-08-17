@@ -487,15 +487,14 @@ class WGDP_Entitlements {
 	 */
 	public function get_siblings( $order_item_id, $recipient_email, $exclude_id = 0 ) {
 		global $wpdb;
-		$table = $this->table();
-		$sql   = $wpdb->prepare(
-			"SELECT * FROM {$table} WHERE order_item_id = %d AND recipient_email = %s AND grant_status != 'revoked' ORDER BY id ASC", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			$order_item_id,
-			$recipient_email
-		);
+		$table  = $this->table();
+		$where  = 'order_item_id = %d AND recipient_email = %s AND grant_status != \'revoked\'';
+		$params = array( $order_item_id, $recipient_email );
 		if ( $exclude_id ) {
-			$sql .= $wpdb->prepare( ' AND id != %d', $exclude_id );
+			$where   .= ' AND id != %d';
+			$params[] = $exclude_id;
 		}
+		$sql = $wpdb->prepare( "SELECT * FROM {$table} WHERE {$where} ORDER BY id ASC", $params ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		return $wpdb->get_results( $sql, ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared
 	}
 
