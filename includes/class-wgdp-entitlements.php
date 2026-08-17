@@ -2076,6 +2076,7 @@ class WGDP_Entitlements {
 				SELECT MIN(recipient_index) AS min_idx
 				FROM {$table}
 				WHERE order_item_id = %d
+					AND grant_status != 'revocation_error'
 					AND ( grant_status != 'revoked' OR ( verification_status = 'verified' AND revocation_reason = %s ) )
 				GROUP BY recipient_email
 			) ranked WHERE min_idx <= %d", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
