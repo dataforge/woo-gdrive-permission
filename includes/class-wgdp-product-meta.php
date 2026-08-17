@@ -794,6 +794,32 @@ class WGDP_Product_Meta {
 	}
 
 	/**
+	 * Whether a specific Drive resource is retired (or no longer present at
+	 * all) in a product/variation's resource set.
+	 *
+	 * Consolidated from three previously-identical private copies
+	 * (WGDP_Cron::is_resource_retired(), WGDP_Claim_Page::is_resource_retired(),
+	 * WGDP_Release_Gate::is_resource_retired_for_row()) that risked silently
+	 * diverging on future edits.
+	 *
+	 * @param int    $product_id   Product ID.
+	 * @param int    $variation_id Variation ID (0 for simple products).
+	 * @param string $asset_id     Drive resource ID to check.
+	 * @return bool True if retired or no longer present.
+	 */
+	public static function is_resource_retired( $product_id, $variation_id, $asset_id ) {
+		$resources = self::get_drive_resources( $product_id, $variation_id );
+		foreach ( $resources as $r ) {
+			if ( $r['id'] === $asset_id ) {
+				return ! empty( $r['status'] ) && 'active' !== $r['status'];
+			}
+		}
+		// Not present in the product's resource set at all — treat as removed,
+		// not as "still active", so a detached file is never (re-)granted.
+		return true;
+	}
+
+	/**
 	 * Extract active resource IDs from a resources array.
 	 *
 	 * @param array $resources Resources array.

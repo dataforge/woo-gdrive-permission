@@ -65,6 +65,32 @@ class WGDP_Notification_Email {
 	}
 
 	/**
+	 * Send a reminder asking the customer to submit a Google account for an
+	 * order still missing one, prompted by the product's digital release
+	 * (min_sales_qty threshold met, or manual release).
+	 */
+	public static function send_provide_email_reminder( $email, $order_id, $product_name, $url ) {
+		$site_name = get_bloginfo( 'name' );
+		$subject   = sprintf( '%s is ready — tell us where to send your digital access', $product_name );
+
+		$content = '<h2 style="color:#333;margin:0 0 16px;">Your Video Is Ready!</h2>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;"><strong>' . esc_html( $product_name ) . '</strong> has reached its release goal and digital access is now available.</p>'
+			. '<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">'
+			. '<tr><td style="padding:8px 12px;color:#888;white-space:nowrap;vertical-align:top;">Order</td>'
+			. '<td style="padding:8px 12px;color:#333;font-weight:600;">#' . esc_html( $order_id ) . '</td></tr>'
+			. '</table>'
+			. '<p style="color:#555;font-size:15px;line-height:1.6;">We don\'t have a Google account on file for this order yet. Let us know which Google account should receive access, and we\'ll send it right over.</p>'
+			. '<div style="text-align:center;margin:24px 0;">'
+			. '<a href="' . esc_url( $url ) . '" style="display:inline-block;background:#2271b1;color:#fff;text-decoration:none;padding:12px 32px;border-radius:4px;font-size:16px;font-weight:600;">Provide Your Google Account</a>'
+			. '</div>'
+			. '<p style="color:#888;font-size:14px;">Or copy this link into your browser: ' . esc_html( $url ) . '</p>';
+
+		$html = self::get_html_wrapper( $content, $site_name );
+
+		return self::send( $email, $subject, $html );
+	}
+
+	/**
 	 * Send access-granted confirmation email.
 	 */
 	public static function send_access_granted( $email, $drive_link, $product_name, $resource_type = 'file' ) {

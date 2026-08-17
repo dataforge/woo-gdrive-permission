@@ -268,7 +268,7 @@ class WGDP_Claim_Page {
 
 			foreach ( $all_to_grant as $eg ) {
 				// Skip retired resources.
-				if ( self::is_resource_retired( (int) $eg['product_id'], (int) ( $eg['variation_id'] ?? 0 ), $eg['cloud_asset_id'] ) ) {
+				if ( WGDP_Product_Meta::is_resource_retired( (int) $eg['product_id'], (int) ( $eg['variation_id'] ?? 0 ), $eg['cloud_asset_id'] ) ) {
 					$ent->mark_revoked( $eg['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
 					$had_retired = true;
 					continue;
@@ -863,21 +863,6 @@ class WGDP_Claim_Page {
 		// previous version set only text color and assumed a dark page background,
 		// which rendered white-on-white on light themes.
 		return '<div class="wgdp-claim-wrap" style="max-width:480px;margin:0 auto;padding:32px 24px;background:#1f2937;border-radius:8px;color:#f5f7fb;">' . $content . '</div>';
-	}
-
-	/**
-	 * Check if a resource is retired in product meta.
-	 */
-	private static function is_resource_retired( $product_id, $variation_id, $asset_id ) {
-		$resources = WGDP_Product_Meta::get_drive_resources( $product_id, $variation_id );
-		foreach ( $resources as $r ) {
-			if ( $r['id'] === $asset_id ) {
-				return ! empty( $r['status'] ) && 'active' !== $r['status'];
-			}
-		}
-		// Not present in the product's resource set at all — treat as removed,
-		// not as "still active", so a detached file is never (re-)granted.
-		return true;
 	}
 
 	/**

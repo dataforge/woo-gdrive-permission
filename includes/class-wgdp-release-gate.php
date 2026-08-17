@@ -238,6 +238,30 @@ class WGDP_Release_Gate {
 	}
 
 	/**
+	 * Execute a callback while holding a named lock guarding a release latch.
+	 *
+	 * Mirrors with_paid_qty_lock()/with_variation_paid_qty_lock() above: falls
+	 * back to running unlocked (rather than blocking or erroring out) if the
+	 * lock can't be acquired, so a stuck lock never permanently disables
+	 * releasing — it only reopens the race window this exists to close.
+	 *
+	 * @param string   $lock_name Fully-built lock name (already scoped to the product/variation ID).
+	 * @param callable $callback  Receives no arguments; return value is passed through.
+	 */
+	private static function with_release_lock( $lock_name, $callback ) {
+		$failed = new stdClass();
+		$result = WGDP_DB::with_named_lock( $lock_name, 10, $callback, $failed );
+
+		if ( $failed === $result ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( sprintf( 'WGDP: could not acquire release lock "%s"; proceeding without lock.', $lock_name ) );
+			return $callback();
+		}
+
+		return $result;
+	}
+
+	/**
 	 * Check if the sales threshold has been met and trigger release if so.
 	 */
 	public static function maybe_trigger_release( $product_id ) {
@@ -259,18 +283,28 @@ class WGDP_Release_Gate {
 
 	/**
 	 * Release a product's digital content (one-way latch).
+	 *
+	 * Locked like every other check-then-write latch in this file
+	 * (with_paid_qty_lock() etc.) — without it, two concurrent order-status
+	 * transitions crossing the threshold at once could both pass the
+	 * not-yet-released check before either write lands, both run the batch
+	 * grant, and both fire do_action( 'wgdp_product_released' ), which now
+	 * (unlike before this lock existed) has a real listener that emails
+	 * customers — a double-fire would double-email them.
 	 */
 	public static function release_product( $product_id ) {
-		if ( '1' === get_post_meta( $product_id, '_wgdp_is_released', true ) ) {
-			return;
-		}
+		self::with_release_lock( 'wgdp_release_product_' . absint( $product_id ), function () use ( $product_id ) {
+			if ( '1' === get_post_meta( $product_id, '_wgdp_is_released', true ) ) {
+				return;
+			}
 
-		update_post_meta( $product_id, '_wgdp_is_released', '1' );
-		update_post_meta( $product_id, '_wgdp_released_at', gmdate( 'Y-m-d H:i:s' ) );
+			update_post_meta( $product_id, '_wgdp_is_released', '1' );
+			update_post_meta( $product_id, '_wgdp_released_at', gmdate( 'Y-m-d H:i:s' ) );
 
-		self::batch_grant_pending_release( $product_id );
+			self::batch_grant_pending_release( $product_id );
 
-		do_action( 'wgdp_product_released', $product_id );
+			do_action( 'wgdp_product_released', $product_id );
+		} );
 	}
 
 	/**
@@ -363,32 +397,36 @@ class WGDP_Release_Gate {
 	/**
 	 * Release a variation's digital content (one-way latch).
 	 *
+	 * Locked for the same reason as release_product() — see its docblock.
+	 *
 	 * @return bool True if this call actually released the variation, false if it was a no-op.
 	 */
 	public static function release_variation( $product_id, $variation_id ) {
-		// Only variations with their own gate (manual_release or min_sales_qty)
-		// have a latch that is_item_released() actually reads via
-		// get_release_latch_id(). A variation set to inherit_from_product is
-		// gated by the product's own mode/latch, so releasing it here would
-		// write to a meta key nothing checks while still force-granting its
-		// pending entitlements below — bypassing the product-level gate.
-		$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
-		if ( empty( $var_mode ) || 'inherit_from_product' === $var_mode ) {
-			return false;
-		}
+		return (bool) self::with_release_lock( 'wgdp_release_variation_' . absint( $variation_id ), function () use ( $product_id, $variation_id ) {
+			// Only variations with their own gate (manual_release or min_sales_qty)
+			// have a latch that is_item_released() actually reads via
+			// get_release_latch_id(). A variation set to inherit_from_product is
+			// gated by the product's own mode/latch, so releasing it here would
+			// write to a meta key nothing checks while still force-granting its
+			// pending entitlements below — bypassing the product-level gate.
+			$var_mode = get_post_meta( $variation_id, '_wgdp_release_mode', true );
+			if ( empty( $var_mode ) || 'inherit_from_product' === $var_mode ) {
+				return false;
+			}
 
-		if ( '1' === get_post_meta( $variation_id, '_wgdp_is_released', true ) ) {
-			return false;
-		}
+			if ( '1' === get_post_meta( $variation_id, '_wgdp_is_released', true ) ) {
+				return false;
+			}
 
-		update_post_meta( $variation_id, '_wgdp_is_released', '1' );
-		update_post_meta( $variation_id, '_wgdp_released_at', gmdate( 'Y-m-d H:i:s' ) );
+			update_post_meta( $variation_id, '_wgdp_is_released', '1' );
+			update_post_meta( $variation_id, '_wgdp_released_at', gmdate( 'Y-m-d H:i:s' ) );
 
-		self::batch_grant_pending_release_for_variation( $product_id, $variation_id );
+			self::batch_grant_pending_release_for_variation( $product_id, $variation_id );
 
-		do_action( 'wgdp_variation_released', $product_id, $variation_id );
+			do_action( 'wgdp_variation_released', $product_id, $variation_id );
 
-		return true;
+			return true;
+		} );
 	}
 
 	/**
@@ -512,21 +550,6 @@ class WGDP_Release_Gate {
 	}
 
 	/**
-	 * Check if a pending entitlement targets a resource retired in product meta.
-	 */
-	private static function is_resource_retired_for_row( $row ) {
-		$resources = WGDP_Product_Meta::get_drive_resources( $row['product_id'], $row['variation_id'] ?: 0 );
-		foreach ( $resources as $resource ) {
-			if ( $resource['id'] === $row['cloud_asset_id'] ) {
-				return ! empty( $resource['status'] ) && 'active' !== $resource['status'];
-			}
-		}
-		// Not present in the product's resource set at all — treat as removed,
-		// not as "still active", so a detached file is never (re-)granted.
-		return true;
-	}
-
-	/**
 	 * Collect a granted entitlement into a recipient/order-item batch email group.
 	 */
 	private static function collect_granted_for_email( &$granted_by_recipient, $row ) {
@@ -595,7 +618,7 @@ class WGDP_Release_Gate {
 					// Not yet released at variation level — skip but don't error.
 					continue;
 				}
-				if ( self::is_resource_retired_for_row( $row ) ) {
+				if ( WGDP_Product_Meta::is_resource_retired( (int) $row['product_id'], (int) ( $row['variation_id'] ?? 0 ), $row['cloud_asset_id'] ) ) {
 					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
 					continue;
 				}
@@ -654,7 +677,7 @@ class WGDP_Release_Gate {
 					// Not actually released — skip but don't error.
 					continue;
 				}
-				if ( self::is_resource_retired_for_row( $row ) ) {
+				if ( WGDP_Product_Meta::is_resource_retired( (int) $row['product_id'], (int) ( $row['variation_id'] ?? 0 ), $row['cloud_asset_id'] ) ) {
 					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
 					continue;
 				}

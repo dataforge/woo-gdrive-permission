@@ -31,6 +31,10 @@ class WGDP_Order_Handler {
 		add_action( 'woocommerce_order_status_processing', array( $this, 'update_sales_counter' ), 20 );
 		add_action( 'woocommerce_order_status_completed', array( $this, 'update_sales_counter' ), 20 );
 
+		// Remind customers still missing a recipient once the release gate opens.
+		add_action( 'wgdp_product_released', array( $this, 'notify_unassigned_recipients_on_release' ) );
+		add_action( 'wgdp_variation_released', array( $this, 'notify_unassigned_recipients_on_variation_release' ), 10, 2 );
+
 		// Optional integration with Woo Conditional Preorders.
 		add_action( 'wcpr_order_charge_succeeded', array( $this, 'handle_preorder_charge_succeeded' ), 10, 2 );
 		add_action( 'wcpr_reservation_cancelled_campaign_failed', array( $this, 'handle_preorder_reservation_cancelled' ), 20, 2 );
@@ -1176,6 +1180,23 @@ class WGDP_Order_Handler {
 				// leave it eligible for reprocessing once the account is reconnected.
 				$account_id = WGDP_Product_Meta::get_account_for_item( $product_id, $variation_id );
 				if ( empty( $account_id ) || ! WGDP_Google_Auth::instance()->is_account_connected( $account_id ) ) {
+					$order->add_order_note( sprintf(
+						'WGDP: No connected Google account for item "%s". Sales counter not incremented — the release-gate threshold may undercount until the account is reconnected and this order is reprocessed.',
+						$item->get_name()
+					) );
+					// Reuse create_entitlements()'s dedupe key ('order_' . $order_id):
+					// both hooks fire for the same order/account problem on the same
+					// request (processing/completed), just at different priorities, so
+					// sharing the key means only one admin email goes out per order —
+					// whichever of the two runs first — instead of two near-duplicates.
+					// If create_entitlements() didn't alert for this order (e.g. it
+					// exited earlier for an unrelated reason), this call still fires
+					// normally since the dedupe key won't have been used yet.
+					WGDP_Notification_Email::send_admin_google_alert(
+						$account_id,
+						sprintf( 'update the sales counter for order #%d ("%s")', $order_id, $item->get_name() ),
+						'order_' . $order_id
+					);
 					continue;
 				}
 
@@ -1879,6 +1900,139 @@ class WGDP_Order_Handler {
 			'ajax_url' => admin_url( 'admin-ajax.php' ),
 			'nonce'    => wp_create_nonce( 'wgdp_admin_nonce' ),
 		) );
+	}
+
+	/**
+	 * When a product's release gate opens (min_sales_qty threshold met, or a
+	 * manual release), email every order still missing a recipient for this
+	 * product asking the customer to submit their Google account. Without
+	 * this, an order with no recipient just sits — create_entitlements()
+	 * never had anything to act on for it, and nothing else nudges the
+	 * customer beyond the one link WooCommerce's own order emails carry.
+	 *
+	 * @param int $product_id Released product ID.
+	 */
+	public function notify_unassigned_recipients_on_release( $product_id ) {
+		$this->notify_unassigned_recipients_for_product( $product_id );
+	}
+
+	/**
+	 * Same as notify_unassigned_recipients_on_release(), for a single
+	 * variation's own release gate. Reuses the product-level lookup and
+	 * narrows it to the released variation.
+	 *
+	 * @param int $product_id   Parent product ID.
+	 * @param int $variation_id Released variation ID.
+	 */
+	public function notify_unassigned_recipients_on_variation_release( $product_id, $variation_id ) {
+		$this->notify_unassigned_recipients_for_product( $product_id, $variation_id );
+	}
+
+	/**
+	 * Shared implementation: find unassigned order items for a product (optionally
+	 * narrowed to one variation) and send one reminder email per affected order.
+	 *
+	 * @param int $product_id   Product ID.
+	 * @param int $variation_id Optional variation ID to narrow to.
+	 */
+	private function notify_unassigned_recipients_for_product( $product_id, $variation_id = 0 ) {
+		WGDP_DB::with_named_lock( 'wgdp_release_notify_' . $product_id, 10, function () use ( $product_id, $variation_id ) {
+			$ent          = WGDP_Entitlements::instance();
+			$product_name = get_the_title( $product_id );
+			$page         = 1;
+			$notified_orders = array();
+
+			do {
+				$result = $ent->get_unassigned_order_items( array(
+					'product_id' => $product_id,
+					'per_page'   => 100,
+					'page'       => $page,
+				) );
+
+				foreach ( $result['items'] as $row ) {
+					if ( $variation_id && (int) $row['variation_id'] !== (int) $variation_id ) {
+						continue;
+					}
+
+					$order_id = (int) $row['order_id'];
+					if ( isset( $notified_orders[ $order_id ] ) ) {
+						continue; // One reminder per order, not per unassigned line item.
+					}
+
+					$order = wc_get_order( $order_id );
+					if ( ! $order ) {
+						continue;
+					}
+
+					$notified_orders[ $order_id ] = true;
+
+					// Persistent, cross-invocation dedup: the wgdp_release_notify_<product_id>
+					// lock above only stops a product-level and variation-level release for
+					// the SAME product from re-notifying simultaneously (they share that lock
+					// name) — it doesn't stop two separate, non-overlapping calls (a retry, or
+					// a product release followed later by a variation release under it) from
+					// each re-emailing the same still-unassigned order. This order-meta marker
+					// makes "already reminded for this product's release" durable across calls.
+					$reminded_products = json_decode( $order->get_meta( '_wgdp_release_reminder_sent_products' ), true );
+					if ( ! is_array( $reminded_products ) ) {
+						$reminded_products = array();
+					}
+					if ( in_array( (int) $product_id, array_map( 'intval', $reminded_products ), true ) ) {
+						continue;
+					}
+
+					// The legacy order_id+key self-service link has no expiry of its
+					// own — WGDP_Self_Service::is_link_expired() falls back to the
+					// order's creation date when this meta is unset. A release can
+					// happen long after an early order was placed (that's the whole
+					// point of a min_sales_qty threshold), so without resetting this
+					// here, the link we're about to send can already be dead on
+					// arrival for older orders. Mirrors the admin's own "resend"
+					// action (ajax_resend_order_email()).
+					$order->update_meta_data( '_wgdp_self_service_link_resent_at', time() );
+					$order->save();
+
+					$url = add_query_arg(
+						array(
+							'order_id' => $order->get_id(),
+							'key'      => $order->get_order_key(),
+						),
+						WGDP_Self_Service::get_page_url()
+					);
+
+					$mail_result = WGDP_Notification_Email::send_provide_email_reminder(
+						$order->get_billing_email(),
+						$order_id,
+						$product_name,
+						$url
+					);
+
+					if ( is_wp_error( $mail_result ) ) {
+						$order->add_order_note( sprintf(
+							'WGDP: %s reached its release goal, but the reminder email to provide a Google account failed — %s',
+							$product_name,
+							$mail_result->get_error_message()
+						) );
+					} else {
+						$order->add_order_note( sprintf(
+							'WGDP: Sent reminder asking for a Google account now that "%s" has been released.',
+							$product_name
+						) );
+
+						// Only mark as reminded on a successful send — a failed send
+						// should remain eligible for a future retry, not be silently
+						// dedup-suppressed forever.
+						$reminded_products[] = (int) $product_id;
+						$order->update_meta_data( '_wgdp_release_reminder_sent_products', wp_json_encode( array_values( array_unique( $reminded_products ) ) ) );
+						$order->save();
+					}
+				}
+
+				$page++;
+			} while ( count( $result['items'] ) >= 100 );
+
+			return true;
+		}, false );
 	}
 
 }

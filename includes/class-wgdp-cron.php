@@ -36,21 +36,6 @@ class WGDP_Cron {
 	}
 
 	/**
-	 * Check if a resource is retired in product meta.
-	 */
-	private function is_resource_retired( $product_id, $variation_id, $asset_id ) {
-		$resources = WGDP_Product_Meta::get_drive_resources( $product_id, $variation_id );
-		foreach ( $resources as $r ) {
-			if ( $r['id'] === $asset_id ) {
-				return ! empty( $r['status'] ) && 'active' !== $r['status'];
-			}
-		}
-		// Not present in the product's resource set at all — treat as removed,
-		// not as "still active", so a detached file is never (re-)granted.
-		return true;
-	}
-
-	/**
 	 * Resolve resource name from product meta.
 	 */
 	private function get_resource_name( $row ) {
@@ -133,6 +118,42 @@ class WGDP_Cron {
 	}
 
 	/**
+	 * Alert the admin that this retry cron is stuck skipping rows for a
+	 * disconnected account — throttled per account_id via a persistent
+	 * transient, not per-row/per-request.
+	 *
+	 * send_admin_google_alert()'s own $dedupe_key only dedupes within a single
+	 * PHP request (it's an in-memory static array), which is meaningless for
+	 * a cron that runs as a fresh request every 20 minutes — without this
+	 * transient guard, a persistently dead account would re-alert every
+	 * single run forever. Six hours caps that at ~4 emails/day while still
+	 * keeping the admin aware the retry queue is stuck.
+	 *
+	 * @param string $account_id Account ID the skipped row(s) needed.
+	 * @param string $context    Human-readable action being retried.
+	 */
+	private function maybe_alert_disconnected_account( $account_id, $context ) {
+		if ( empty( $account_id ) ) {
+			return;
+		}
+
+		// get_transient() then set_transient() is two round-trips, not a
+		// compare-and-swap — without a lock, overlapping WP-Cron dispatches
+		// (a known possibility without a real system cron driving it) could
+		// both pass the check before either write lands, sending two alerts.
+		// 5s is plenty; this only needs to serialize two near-simultaneous
+		// dispatches, not hold for the duration of the alert email itself.
+		WGDP_DB::with_named_lock( 'wgdp_cron_account_alert_' . $account_id, 5, function () use ( $account_id, $context ) {
+			$transient_key = 'wgdp_cron_account_alert_' . $account_id;
+			if ( get_transient( $transient_key ) ) {
+				return;
+			}
+			set_transient( $transient_key, 1, 6 * HOUR_IN_SECONDS );
+			WGDP_Notification_Email::send_admin_google_alert( $account_id, $context, 'cron_account_' . $account_id );
+		}, false );
+	}
+
+	/**
 	 * Retry Drive API grants for verified entitlements with errors,
 	 * and process any pending_release overflow for already-released products.
 	 */
@@ -168,9 +189,10 @@ class WGDP_Cron {
 					continue;
 				}
 				if ( empty( $row['account_id'] ) || ! $auth->is_account_connected( $row['account_id'] ) ) {
+					$this->maybe_alert_disconnected_account( $row['account_id'], 'grant a pending Drive release' );
 					continue;
 				}
-				if ( $this->is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
+				if ( WGDP_Product_Meta::is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
 					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
 					continue;
 				}
@@ -210,10 +232,11 @@ class WGDP_Cron {
 				}
 
 				if ( empty( $row['account_id'] ) || ! $auth->is_account_connected( $row['account_id'] ) ) {
+					$this->maybe_alert_disconnected_account( $row['account_id'], 'retry a failed Drive grant' );
 					continue;
 				}
 
-				if ( $this->is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
+				if ( WGDP_Product_Meta::is_resource_retired( (int) $row['product_id'], (int) $row['variation_id'], $row['cloud_asset_id'] ) ) {
 					$ent->mark_revoked( $row['id'], WGDP_Entitlements::REVOCATION_REASON_ASSET_REMOVED );
 					continue;
 				}
@@ -399,6 +422,10 @@ class WGDP_Cron {
 				"UPDATE {$table} SET status = 'pending', started_at = NULL, attempts = attempts + 1, last_error = %s WHERE id = %d AND status = 'processing'", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				'No connected Google account is available for this product.', $job['id']
 			) );
+			// The job row's own last_error records this, but nothing surfaces it to
+			// an admin who isn't actively watching the backfill queue — same gap as
+			// the two retry_failed_grants() skip points above, closed the same way.
+			$this->maybe_alert_disconnected_account( $account_id, 'process a backfill job for product #' . (int) $job['product_id'] );
 			$this->maybe_reschedule_backfill();
 			return;
 		}

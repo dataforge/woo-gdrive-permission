@@ -400,21 +400,61 @@ class WGDP_Google_Auth {
 
 		$user_email = $this->fetch_user_email( $body['access_token'] );
 
-		// Inside lock: generate collision-safe ID, add account, save.
+		// Inside lock: reuse the existing account_id if this Google account (by
+		// email) is already connected or was previously connected, otherwise
+		// generate a collision-safe ID.
+		//
+		// Minting a fresh ID on every reconnect orphans every existing
+		// product/variation _wgdp_account_id reference and entitlement row
+		// still pointing at the old ID (see disconnect()'s docblock) — those
+		// items silently stop granting access with no admin-facing warning.
+		// Keying reconnects to the same email onto the same account_id avoids
+		// creating that orphan in the first place.
+		//
+		// A live-accounts email match alone isn't enough: disconnect() removes
+		// the account entry entirely, so the exact "disconnect a dead token,
+		// then reconnect" remediation the plugin's own admin notice recommends
+		// would still mint a fresh ID and re-orphan everything. The email
+		// registry (get_email_registry()) is disconnect's one exception — it's
+		// never cleared there — so a reused ID survives even a full disconnect.
 		$account_id = null;
-		$result = $this->with_accounts_lock( function ( $accounts ) use ( $body, $user_email, &$account_id ) {
-			do {
-				$account_id = wp_generate_password( 8, false );
-			} while ( isset( $accounts[ $account_id ] ) );
+		$normalized_email = $user_email ? strtolower( trim( $user_email ) ) : '';
+		$result = $this->with_accounts_lock( function ( $accounts ) use ( $body, $user_email, $normalized_email, &$account_id ) {
+			$registry = $this->get_email_registry();
+			if ( $normalized_email && isset( $registry[ $normalized_email ] ) ) {
+				$account_id = $registry[ $normalized_email ];
+			}
+
+			if ( null === $account_id && $user_email ) {
+				foreach ( $accounts as $existing_id => $existing_account ) {
+					if ( isset( $existing_account['email'] ) && 0 === strcasecmp( $existing_account['email'], $user_email ) ) {
+						$account_id = $existing_id;
+						break;
+					}
+				}
+			}
+
+			if ( null === $account_id ) {
+				do {
+					$account_id = wp_generate_password( 8, false );
+				} while ( isset( $accounts[ $account_id ] ) );
+			}
 
 			$accounts[ $account_id ] = array(
 				'type'          => 'google_drive',
-				'label'         => $user_email ? $user_email : 'Google Account',
+				// Preserve an admin-assigned label across reconnect; only default
+				// to the email for a genuinely new account.
+				'label'         => $accounts[ $account_id ]['label'] ?? ( $user_email ? $user_email : 'Google Account' ),
 				'email'         => $user_email,
 				'refresh_token' => $body['refresh_token'] ?? '',
 				'access_token'  => $body['access_token'],
 				'expires_at'    => time() + ( $body['expires_in'] ?? 3600 ),
 			);
+
+			if ( $normalized_email ) {
+				$registry[ $normalized_email ] = $account_id;
+				$this->save_email_registry( $registry );
+			}
 
 			return $accounts;
 		} );
@@ -422,6 +462,12 @@ class WGDP_Google_Auth {
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
+
+		// A successful reconnect proves the token is valid again. If this reused
+		// an existing account_id that had a confirmed-dead token error on file,
+		// clear it now — otherwise is_account_connected() would keep reporting
+		// this account as disconnected until the stale transient expires.
+		delete_transient( 'wgdp_token_error_' . $account_id );
 
 		// Cache for the shorter of 55 min or the token's actual lifetime (minus a
 		// 60s safety margin) so a short-lived token is never served stale, matching
@@ -835,6 +881,27 @@ class WGDP_Google_Auth {
 	private function save_all_accounts( $accounts ) {
 		$encrypted = $this->encrypt( wp_json_encode( $accounts ) );
 		update_option( 'wgdp_accounts', $encrypted, false );
+	}
+
+	/**
+	 * Get the persistent email → account_id registry.
+	 *
+	 * Deliberately separate from the wgdp_accounts option and, unlike it, never
+	 * cleared by disconnect() — this is what lets a later reconnect of the same
+	 * Google account reuse its original account_id instead of minting a new one
+	 * (see the reuse logic in handle_callback()). Holds only email/ID pairs, no
+	 * tokens, so it doesn't need encryption.
+	 */
+	private function get_email_registry() {
+		$registry = get_option( 'wgdp_account_email_registry', array() );
+		return is_array( $registry ) ? $registry : array();
+	}
+
+	/**
+	 * Save the email → account_id registry. Private.
+	 */
+	private function save_email_registry( $registry ) {
+		update_option( 'wgdp_account_email_registry', $registry, false );
 	}
 
 	/**
